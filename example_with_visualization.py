@@ -14,7 +14,8 @@ from elastica.modules import (
 from elastica.rod.cosserat_rod import CosseratRod
 from elastica.boundary_conditions import OneEndFixedBC
 from elastica.external_forces import GravityForces
-from elastica.external_forces import TendonForces
+# from elastica.external_forces import TendonForces
+from TendonForces import TendonForces
 from elastica.dissipation import AnalyticalLinearDamper
 from elastica.callback_functions import CallBackBaseClass
 from elastica.timestepper.symplectic_steppers import PositionVerlet
