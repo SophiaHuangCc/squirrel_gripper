@@ -28,6 +28,7 @@ import numpy as np
 from collections import defaultdict
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 import sys
+import csv
 
 import matplotlib.pyplot as plt
 from moviepy.editor import VideoClip
@@ -83,9 +84,12 @@ def draw_cylinder(ax, center, axis_dir, radius, length, color="gray", alpha=0.3,
         shade=True
     )
 
+#####################################
+## Simulation parameters and setup
+#####################################
 # Simulation parameters
 final_time = 2.0
-time_step = 1.8e-5
+time_step = 5e-6 # 1.8e-5 original
 rendering_fps = 30.0
 total_steps = int(final_time / time_step)
 step_skip = int(1.0 / (rendering_fps * time_step))
@@ -93,12 +97,20 @@ step_skip = int(1.0 / (rendering_fps * time_step))
 # Create rod (finger)
 direction = np.array([1.0, 0.0, 0.0])
 normal = np.array([0.0, 0.0, 1.0])
-base_length = 0.3
+base_length = 0.3 # in meters for finger
 n_elements = 100
 base_radius = 0.011/2
 density = 997.7
-youngs_modulus = 3e5 # 16.598637e6
-shear_modulus = 1.2e5 # 7.216880e6
+youngs_modulus = 3e6 # 3e5 original, E
+shear_modulus = 1.2e6 # 1.2e5 original, G < E
+tension = 3.0 # tendon tension force in Newtons
+eps = 0.3 # % softer at the tip
+damping_constant = 0.001 # original 0.002, 0 means no internal damping
+k = 1e1
+nu = 1 # velocity damping coefficient
+mu = 0.5 # friction coefficient
+velocity_damping_coefficient = 1e1
+vertebra_mass = 0.01 # mass of each vertebra in kg, almost negligible to start with
 
 dtmax = (base_length / n_elements) * np.sqrt(
         density / max(youngs_modulus, shear_modulus))
@@ -120,10 +132,14 @@ finger = CosseratRod.straight_rod(
 sim.append(finger)
 
 # Non-uniform stiffness profile (more flexible toward tip)
-eps = 0.5
+# 1) non-uniform alternative 1
 # profile = np.linspace(1.0 + eps, 1.0 - eps, n_elements - 1)
+# 2) non-uniform alternative 2
+# s = np.linspace(0, 1, n_elements - 1)
+# profile = 1.0 + eps * (1.0 - s**2)
+# 3) non-uniform alternative 3
 s = np.linspace(0, 1, n_elements - 1)
-profile = 1.0 + eps * (1.0 - s**2)
+profile = 1.0 - eps * (s**2)        # base: 1.0, tip: 0.5
 
 for i in range(n_elements - 1):
     finger.bend_matrix[1, 1, i] *= profile[i]
@@ -133,7 +149,6 @@ for i in range(n_elements - 1):
 cyl_radius = 0.03
 cyl_length = 0.4
 cyl_density = 1200.0
-# cyl_start = np.array([0.10, -cyl_length / 2.0, -cyl_radius])
 cyl_start = np.array([0.10, -cyl_length / 2.0, -0.08])
 cyl_direction = np.array([0.0, 1.0, 0.0])
 cyl_normal = np.array([1.0, 0.0, 0.0])
@@ -169,8 +184,8 @@ sim.add_forcing_to(finger).using(
     num_vertebrae=30,
     first_vertebra_node=3,
     final_vertebra_node=n_elements - 3,
-    vertebra_mass=0.01,
-    tension=0.3, # TODO: tuning
+    vertebra_mass=vertebra_mass,
+    tension=tension,
     vertebra_height_orientation=np.array([0.0, 0.0, -1.0]),
     n_elements=n_elements,
 )
@@ -179,24 +194,24 @@ gravity_magnitude = -9.80665
 acc_gravity = np.zeros(3)
 acc_gravity[2] = gravity_magnitude
 
+# Gravity forces
 sim.add_forcing_to(finger).using(
-    GravityForces,
-    acc_gravity=acc_gravity,
+    GravityForces, acc_gravity
 )
 
 sim.dampen(finger).using(
     AnalyticalLinearDamper,
-    damping_constant=0.001, # TODO: tuning
+    damping_constant=damping_constant, 
     time_step=time_step,
 )
 
 # Rod-cylinder contact
 contact = sim.detect_contact_between(finger, cylinder).using(
     RodCylinderContact,
-    k=1e2,
-    nu=10,
-    velocity_damping_coefficient=5e2,
-    friction_coefficient=0.3,
+    k=k, 
+    nu=nu,
+    velocity_damping_coefficient=velocity_damping_coefficient, 
+    friction_coefficient=mu,
 )
 
 # MyCallBack class is derived from the base call back class.
@@ -210,6 +225,8 @@ class MyCallBack(CallBackBaseClass):
         if current_step % self.every == 0:
             self.callback_params["position"].append(system.position_collection.copy())
             self.callback_params["directors"].append(system.director_collection.copy())
+            self.callback_params["forces"].append(system.external_forces.copy()) # forces
+            self.callback_params["velocity"].append(system.velocity_collection.copy())
             for i in range(len(system.position_collection)):
                 for j in range(len(system.position_collection[i])):
                     if np.isnan(system.position_collection[i][j]):
@@ -238,7 +255,8 @@ integrate(timestepper, sim, final_time, total_steps)
 
 position_data = callback_data_finger["position"]
 directors_data = callback_data_finger["directors"]
-
+forces_data    = callback_data_finger["forces"]  # forces
+velocity_data  = callback_data_finger["velocity"]
 
 # Creating a 3D plot
 fig = plt.figure()
@@ -311,7 +329,7 @@ def make_frame(t):
             length=scale, color='b', normalize=True)
 
     # Update counter
-    count=count+1
+    # count=count+1
     center = cylinder.position_collection[:, 0]
     axis_dir = cylinder.director_collection[2, :, 0]
 
@@ -327,6 +345,32 @@ def make_frame(t):
     )
     ax.view_init(elev=-4, azim=-82) # set view angle for video
 
+    forces = forces_data[count]
+    pos     = position_data[count]
+
+    # magnitude for each node
+    mag = np.linalg.norm(forces, axis=0)
+    # print("Max tendon force magnitude:", np.max(mag))
+
+    force_scale = 0.2
+    step_nodes  = 4
+
+    for i in range(0, forces.shape[1], step_nodes):
+        if mag[i] < 1e-6:
+            continue  # skip almost-zero forces
+
+        x, y, z = pos[0, i], pos[1, i], pos[2, i]
+        fx, fy, fz = forces[0, i], forces[1, i], forces[2, i]
+
+        # optional normalization so direction is visible, length scaled by magnitude
+        ax.quiver(
+            x, y, z,
+            fx, fy, fz,
+            length=force_scale,
+            normalize=True,
+            color="magenta",  # tendon color
+        )
+
     # Update counter (don’t run past the last saved frame)
     count = min(count + 1, len(position_data) - 1)
     # returning numpy imagedef make_frame(t):
@@ -340,83 +384,146 @@ clip.write_videofile("squirrel_finger_perching.mp4", codec="libx264", fps=render
 
 
 # Compute contact forces and evaluations
-def compute_contact_forces_frame(rod_pos, cyl_center, cyl_axis, cyl_radius, k):
+def compute_contact_metrics_frame(
+    rod_pos,
+    rod_vel,
+    cyl_center,
+    cyl_axis,
+    cyl_radius,
+    k,
+    mu,
+):
     """
-    rod_pos   : (3, n_nodes) array (e.g. position_data[frame])
-    cyl_center: (3,) cylinder axis center
-    cyl_axis  : (3,) unit vector along cylinder axis
+    rod_pos   : (3, n_nodes)
+    rod_vel   : (3, n_nodes)
+    cyl_center: (3,)
+    cyl_axis  : (3,)
     cyl_radius: float
-    k         : normal stiffness used in RodCylinderContact
+    k         : normal stiffness (same as RodCylinderContact.k)
+    mu        : friction coefficient (same as RodCylinderContact.friction_coefficient)
 
     Returns:
-        indices: list of node indices in contact
-        forces:  list of normal force magnitudes at those nodes
+        indices          : node indices in contact
+        normal_forces    : normal force magnitudes (k * penetration)
+        normal_vel       : normal component of velocity (m/s)
+        tangential_speed : |v_t| at node (m/s)
+        friction_forces  : Coulomb friction magnitudes (mu * normal_force)
     """
+
     cyl_axis = cyl_axis / np.linalg.norm(cyl_axis)
-    rel = rod_pos.T - cyl_center[None, :] # (n_nodes, 3)
-    proj_len = np.dot(rel, cyl_axis) # scalar projection along axis
-    proj = np.outer(proj_len, cyl_axis) # axis component
-    radial = rel - proj # radial vector
-    radial_dist = np.linalg.norm(radial, axis=1)
 
-    overlap = cyl_radius - radial_dist # >0 means penetration
-    mask = overlap > 0.0
-
-    contact_indices = np.where(mask)[0].tolist()
-    normal_forces = (k * overlap[mask]).tolist()
-
-    return contact_indices, normal_forces
-
-# geometry at the end (cylinder is rigid, so one frame is enough)
-cyl_center = cylinder.position_collection[:, 0]
-cyl_axis   = cylinder.director_collection[2, :, 0]  # axis direction
-k_contact  = 1e2 
-
-cyl_center = cylinder.position_collection[:, 0]
-cyl_axis   = cylinder.director_collection[2, :, 0]
-k_contact  = 1e2  # same as in RodCylinderContact
-
-first_contact_frame = None
-max_force_overall = 0.0
-
-for frame_idx, rod_pos in enumerate(position_data):
-    indices, forces = compute_contact_forces_frame(
-        rod_pos, cyl_center, cyl_axis, cyl_radius, k_contact
-    )
-
-    if forces:
-        frame_max = max(forces)
-        if frame_max > max_force_overall:
-            max_force_overall = frame_max
-
-        if first_contact_frame is None:
-            first_contact_frame = frame_idx
-            print(f"First contact at frame {frame_idx}, nodes={indices[:5]}, "
-                  f"max normal force in this frame={frame_max:.3f}")
-min_dist_overall = np.inf
-
-for frame_idx, rod_pos in enumerate(position_data):
-    cyl_axis = cyl_axis / np.linalg.norm(cyl_axis)
-    rel = rod_pos.T - cyl_center[None, :]
+    # N x 3 arrays
+    rel = rod_pos.T - cyl_center[None, :] 
     proj_len = np.dot(rel, cyl_axis)
     proj = np.outer(proj_len, cyl_axis)
     radial = rel - proj
     radial_dist = np.linalg.norm(radial, axis=1)
 
-    frame_min = np.min(radial_dist)
-    if frame_min < min_dist_overall:
-        min_dist_overall = frame_min
+    eps = 1e-12
+    normal_vec = np.zeros_like(radial)
+    mask_nonzero = radial_dist > eps
+    normal_vec[mask_nonzero] = radial[mask_nonzero] / radial_dist[mask_nonzero, None]
 
-print("Minimum rod-to-cylinder axis distance over trajectory:", min_dist_overall)
-print("Cylinder radius:", cyl_radius)
+    # penetration (penalty model)
+    overlap = cyl_radius - radial_dist
+    contact_mask = overlap > 0.0
+
+    normal_force_mag = k * np.clip(overlap, a_min=0.0, a_max=None)
+
+    # velocities
+    vel = rod_vel.T 
+    normal_vel = np.sum(vel * normal_vec, axis=1) 
+    vel_t = vel - normal_vel[:, None] * normal_vec
+    tangential_speed = np.linalg.norm(vel_t, axis=1)
+
+    friction_force_mag = mu * normal_force_mag
+
+    # only keep contacting nodes
+    idx = np.where(contact_mask)[0]
+
+    return (
+        idx,
+        normal_force_mag[idx],
+        normal_vel[idx],
+        tangential_speed[idx],
+        friction_force_mag[idx],
+    )
+
+###################################
+# contact logging to CSV
+###################################
+cyl_center = cylinder.position_collection[:, 0]
+cyl_axis   = cylinder.director_collection[2, :, 0]
+k_contact  = k
+mu_contact = mu
+
+dt_saved = step_skip * time_step
+
+first_contact_frame = None
+max_normal_force_overall = 0.0
+
+with open("contact_log.csv", "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(
+        [
+            "frame_idx",
+            "time",
+            "node_idx",
+            "normal_force",
+            "normal_velocity",
+            "tangential_speed",
+            "friction_force",
+        ]
+    )
+
+    for frame_idx, (pos, vel) in enumerate(zip(position_data, velocity_data)):
+        t = frame_idx * dt_saved
+
+        (
+            indices,
+            n_forces,
+            n_vel,
+            t_speed,
+            f_forces,
+        ) = compute_contact_metrics_frame(
+            pos,
+            vel,
+            cyl_center,
+            cyl_axis,
+            cyl_radius,
+            k_contact,
+            mu_contact,
+        )
+
+        if len(indices) > 0:
+            frame_max = np.max(n_forces)
+            if frame_max > max_normal_force_overall:
+                max_normal_force_overall = frame_max
+
+            if first_contact_frame is None:
+                first_contact_frame = frame_idx
+
+        # write one row per contacting node
+        for j, node_idx in enumerate(indices):
+            writer.writerow(
+                [
+                    frame_idx,
+                    t,
+                    int(node_idx),
+                    float(n_forces[j]),
+                    float(n_vel[j]),
+                    float(t_speed[j]),
+                    float(f_forces[j]),
+                ]
+            )
+
 if first_contact_frame is None:
     print("No contact in ANY saved frame.")
 else:
-    print(f"Max normal force over all frames: {max_force_overall:.3f}")
-
-print("Contact nodes:", indices)
-print("Contact normal force magnitudes:", forces)
-print("Max normal force:", max(forces) if forces else 0.0)
+    print(f"First contact at frame {first_contact_frame}, "
+          f"t = {first_contact_frame * dt_saved:.4f} s")
+    print(f"Max normal force over all frames: {max_normal_force_overall:.3f} N")
+    print("Contact log written to contact_log.csv")
 
 
 # Static snapshot of final frame
@@ -475,4 +582,4 @@ except Exception:
 ax.view_init(elev=30, azim=30)
 plt.tight_layout()
 plt.savefig("squirrel_finger_final_frame.png", dpi=200)
-plt.show()
+# plt.show()
