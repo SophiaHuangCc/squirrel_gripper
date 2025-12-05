@@ -30,6 +30,8 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 import sys
 import csv
 
+from scipy.spatial import ConvexHull, Delaunay
+
 import matplotlib.pyplot as plt
 from moviepy.editor import VideoClip
 from moviepy.video.io.bindings import mplfig_to_npimage
@@ -84,6 +86,178 @@ def draw_cylinder(ax, center, axis_dir, radius, length, color="gray", alpha=0.3,
         shade=True
     )
 
+# Compute contact forces and evaluations
+def compute_contact_metrics_frame(
+    rod_pos,
+    rod_vel,
+    cyl_center,
+    cyl_axis,
+    cyl_radius,
+    k,
+    mu,
+):
+    """
+    rod_pos   : (3, n_nodes)
+    rod_vel   : (3, n_nodes)
+    cyl_center: (3,)
+    cyl_axis  : (3,)
+    cyl_radius: float
+    k         : normal stiffness (same as RodCylinderContact.k)
+    mu        : friction coefficient (same as RodCylinderContact.friction_coefficient)
+
+    Returns:
+        indices          : node indices in contact
+        normal_forces    : normal force magnitudes (k * penetration)
+        normal_vel       : normal component of velocity (m/s)
+        tangential_speed : |v_t| at node (m/s)
+        friction_forces  : Coulomb friction magnitudes (mu * normal_force)
+    """
+
+    cyl_axis = cyl_axis / np.linalg.norm(cyl_axis)
+
+    # N x 3 arrays
+    rel = rod_pos.T - cyl_center[None, :] 
+    proj_len = np.dot(rel, cyl_axis)
+    proj = np.outer(proj_len, cyl_axis)
+    radial = rel - proj
+    radial_dist = np.linalg.norm(radial, axis=1)
+
+    eps = 1e-12
+    normal_vec = np.zeros_like(radial)
+    mask_nonzero = radial_dist > eps
+    normal_vec[mask_nonzero] = radial[mask_nonzero] / radial_dist[mask_nonzero, None]
+
+    # penetration (penalty model)
+    overlap = cyl_radius - radial_dist
+    contact_mask = overlap > 0.0
+
+    normal_force_mag = k * np.clip(overlap, a_min=0.0, a_max=None)
+
+    # velocities
+    vel = rod_vel.T 
+    normal_vel = np.sum(vel * normal_vec, axis=1) 
+    vel_t = vel - normal_vel[:, None] * normal_vec
+    tangential_speed = np.linalg.norm(vel_t, axis=1)
+
+    friction_force_mag = mu * normal_force_mag
+
+    # only keep contacting nodes
+    idx = np.where(contact_mask)[0]
+
+    return (
+        idx,
+        normal_force_mag[idx],
+        normal_vel[idx],
+        tangential_speed[idx],
+        friction_force_mag[idx],
+    )
+
+def origin_in_hull(points):
+    """
+    Returns True if the origin [0,0,0] is inside the convex hull of 'points'.
+    points: (N,3) array of force vectors
+    """
+    try:
+        hull = ConvexHull(points) # Will error with degenerate points
+        delaunay = Delaunay(points[hull.vertices])
+        return delaunay.find_simplex([0,0,0]) >= 0
+    except:
+        return False
+
+def compute_grasp_metrics(F_array, pos_contact, cyl_center, cyl_direction, n_perturb=20, sigma_pos=1e-4):
+    """
+    Compute grasp metrics for a single frame.
+    
+    Args:
+        F_array       : (n_nodes, 3) total force vectors at contacting nodes
+        pos_contact   : (3, n_nodes) positions of contacting nodes
+        cyl_center    : (3,) center of cylinder
+        cyl_direction : (3,) cylinder axis (unit vector)
+        n_perturb     : number of perturbation samples for robust FC
+        sigma_pos     : standard deviation of contact position perturbation (m)
+        
+    Returns:
+        FC_boolean    : True if FC_metric > 0
+        FC_metric     : Ferrari-Canny metric (min distance from hull to origin)
+        RFC_score     : robust force closure score in [0,1]
+    """
+    n_nodes = F_array.shape[0]
+    if n_nodes < 3:
+        return False, 0, 0
+    
+    # Force closure boolean
+    force_closure = origin_in_hull(F_array)
+    
+    # Ferrari Canny
+    try:
+        hull = ConvexHull(F_array)
+        hull_vertices = F_array[hull.vertices]
+        ferrari_canny = np.min(np.linalg.norm(hull_vertices, axis=1))
+    except:
+        ferrari_canny = 0
+    
+    # Robust force closure
+    success_count = 0
+    for _ in range(n_perturb):
+        perturb = np.random.normal(0, sigma_pos, size=(n_nodes, 3))
+        F_array_pert = F_array + perturb
+        success_count += origin_in_hull(F_array_pert)
+    robust_force_closure = success_count / n_perturb
+
+    # Max torque
+    tau_net = np.zeros(3)
+    for i in range(n_nodes):
+        r_i = pos_contact[:, i] - cyl_center
+        f_i = F_array[i]
+        tau_net += np.cross(r_i, f_i)
+    max_torque = np.linalg.norm(tau_net)
+
+    # Angular fraction
+    angular_frac = 0
+    # print(pos_contact)
+    # cyl_axis_unit = cyl_direction / np.linalg.norm(cyl_direction)
+    # vec = pos_contact - cyl_center[:, None]
+    # vec_proj = vec - cyl_axis_unit[:, None] * np.sum(vec * cyl_axis_unit[:, None], axis=0)
+    # angles = np.arctan2(vec_proj[1], vec_proj[0])
+    # angles = np.mod(angles, 2 * np.pi)
+    # angles_sorted = np.sort(angles)
+    # # print(angles_sorted)
+    # gaps = np.diff(np.concatenate([angles_sorted, [angles_sorted[0] + 2 * np.pi]]))
+    # max_gap = np.max(gaps)
+    # angular_frac = 1.0 - max_gap / (2 * np.pi)
+    
+    return force_closure, ferrari_canny, robust_force_closure, max_torque, angular_frac
+
+def compute_total_energy(finger, n_forces, k):
+    """
+    Compute total potential energy for a single frame.
+
+    Args:
+        finger     : CosseratRod object
+        n_forces   : normal contact forces at those nodes
+        k  : contact stiffness
+
+    Returns:
+        U_total    : total potential energy (J)
+    """
+    # Approx elastic energy
+    U_elastic = 0.0
+    for i in range(finger.n_elems - 1):
+        d_i   = finger.director_collection[:, 2, i]
+        d_ip1 = finger.director_collection[:, 2, i+1]
+        ds = finger.rest_lengths[i]           # element length
+        kappa = (d_ip1 - d_i) / ds            # curvature approximation
+        U_elastic += 0.5 * np.dot(kappa, finger.bend_matrix[..., i] @ kappa)
+
+    # Contact energy
+    if len(n_forces) > 0:
+        U_contact = np.sum(0.5 * n_forces**2 / k)
+    else:
+        U_contact = 0.0
+
+    U_total = U_elastic + U_contact
+    return U_total
+
 #####################################
 ## Simulation parameters and setup
 #####################################
@@ -103,8 +277,8 @@ base_radius = 0.011/2
 density = 997.7
 youngs_modulus = 3e6 # 3e5 original, E
 shear_modulus = 1.2e6 # 1.2e5 original, G < E
-tension = 3.0 # tendon tension force in Newtons
-eps = 0.3 # % softer at the tip
+tension = 3.5 # tendon tension force in Newtons
+eps = 0.7 # % softer at the tip
 damping_constant = 0.001 # original 0.002, 0 means no internal damping
 k = 1e1
 nu = 1 # velocity damping coefficient
@@ -182,8 +356,8 @@ sim.add_forcing_to(finger).using(
     TendonForces,
     vertebra_height=0.010, 
     num_vertebrae=30,
-    first_vertebra_node=3,
-    final_vertebra_node=n_elements - 3,
+    first_vertebra_node=2,
+    final_vertebra_node=n_elements - 1,
     vertebra_mass=vertebra_mass,
     tension=tension,
     vertebra_height_orientation=np.array([0.0, 0.0, -1.0]),
@@ -257,6 +431,46 @@ position_data = callback_data_finger["position"]
 directors_data = callback_data_finger["directors"]
 forces_data    = callback_data_finger["forces"]  # forces
 velocity_data  = callback_data_finger["velocity"]
+
+# Cylinder info
+cyl_center = cylinder.position_collection[:, 0]
+
+grasp_metrics = []
+
+for frame_idx, (pos, vel) in enumerate(zip(position_data, velocity_data)):
+    t = frame_idx * step_skip * time_step
+
+    indices, n_forces, n_vel, t_speed, f_forces = compute_contact_metrics_frame(
+        pos, vel, cyl_center, cyl_direction, cyl_radius, k, mu
+    )
+
+    # Force array around cylinder
+    F_array = np.zeros((len(indices), 3))
+    for j, idx in enumerate(indices):
+        radial = pos[:, idx] - cyl_center
+        radial_norm = np.linalg.norm(radial) + 1e-12
+        F_array[j] = n_forces[j] * (radial / radial_norm)
+        
+        # Add friction
+        tan = np.array([-radial[1], radial[0], 0.0])
+        tan /= np.linalg.norm(t) + 1e-12
+        F_array[j] += mu * n_forces[j] * tan
+
+    metrics = compute_grasp_metrics(F_array, pos[:, indices], cyl_center, cyl_direction) if len(indices) != 0 else (False, 0, 0, 0, 0)
+
+    # Calculate potential energy
+    finger.position_collection[:] = pos
+    finger.velocity_collection[:] = vel
+    U_total = compute_total_energy(finger, n_forces, k)
+
+    grasp_metrics.append([frame_idx, t, len(indices), *metrics, U_total])
+
+with open("grasp_metrics.csv", "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["Frame", "Time", "Contact Sim Points", "Force Closure", "Ferrari-Canny", "Robust Force Closure", "Max Torque", "Angular Fraction", "Potential Energy"])
+    for row in grasp_metrics:
+        writer.writerow(row)
+
 
 # Creating a 3D plot
 fig = plt.figure()
@@ -381,73 +595,6 @@ clip = VideoClip(make_frame, duration=final_time)
 
 # displaying animation with auto play and looping
 clip.write_videofile("squirrel_finger_perching.mp4", codec="libx264", fps=rendering_fps)
-
-
-# Compute contact forces and evaluations
-def compute_contact_metrics_frame(
-    rod_pos,
-    rod_vel,
-    cyl_center,
-    cyl_axis,
-    cyl_radius,
-    k,
-    mu,
-):
-    """
-    rod_pos   : (3, n_nodes)
-    rod_vel   : (3, n_nodes)
-    cyl_center: (3,)
-    cyl_axis  : (3,)
-    cyl_radius: float
-    k         : normal stiffness (same as RodCylinderContact.k)
-    mu        : friction coefficient (same as RodCylinderContact.friction_coefficient)
-
-    Returns:
-        indices          : node indices in contact
-        normal_forces    : normal force magnitudes (k * penetration)
-        normal_vel       : normal component of velocity (m/s)
-        tangential_speed : |v_t| at node (m/s)
-        friction_forces  : Coulomb friction magnitudes (mu * normal_force)
-    """
-
-    cyl_axis = cyl_axis / np.linalg.norm(cyl_axis)
-
-    # N x 3 arrays
-    rel = rod_pos.T - cyl_center[None, :] 
-    proj_len = np.dot(rel, cyl_axis)
-    proj = np.outer(proj_len, cyl_axis)
-    radial = rel - proj
-    radial_dist = np.linalg.norm(radial, axis=1)
-
-    eps = 1e-12
-    normal_vec = np.zeros_like(radial)
-    mask_nonzero = radial_dist > eps
-    normal_vec[mask_nonzero] = radial[mask_nonzero] / radial_dist[mask_nonzero, None]
-
-    # penetration (penalty model)
-    overlap = cyl_radius - radial_dist
-    contact_mask = overlap > 0.0
-
-    normal_force_mag = k * np.clip(overlap, a_min=0.0, a_max=None)
-
-    # velocities
-    vel = rod_vel.T 
-    normal_vel = np.sum(vel * normal_vec, axis=1) 
-    vel_t = vel - normal_vel[:, None] * normal_vec
-    tangential_speed = np.linalg.norm(vel_t, axis=1)
-
-    friction_force_mag = mu * normal_force_mag
-
-    # only keep contacting nodes
-    idx = np.where(contact_mask)[0]
-
-    return (
-        idx,
-        normal_force_mag[idx],
-        normal_vel[idx],
-        tangential_speed[idx],
-        friction_force_mag[idx],
-    )
 
 ###################################
 # contact logging to CSV
