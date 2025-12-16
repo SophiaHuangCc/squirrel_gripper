@@ -1,8 +1,7 @@
 """
 single_finger_manual.py
 
-Single-run version of your sweep script (no sweeping).
-You manually tune:
+Manually tune:
 - E, G, tension
 - joint model (rigid_mult, joint_indices, joint_mult)
 - cylinder position/size
