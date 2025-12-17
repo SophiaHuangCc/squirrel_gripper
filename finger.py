@@ -20,6 +20,7 @@ import matplotlib
 matplotlib.use("Agg")  # headless
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D 
+import csv
 
 from moviepy.editor import VideoClip
 from moviepy.video.io.bindings import mplfig_to_npimage
@@ -87,6 +88,52 @@ def apply_rigid_links_soft_joints(finger, rigid_mult, joint_indices, joint_mult)
         finger.bend_matrix[2, 2, j] *= joint_mult
 
 
+def compute_contact_metrics_frame(
+    rod_pos,      # (3, n_nodes)
+    rod_vel,      # (3, n_nodes)
+    cyl_center,   # (3,)
+    cyl_axis,     # (3,)
+    cyl_radius,   # float
+    k,            # normal stiffness (same as RodCylinderContact.k)
+    mu,           # friction coefficient
+):
+    cyl_axis = cyl_axis / (np.linalg.norm(cyl_axis) + 1e-12)
+
+    rel = rod_pos.T - cyl_center[None, :]          # (N,3)
+    proj_len = np.dot(rel, cyl_axis)               # (N,)
+    proj = np.outer(proj_len, cyl_axis)            # (N,3)
+    radial = rel - proj                            # (N,3)
+    radial_dist = np.linalg.norm(radial, axis=1)   # (N,)
+
+    # outward unit normal from cylinder axis to node
+    normal_vec = np.zeros_like(radial)
+    mask = radial_dist > 1e-12
+    normal_vec[mask] = radial[mask] / radial_dist[mask, None]
+
+    overlap = cyl_radius - radial_dist             # >0 => penetration/contact
+    contact_mask = overlap > 0.0
+
+    normal_force_mag = k * np.clip(overlap, 0.0, None)
+
+    vel = rod_vel.T
+    normal_vel = np.sum(vel * normal_vec, axis=1)
+    vel_t = vel - normal_vel[:, None] * normal_vec
+    tangential_speed = np.linalg.norm(vel_t, axis=1)
+
+    friction_force_mag = mu * normal_force_mag
+
+    idx = np.where(contact_mask)[0]
+    return (
+        idx,
+        normal_force_mag[idx],
+        normal_vel[idx],
+        tangential_speed[idx],
+        friction_force_mag[idx],
+        radial_dist,          # return full arrays for debugging
+        overlap,              # return full arrays for debugging
+    )
+
+
 def run_one_manual():
 
     outdir = "manual_videos"
@@ -98,7 +145,7 @@ def run_one_manual():
     G = 1.2e5
 
     # Tendon
-    tension = 2.0 # N
+    tension = 0.5 # N
 
     # Finger geometry (10cm long, 1cm diameter)
     base_length = 0.10
@@ -108,27 +155,27 @@ def run_one_manual():
 
     # Joint model (3 joints / 4 links)
     rigid_mult = 1e2 # links stiffness multiplier
-    joint_indices = [20, 50, 80]
-    joint_mult = 1e-4 # joints relative to links (smaller = softer joints)
+    joint_indices = [30, 50, 68]
+    joint_mult = 1e-7 # joints relative to links (smaller = softer joints)
 
     # Damping (internal)
     damping_constant = 0
 
     # Cylinder geometry/pose
-    cyl_radius = 0.01
+    cyl_radius = 0.02
     cyl_length = 0.20
     cyl_density = 1200.0
 
-    cyl_start = np.array([0.02, -cyl_length / 2.0, -0.02])
+    cyl_start = np.array([0.025, -cyl_length / 2.0, -0.02])
 
     cyl_direction = np.array([0.0, 1.0, 0.0])
     cyl_normal = np.array([1.0, 0.0, 0.0])
 
     # Contact params
     k_contact = 2e2
-    nu_contact = 2.0
-    mu_contact = 0.8 # 0.4
-    vel_damp_contact = 0 # 5e1
+    nu_contact = 5.0
+    mu_contact = 6 # 0.4
+    vel_damp_contact = 2e1 # 5e1
 
     # Tendon geometry
     vertebra_mass = 0.003
@@ -236,6 +283,7 @@ def run_one_manual():
         def make_callback(self, system, time, current_step):
             if current_step % self.every == 0:
                 self.data["pos"].append(system.position_collection.copy())
+                self.data["vel"].append(system.velocity_collection.copy())
                 if np.isnan(system.position_collection).any():
                     raise RuntimeError("NaN encountered")
 
@@ -248,8 +296,83 @@ def run_one_manual():
     integrate(timestepper, sim, final_time, total_steps)
 
     pos_data = data["pos"]
+    vel_data = data["vel"]
     if len(pos_data) < 2:
         raise RuntimeError("No saved frames")
+    
+    # --------------------------
+    # Contact logging (debug)
+    # --------------------------
+    cyl_center = cylinder.position_collection[:, 0].copy()
+    # IMPORTANT: cylinder axis direction — depending on Elastica's cylinder director convention,
+    # this might be [2,:,0] or [0,:,0]. We'll try both and pick the one that yields more contact.
+    axis_cand = [
+        cylinder.director_collection[2, :, 0].copy(),
+        cylinder.director_collection[0, :, 0].copy(),
+    ]
+
+    k_contact = k_contact        # uses your manual params
+    mu_contact = mu_contact
+    dt_saved = step_skip * time_step
+
+    best = None
+    for a in axis_cand:
+        total_contacts = 0
+        min_rad = np.inf
+        for P, V in zip(pos_data, vel_data):
+            (_, _, _, _, _, radial_dist, _) = compute_contact_metrics_frame(
+                P, V, cyl_center, a, cyl_radius, k_contact, mu_contact
+            )
+            min_rad = min(min_rad, float(np.min(radial_dist)))
+            total_contacts += int(np.sum((cyl_radius - radial_dist) > 0.0))
+        best = max(best, (total_contacts, min_rad, a), key=lambda x: x[0]) if best else (total_contacts, min_rad, a)
+
+    total_contacts, min_rad, cyl_axis = best
+    print(f"[CONTACT DEBUG] total_contact_node_hits_over_all_frames={total_contacts}")
+    print(f"[CONTACT DEBUG] min_distance_to_cylinder_axis={min_rad:.6f} (radius={cyl_radius:.6f})")
+    if total_contacts == 0:
+        print("[CONTACT DEBUG] No penetration detected => rod never actually reaches the cylinder (or axis dir wrong).")
+
+    first_contact_frame = None
+    max_normal_force_overall = 0.0
+
+    with open("contact_log.csv", "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "frame_idx", "time", "node_idx",
+            "radial_dist", "overlap",
+            "normal_force", "normal_velocity", "tangential_speed", "friction_force"
+        ])
+
+        for frame_idx, (P, V) in enumerate(zip(pos_data, vel_data)):
+            t = frame_idx * dt_saved
+            (idx, nF, nV, tS, fF, radial_dist_all, overlap_all) = compute_contact_metrics_frame(
+                P, V, cyl_center, cyl_axis, cyl_radius, k_contact, mu_contact
+            )
+
+            if len(idx) > 0:
+                frame_max = float(np.max(nF))
+                max_normal_force_overall = max(max_normal_force_overall, frame_max)
+                if first_contact_frame is None:
+                    first_contact_frame = frame_idx
+
+            for j, node_idx in enumerate(idx):
+                writer.writerow([
+                    frame_idx, t, int(node_idx),
+                    float(radial_dist_all[node_idx]),
+                    float(overlap_all[node_idx]),
+                    float(nF[j]),
+                    float(nV[j]),
+                    float(tS[j]),
+                    float(fF[j]),
+                ])
+
+    if first_contact_frame is None:
+        print("[CONTACT] No contact in any saved frame. (Likely cylinder too far, too small, or axis mismatch.)")
+    else:
+        print(f"[CONTACT] First contact frame={first_contact_frame}  t={first_contact_frame*dt_saved:.4f}s")
+        print(f"[CONTACT] Max normal force over all frames: {max_normal_force_overall:.6f} N")
+        print("[CONTACT] Wrote contact_log.csv")
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
@@ -261,6 +384,15 @@ def run_one_manual():
 
         P = pos_data[idx]
         ax.scatter(P[0], P[1], P[2], s=6)
+        for j in joint_indices:
+            j = int(np.clip(j, 0, P.shape[1] - 1))
+            ax.scatter(
+                P[0, j], P[1, j], P[2, j],
+                color="red",
+                s=20,
+                depthshade=False,
+                zorder=10,
+            )
 
         ax.set_xlim(-0.02, 0.12)
         ax.set_ylim(-0.12, 0.12)
