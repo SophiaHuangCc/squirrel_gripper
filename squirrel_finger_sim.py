@@ -263,7 +263,7 @@ def compute_total_energy(finger, n_forces, k):
 #####################################
 # Simulation parameters
 final_time = 2.0
-time_step = 5e-6 # 1.8e-5 original
+time_step = 1.8e-5 # 1.8e-5 original, 5e-6 for stability with joints
 rendering_fps = 30.0
 total_steps = int(final_time / time_step)
 step_skip = int(1.0 / (rendering_fps * time_step))
@@ -271,15 +271,15 @@ step_skip = int(1.0 / (rendering_fps * time_step))
 # Create rod (finger)
 direction = np.array([1.0, 0.0, 0.0])
 normal = np.array([0.0, 0.0, 1.0])
-base_length = 0.3 # in meters for finger
-n_elements = 100
-base_radius = 0.011/2
+base_length = 0.1 # in meters for finger
+n_elements = 80
+base_radius = 0.005
 density = 997.7
-youngs_modulus = 3e6 # 3e5 original, E
-shear_modulus = 1.2e6 # 1.2e5 original, G < E
-tension = 3.5 # tendon tension force in Newtons
-eps = 0.7 # % softer at the tip
-damping_constant = 0.001 # original 0.002, 0 means no internal damping
+youngs_modulus = 3e5 # 3e5 original, E
+shear_modulus = 1.2e5 # 1.2e5 original, G < E
+tension = 0.5 # tendon tension force in Newtons
+eps = 0.3 # % softer at the tip
+damping_constant = 5e-4 # original 0.002, 0 means no internal damping
 k = 1e1
 nu = 1 # velocity damping coefficient
 mu = 0.5 # friction coefficient
@@ -312,12 +312,26 @@ sim.append(finger)
 # s = np.linspace(0, 1, n_elements - 1)
 # profile = 1.0 + eps * (1.0 - s**2)
 # 3) non-uniform alternative 3
-s = np.linspace(0, 1, n_elements - 1)
-profile = 1.0 - eps * (s**2)        # base: 1.0, tip: 0.5
+# s = np.linspace(0, 1, n_elements - 1)
+# profile = 1.0 - eps * (s**2)        # base: 1.0, tip: 0.5
 
-for i in range(n_elements - 1):
-    finger.bend_matrix[1, 1, i] *= profile[i]
-    finger.bend_matrix[2, 2, i] *= profile[i]
+# for i in range(n_elements - 1):
+#     finger.bend_matrix[1, 1, i] *= profile[i]
+#     finger.bend_matrix[2, 2, i] *= profile[i]
+finger.bend_matrix[1, 1, :] *= 1e3
+finger.bend_matrix[2, 2, :] *= 1e3
+
+# 4) 3 joints
+joint_indices = [
+    int(0.25 * (n_elements - 1)),
+    int(0.50 * (n_elements - 1)),
+    int(0.75 * (n_elements - 1)),
+]
+# Make joints soft
+joint_soft_factor = 1e-6  # smaller => softer joint (start here)
+for j in joint_indices:
+    finger.bend_matrix[1, 1, j] *= joint_soft_factor
+    finger.bend_matrix[2, 2, j] *= joint_soft_factor
 
 # Create cylinder
 cyl_radius = 0.03
@@ -356,8 +370,10 @@ sim.add_forcing_to(finger).using(
     TendonForces,
     vertebra_height=0.010, 
     num_vertebrae=30,
-    first_vertebra_node=2,
-    final_vertebra_node=n_elements - 1,
+    # first_vertebra_node=3,
+    # final_vertebra_node=n_elements - 3,
+    first_vertebra_node=joint_indices[0],
+    final_vertebra_node=joint_indices[-1],
     vertebra_mass=vertebra_mass,
     tension=tension,
     vertebra_height_orientation=np.array([0.0, 0.0, -1.0]),
@@ -512,7 +528,7 @@ def make_frame(t):
     
     num_vertebrae = 6
     first_vertebra_node = 2
-    final_vertebra_node = 98
+    final_vertebra_node = n_elements - 2
     vertebra_nodes = []
     vertebra_increment = (final_vertebra_node - first_vertebra_node)/(num_vertebrae - 1)
     for i in range(num_vertebrae):
@@ -729,4 +745,4 @@ except Exception:
 ax.view_init(elev=30, azim=30)
 plt.tight_layout()
 plt.savefig("squirrel_finger_final_frame.png", dpi=200)
-# plt.show()
+plt.show()
