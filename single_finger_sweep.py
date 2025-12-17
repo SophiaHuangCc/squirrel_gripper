@@ -13,6 +13,7 @@ Outputs one mp4 per combination into ./sweep_videos/
 import os
 import numpy as np
 from collections import defaultdict
+import csv
 
 import matplotlib
 matplotlib.use("Agg")  # headless
@@ -34,6 +35,8 @@ from elastica.rigidbody.cylinder import Cylinder
 from elastica.contact_forces import RodCylinderContact
 
 from TendonForces import TendonForces
+
+from grasp_metrics import check_force_closure, compute_ferrari_canny, compute_robust_force_closure, compute_max_torque, compute_total_energy
 
 
 # ---------------- Simulator class ---------------- #
@@ -101,6 +104,75 @@ def apply_segmented_profile(finger, segment_mults):
         a, b = edges[s], edges[s + 1]
         finger.bend_matrix[:, :, a:b] *= segment_mults[s]
 
+def compute_contact_points(
+    rod_pos,
+    cyl_start,
+    cyl_axis,
+    cyl_radius,
+    rod_radius,
+    k
+):
+    # find radial distance to cyl axis
+    rel = rod_pos - cyl_start[None, :]
+    proj_len = np.dot(rel, cyl_axis)
+    proj = np.outer(proj_len, cyl_axis)
+    radial = rel - proj
+    radial_dist = np.linalg.norm(radial, axis=1)
+
+    # filter data for only contact points
+    penetration = cyl_radius + rod_radius - radial_dist
+    contact_idxs = penetration > 0
+    if np.sum(contact_idxs) == 0:
+        return None, None, None
+    
+    contact_pos = rod_pos[contact_idxs]
+    contact_radial = radial[contact_idxs]
+    contact_radial_dist = radial_dist[contact_idxs]
+    contact_pen = penetration[contact_idxs]
+    
+    # calculate forces
+    normals = contact_radial / contact_radial_dist[:, None]
+    forces = contact_pen * k
+
+    return contact_pos, normals, forces
+
+def transform_contacts(contact_pos, normals, cyl_axis, eps=1e-8):
+    """
+    Rotate contact positions and normals so that the cylinder axis aligns with x-axis.
+
+    Parameters
+    ----------
+    contact_pos : (N,3) np.ndarray
+        Contact positions.
+    normals : (N,3) np.ndarray
+        Unit normals at contact points.
+    cyl_axis : (3,) np.ndarray
+        Original cylinder axis (unit vector).
+
+    Returns
+    -------
+    contact_pos_new : (N,3) np.ndarray
+        Transformed contact positions.
+    normals_new : (N,3) np.ndarray
+        Transformed normals.
+    """
+    x_axis = np.array([1, 0, 0])
+    v = np.cross(cyl_axis, x_axis)
+    s = np.linalg.norm(v)
+    c = np.dot(cyl_axis, x_axis)
+    
+    if s < eps:
+        R = np.eye(3)
+    else:
+        vx = np.array([[0, -v[2], v[1]],
+                       [v[2], 0, -v[0]],
+                       [-v[1], v[0], 0]])
+        R = np.eye(3) + vx + vx @ vx * ((1 - c) / (s**2))
+    
+    contact_pos_aligned = (R @ contact_pos.T).T
+    normals_aligned = (R @ normals.T).T
+
+    return contact_pos_aligned, normals_aligned
 
 # ---------------- One full simulation run ---------------- #
 def run_one(
@@ -121,6 +193,10 @@ def run_one(
     outdir = "sweep_videos"
     os.makedirs(outdir, exist_ok=True)
     video_path = os.path.join(outdir, f"{run_id}.mp4")
+
+    outdir = "sweep_metrics"
+    os.makedirs(outdir, exist_ok=True)
+    metrics_path = os.path.join(outdir, f"{run_id}.csv")
 
     print(f"\n==== {run_id} ====")
     print(f"Mode={stiffness_mode} | E={E:.2e} G={G:.2e} T={tension:.2f}")
@@ -262,9 +338,12 @@ def run_one(
 
         def make_callback(self, system, time, current_step):
             if current_step % self.every == 0:
-                self.data["pos"].append(system.position_collection.copy())
-                if np.isnan(system.position_collection).any():
+                if np.isnan(system.position_collection).any() or np.isnan(system.velocity_collection).any():
                     raise RuntimeError("NaN encountered")
+                self.data["frame"].append(current_step)
+                self.data["time"].append(time)
+                self.data["pos"].append(system.position_collection.copy())
+                self.data["vel"].append(system.velocity_collection.copy())
 
     data = defaultdict(list)
     sim.collect_diagnostics(finger).using(CB, step_skip=step_skip, data=data)
@@ -283,6 +362,31 @@ def run_one(
     if len(pos_data) < 2:
         print(f"[FAIL] {run_id}: no saved frames")
         return
+    
+    # log metrics
+    grasp_metrics = [["Frame", "Time", "Contact Points", "Force Closure", "Ferrari-Canny", "Robust Force Closure", "Max Torque"]]
+    for frame, time, pos, vel in zip(data["frame"], data["time"], data["pos"], data["vel"]):
+        contact_pos, normals, forces = compute_contact_points(pos.T, cyl_start, cyl_direction, cyl_radius, base_radius, k_contact)
+        # finger.position_collection[:] = pos
+        # finger.velocity_collection[:] = vel
+        # U_total = compute_total_energy(finger, forces, k_contact)
+
+        if contact_pos is None:
+            grasp_metrics.append([frame, time, None, False, 0, 0, 0])
+            continue
+        contact_pos_align, normals_align = transform_contacts(contact_pos, normals, cyl_direction)
+        
+        force_closure = check_force_closure(contact_pos_align, normals_align, mu_contact)
+        ferrari_canny = compute_ferrari_canny(contact_pos_align, normals_align, mu_contact)
+        robust_force_closure = compute_robust_force_closure(contact_pos_align, normals_align, mu_contact)
+        max_torque = compute_max_torque(contact_pos, normals, forces, mu_contact, cyl_direction, cyl_start)
+        
+        grasp_metrics.append([frame, time, contact_pos, force_closure, ferrari_canny, robust_force_closure, max_torque])
+
+    with open(metrics_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        for row in grasp_metrics:
+            writer.writerow(row)
 
     # video render
     fig = plt.figure()
