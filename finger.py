@@ -74,19 +74,43 @@ def draw_cylinder(ax, center, axis_dir, radius, length,
     ax.plot_surface(X, Y, Z, color=color, alpha=alpha, linewidth=0, shade=True)
 
 
-def apply_rigid_links_soft_joints(finger, rigid_mult, joint_indices, joint_mult):
+# def apply_rigid_links_soft_joints(finger, rigid_mult, joint_indices, joint_mult):
+#     """
+#     Make rod globally rigid-ish, then locally soften a few "joint" elements.
+#     - rigid_mult multiplies bend_matrix everywhere (links)
+#     - joint_mult multiplies bend_matrix at joint_indices (joints)
+#     """
+#     finger.bend_matrix *= rigid_mult
+
+#     for j in joint_indices:
+#         j = int(np.clip(j, 0, finger.bend_matrix.shape[2] - 1))
+#         finger.bend_matrix[1, 1, j] *= joint_mult
+#         finger.bend_matrix[2, 2, j] *= joint_mult
+
+def apply_rigid_links_soft_joints(
+    finger,
+    rigid_mult,
+    joint_indices,
+    joint_mult,
+    joint_half_width_elems=2,   # <-- NEW: joint "length" control
+):
     """
-    Make rod globally rigid-ish, then locally soften a few "joint" elements.
-    - rigid_mult multiplies bend_matrix everywhere (links)
-    - joint_mult multiplies bend_matrix at joint_indices (joints)
+    - rigid_mult multiplies bend_matrix everywhere
+    - for each joint index, soften a band of elements [j-w, ..., j+w]
+      so the joint has finite length (not a single hinge element)
     """
     finger.bend_matrix *= rigid_mult
 
-    for j in joint_indices:
-        j = int(np.clip(j, 0, finger.bend_matrix.shape[2] - 1))
-        finger.bend_matrix[1, 1, j] *= joint_mult
-        finger.bend_matrix[2, 2, j] *= joint_mult
+    ne = finger.bend_matrix.shape[2]
+    w = int(joint_half_width_elems)
 
+    for j0 in joint_indices:
+        j0 = int(np.clip(j0, 0, ne - 1))
+        j_start = max(0, j0 - w)
+        j_end   = min(ne - 1, j0 + w)
+
+        finger.bend_matrix[1, 1, j_start:j_end+1] *= joint_mult
+        finger.bend_matrix[2, 2, j_start:j_end+1] *= joint_mult
 
 def compute_contact_metrics_frame(
     rod_pos,      # (3, n_nodes)
@@ -133,6 +157,36 @@ def compute_contact_metrics_frame(
         overlap,              # return full arrays for debugging
     )
 
+class TendonForcesRamp(TendonForces):
+    """
+    Wrapper that ramps tension from 0 -> tension over ramp_up_time.
+    Doesn't require modifying your TendonForces implementation.
+    """
+    def __init__(self, *args, ramp_up_time=0.2, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._tension_nominal = float(kwargs.get("tension", getattr(self, "tension", 0.0)))
+        self.ramp_up_time = float(ramp_up_time)
+
+    def _ramp_factor(self, time):
+        if self.ramp_up_time <= 0:
+            return 1.0
+        s = min(1.0, max(0.0, float(time) / self.ramp_up_time))
+        # smooth cosine ramp (less jerk than linear)
+        return 0.5 * (1.0 - np.cos(np.pi * s))
+
+    def apply_forces(self, system, time=0.0):
+        factor = self._ramp_factor(time)
+        old = self.tension
+        self.tension = self._tension_nominal * factor
+        super().apply_forces(system, time)
+        self.tension = old
+
+    def apply_torques(self, system, time=0.0):
+        factor = self._ramp_factor(time)
+        old = self.tension
+        self.tension = self._tension_nominal * factor
+        super().apply_torques(system, time)
+        self.tension = old
 
 def run_one_manual():
 
@@ -140,9 +194,9 @@ def run_one_manual():
     os.makedirs(outdir, exist_ok=True)
     video_path = os.path.join(outdir, "manual_run.mp4")
 
-    # Material (Pa)
-    E = 3.0e5
-    G = 1.2e5
+    # Material (Pa): TPU - Thermoplastic Polyurethane
+    E = 2e7
+    G = 7e6
 
     # Tendon
     tension = 0.5 # N
@@ -154,34 +208,34 @@ def run_one_manual():
     density = 997.7
 
     # Joint model (3 joints / 4 links)
-    rigid_mult = 1e2 # links stiffness multiplier
+    rigid_mult = 1e1 # links stiffness multiplier
     joint_indices = [30, 50, 68]
-    joint_mult = 1e-7 # joints relative to links (smaller = softer joints)
+    joint_mult = 1e-6 # joints relative to links (smaller = softer joints)
 
     # Damping (internal)
-    damping_constant = 0
+    damping_constant = 0.5
 
     # Cylinder geometry/pose
-    cyl_radius = 0.02
+    cyl_radius = 0.015
     cyl_length = 0.20
     cyl_density = 1200.0
 
-    cyl_start = np.array([0.025, -cyl_length / 2.0, -0.02])
+    cyl_start = np.array([0.025, -cyl_length / 2.0, -0.025])
 
     cyl_direction = np.array([0.0, 1.0, 0.0])
     cyl_normal = np.array([1.0, 0.0, 0.0])
 
     # Contact params
-    k_contact = 2e2
+    k_contact = 2e1 # smaller absorbs more normal contact forces
     nu_contact = 5.0
-    mu_contact = 6 # 0.4
-    vel_damp_contact = 2e1 # 5e1
+    mu_contact = 0.4 # 0.4
+    vel_damp_contact = 5 # 5e1
 
     # Tendon geometry
-    vertebra_mass = 0.003
+    vertebra_mass = 0.01
     num_vertebrae = 16
-    first_vertebra_node = 3
-    final_vertebra_node = n_elements - 3
+    first_vertebra_node = 4
+    final_vertebra_node = n_elements - 1
     vertebra_height = 0.010
     vertebra_height_orientation = np.array([0.0, 0.0, -1.0])
 
@@ -217,11 +271,19 @@ def run_one_manual():
     )
     sim.append(finger)
 
+    # apply_rigid_links_soft_joints(
+    #     finger,
+    #     rigid_mult=rigid_mult,
+    #     joint_indices=joint_indices,
+    #     joint_mult=joint_mult,
+    # )
+
     apply_rigid_links_soft_joints(
         finger,
         rigid_mult=rigid_mult,
         joint_indices=joint_indices,
         joint_mult=joint_mult,
+        joint_half_width_elems=1,
     )
 
     cylinder = Cylinder(
@@ -246,7 +308,7 @@ def run_one_manual():
     )
 
     sim.add_forcing_to(finger).using(
-        TendonForces,
+        TendonForcesRamp,
         vertebra_height=vertebra_height,
         num_vertebrae=num_vertebrae,
         first_vertebra_node=first_vertebra_node,
@@ -255,9 +317,10 @@ def run_one_manual():
         tension=tension,
         vertebra_height_orientation=vertebra_height_orientation,
         n_elements=n_elements,
+        ramp_up_time=0.2, # New feature to ramp tension
     )
 
-    # sim.add_forcing_to(finger).using(GravityForces, np.array([0.0, 0.0, -9.80665]))
+    sim.add_forcing_to(finger).using(GravityForces, np.array([0.0, 0.0, -9.80665]))
 
     if damping_constant > 0.0:
         sim.dampen(finger).using(
@@ -274,21 +337,28 @@ def run_one_manual():
         friction_coefficient=mu_contact,
     )
 
+
+
     class CB(CallBackBaseClass):
-        def __init__(self, step_skip, data):
+        def __init__(self, step_skip, callback_params):
             super().__init__()
             self.every = step_skip
-            self.data = data
+            self.callback_params = callback_params
+            # self.finger_ref = finger_ref
 
         def make_callback(self, system, time, current_step):
             if current_step % self.every == 0:
-                self.data["pos"].append(system.position_collection.copy())
-                self.data["vel"].append(system.velocity_collection.copy())
+                self.callback_params["pos"].append(system.position_collection.copy())
+                self.callback_params["vel"].append(system.velocity_collection.copy())
+                # Capture all forces: external + internal (damping, contact, etc)
+                # For the finger (rod), get total forces from all sources
+                total_forces = self.callback_params["external_forces"].copy()
+                self.callback_params["forces"].append(total_forces)
                 if np.isnan(system.position_collection).any():
                     raise RuntimeError("NaN encountered")
 
     data = defaultdict(list)
-    sim.collect_diagnostics(finger).using(CB, step_skip=step_skip, data=data)
+    sim.collect_diagnostics(finger).using(CB, step_skip=step_skip, callback_params=data)
 
     sim.finalize()
 
@@ -304,14 +374,12 @@ def run_one_manual():
     # Contact logging (debug)
     # --------------------------
     cyl_center = cylinder.position_collection[:, 0].copy()
-    # IMPORTANT: cylinder axis direction — depending on Elastica's cylinder director convention,
-    # this might be [2,:,0] or [0,:,0]. We'll try both and pick the one that yields more contact.
     axis_cand = [
         cylinder.director_collection[2, :, 0].copy(),
         cylinder.director_collection[0, :, 0].copy(),
     ]
 
-    k_contact = k_contact        # uses your manual params
+    k_contact = k_contact 
     mu_contact = mu_contact
     dt_saved = step_skip * time_step
 
@@ -397,6 +465,26 @@ def run_one_manual():
         ax.set_xlim(-0.02, 0.12)
         ax.set_ylim(-0.12, 0.12)
         ax.set_zlim(-0.10, 0.10)
+
+        # --- Force visualization (magenta), like reference code ---
+        F = data["forces"][idx]          # (3, n_nodes)
+        mag = np.linalg.norm(F, axis=0)  # (n_nodes,)
+
+        force_scale = 0.02   # tune for visibility in your axis limits
+        step_nodes  = 4
+
+        for i in range(0, F.shape[1], step_nodes):
+            if mag[i] < 1e-6:
+                continue
+            x, y, z = P[0, i], P[1, i], P[2, i]
+            fx, fy, fz = F[0, i], F[1, i], F[2, i]
+            ax.quiver(
+                x, y, z,
+                fx, fy, fz,
+                length=force_scale,
+                normalize=True,
+                color="magenta",
+            )
 
         center = cylinder.position_collection[:, 0]
         axis_dir = cylinder.director_collection[2, :, 0]

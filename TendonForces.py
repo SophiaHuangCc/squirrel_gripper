@@ -111,7 +111,7 @@ class TendonForces(NoForces):
         # Returns an array containing the unit norm vector which describes the orientation of each segment of tendon between vertebrae
 
         # Initializing unit_norm_vector_array to store the unit normed vectors that describe the global orientation of the forces in each vertebra
-        unit_norm_vector_array = np.zeros((len(vertebra_nodes), 3), dtype=np.float64)
+        unit_norm_vector_array = np.zeros((len(vertebra_nodes) + 1, 3), dtype=np.float64) # +1 modified
 
         for i in range(len(vertebra_nodes)+1):
             # There is a +1 in the for loop to account for the force between the first vertebra and the fixed node
