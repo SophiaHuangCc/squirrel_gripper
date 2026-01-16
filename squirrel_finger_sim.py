@@ -110,7 +110,7 @@ k = 1e1
 nu = 1 # velocity damping coefficient
 mu = 0.5 # friction coefficient
 velocity_damping_coefficient = 1e1
-vertebra_mass = 0.01 # mass of each vertebra in kg, almost negligible to start with
+vertebra_mass = 0.002 # mass of each vertebra in kg, almost negligible to start with
 
 dtmax = (base_length / n_elements) * np.sqrt(
         density / max(youngs_modulus, shear_modulus))

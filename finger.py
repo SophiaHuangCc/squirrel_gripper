@@ -12,15 +12,33 @@ Outputs:
   ./manual_videos/manual_run.mp4
 """
 
+# TODO ideas to improve contact performance:
+# solution 1: approach angle change
+# solution 2: increase tendon force towards tip
+# solution 3: change tendon force direction to curl
+# softer cylinder surface (lower k_contact) --done
+# different joint positions
+
 import os
 import numpy as np
 from collections import defaultdict
+import sys
+import argparse
+import time
 
 import matplotlib
-matplotlib.use("Agg")  # headless
-import matplotlib.pyplot as plt
+# matplotlib.use("Agg")  # headless
+# import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D 
 import csv
+
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+if "--debug" in sys.argv:
+    plt.switch_backend("TkAgg")
+    print("[DEBUG] Matplotlib interactive backend enabled.")
+else:
+    plt.switch_backend("Agg")
 
 from moviepy.editor import VideoClip
 from moviepy.video.io.bindings import mplfig_to_npimage
@@ -92,7 +110,7 @@ def apply_rigid_links_soft_joints(
     rigid_mult,
     joint_indices,
     joint_mult,
-    joint_half_width_elems=2,   # <-- NEW: joint "length" control
+    joint_half_width_elems,   # <-- NEW: joint "length" control
 ):
     """
     - rigid_mult multiplies bend_matrix everywhere
@@ -188,65 +206,93 @@ class TendonForcesRamp(TendonForces):
         super().apply_torques(system, time)
         self.tension = old
 
-def run_one_manual():
+def main():
 
-    outdir = "manual_videos"
-    os.makedirs(outdir, exist_ok=True)
-    video_path = os.path.join(outdir, "manual_run.mp4")
+    parser = argparse.ArgumentParser(description="Run Squirrel Finger Simulation.")
+    parser.add_argument(
+        "--sol", type=str, default="standard",
+        choices=["standard", "approach_angle", "nonuniform_tendon", "change_tendon_direction"],
+        help="Select the solution for improved curl")
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Enable debug mode with plot of total force magnitude and direction.")
+    
+    # --- MATERIAL & GEOMETRY PARAMS (Defaulted to your current values) ---
+    parser.add_argument("--E", type=float, default=2e7, help="Youngs Modulus (Pa)")
+    parser.add_argument("--G", type=float, default=7e6, help="Shear Modulus (Pa)")
+    parser.add_argument("--tension", type=float, default=0.4, help="Tendon tension (N)")
+    parser.add_argument("--damping", type=float, default=0.8, help="Internal damping constant")
+    parser.add_argument("--n_elements", type=int, default=80, help="Number of rod elements")
+    
+    # --- CYLINDER PARAMS ---
+    parser.add_argument("--cyl_rad", type=float, default=0.01, help="Cylinder radius (m)")
+    parser.add_argument("--k_contact", type=float, default=2e3, help="Contact stiffness")
+    
+    args = parser.parse_args()
 
-    # Material (Pa): TPU - Thermoplastic Polyurethane
-    E = 2e7
-    G = 7e6
-
-    # Tendon
-    tension = 0.5 # N
-
-    # Finger geometry (10cm long, 1cm diameter)
+    # Parameters from args (key variables to tune)
+    E = args.E
+    G = args.G
+    tension = args.tension
+    n_elements = args.n_elements
+    damping_constant = args.damping
+    k_contact = args.k_contact
+    cyl_radius = args.cyl_rad
+    
+    # Fixed Geometry
     base_length = 0.10
     base_radius = 0.005
-    n_elements = 80 # ~1.25mm per element
-    density = 997.7
+    density = 1200
+    rigid_mult = 1 # links stiffness multiplier
+    # joint_indices = [30, 50, 68]
+    joint_indices = [30, 46, 62]
+    joint_mult = 1e-2 # joints relative to links (smaller = softer joints)
 
-    # Joint model (3 joints / 4 links)
-    rigid_mult = 1e1 # links stiffness multiplier
-    joint_indices = [30, 50, 68]
-    joint_mult = 1e-6 # joints relative to links (smaller = softer joints)
-
-    # Damping (internal)
-    damping_constant = 0.5
-
-    # Cylinder geometry/pose
-    cyl_radius = 0.015
+    wave_speed = np.sqrt(E / density)
+    dx = base_length / n_elements
+    dt_critical = dx / wave_speed
+    
     cyl_length = 0.20
     cyl_density = 1200.0
-
     cyl_start = np.array([0.025, -cyl_length / 2.0, -0.025])
-
     cyl_direction = np.array([0.0, 1.0, 0.0])
     cyl_normal = np.array([1.0, 0.0, 0.0])
 
-    # Contact params
-    k_contact = 2e1 # smaller absorbs more normal contact forces
-    nu_contact = 5.0
-    mu_contact = 0.4 # 0.4
-    vel_damp_contact = 5 # 5e1
+    nu_contact = 5.0 # 5.0~20.0
+    mu_contact = 0.6 # 0.6~1.0
+    vel_damp_contact = 10 # 10~50
 
-    # Tendon geometry
-    vertebra_mass = 0.01
-    num_vertebrae = 16
-    first_vertebra_node = 4
+    vertebra_mass = 0.002
+    num_vertebrae = 4
+    first_vertebra_node = 30
     final_vertebra_node = n_elements - 1
     vertebra_height = 0.010
-    vertebra_height_orientation = np.array([0.0, 0.0, -1.0])
-
-    # Simulation time
+    
     final_time = 2.0
-    time_step = 1.8e-6
+    # time_step = 1.8e-6
+    time_step = 0.1 * dt_critical
     rendering_fps = 30.0
     total_steps = int(final_time / time_step)
     step_skip = int(1.0 / (rendering_fps * time_step))
 
-    print("\n==== MANUAL RUN ====")
+    # Output setup
+    base_outdir = "squirrel_paw_results"
+    os.makedirs(base_outdir, exist_ok=True)
+    import datetime
+    run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    video_path = os.path.join(base_outdir, f"output_{run_id}.mp4")
+    log_path = os.path.join(base_outdir, f"log_{run_id}.txt")
+
+    # Log all arguments used
+    with open(log_path, "w") as f:
+        f.write(f"Simulation Run: {run_id}\n" + "-"*30 + "\n")
+        for arg, value in vars(args).items():
+            f.write(f"{arg}: {value}\n")
+        f.write(f"Calculated Time Steps: {total_steps}\n")
+
+    print(f"\n==== RUNNING: {args.sol} ====")
+    print(f"Logging to: {log_path}")
     print(f"E={E:.2e}  G={G:.2e}  tension={tension:.2f}")
     print(f"rigid_mult={rigid_mult:.1e}  joint_mult={joint_mult:.1e}  joints={joint_indices}")
     print(f"cyl_start={cyl_start}  cyl_radius={cyl_radius}  cyl_length={cyl_length}")
@@ -255,12 +301,38 @@ def run_one_manual():
 
     sim = SquirrelFingerSimulator()
 
+    # Standard/default finger setup
     direction = np.array([1.0, 0.0, 0.0])
     normal = np.array([0.0, 0.0, 1.0])
+    start_pos = np.array([0.0, 0.0, 0.0])
+    v_height_dir = np.array([0.0, 0.0, -1.0])
+
+    # 3 alternative solutions to improve curling around cylinder
+    if args.sol == "approach_angle":
+        print(">>> MODE: Approach Angle Change")
+        direction = np.array([1.0, 0.0, 1.0])
+        direction = direction / np.linalg.norm(direction)
+        normal = np.array([0.0, 1.0, 0.0])
+        start_pos = np.array([0.0, 0.0, -0.02])
+        v_height_dir = np.array([-1.0, 0.0, 1.0])
+        v_height_dir /= np.linalg.norm(v_height_dir)
+    elif args.sol == "nonuniform_tendon":
+        print(">>> MODE: Non-uniform Tendon Force (Increasing toward tip)")
+        # Logic for Solution 2 will go here
+        pass
+
+    elif args.sol == "change_tendon_direction":
+        print(">>> MODE: Change Tendon Direction to Curl")
+        # Logic for Solution 3 will go here
+        # (Usually involves varying the v_height_dir along the rod)
+        pass
+    
+    else:
+        print(">>> MODE: Standard Horizontal")
 
     finger = CosseratRod.straight_rod(
         n_elements=n_elements,
-        start=np.array([0.0, 0.0, 0.0]),
+        start=start_pos,
         direction=direction,
         normal=normal,
         base_length=base_length,
@@ -315,7 +387,7 @@ def run_one_manual():
         final_vertebra_node=final_vertebra_node,
         vertebra_mass=vertebra_mass,
         tension=tension,
-        vertebra_height_orientation=vertebra_height_orientation,
+        vertebra_height_orientation=v_height_dir,
         n_elements=n_elements,
         ramp_up_time=0.2, # New feature to ramp tension
     )
@@ -344,16 +416,15 @@ def run_one_manual():
             super().__init__()
             self.every = step_skip
             self.callback_params = callback_params
-            # self.finger_ref = finger_ref
 
         def make_callback(self, system, time, current_step):
+            if np.isnan(system.position_collection).any():
+                print(f"!!! CRASH !!! NaN detected at step {current_step}, time {time:.4f}")
+                sys.exit(1)
             if current_step % self.every == 0:
                 self.callback_params["pos"].append(system.position_collection.copy())
                 self.callback_params["vel"].append(system.velocity_collection.copy())
-                # Capture all forces: external + internal (damping, contact, etc)
-                # For the finger (rod), get total forces from all sources
-                total_forces = self.callback_params["external_forces"].copy()
-                self.callback_params["forces"].append(total_forces)
+                self.callback_params["forces"].append(system.external_forces.copy())
                 if np.isnan(system.position_collection).any():
                     raise RuntimeError("NaN encountered")
 
@@ -442,6 +513,9 @@ def run_one_manual():
         print(f"[CONTACT] Max normal force over all frames: {max_normal_force_overall:.6f} N")
         print("[CONTACT] Wrote contact_log.csv")
 
+    if args.debug:
+        print("[DEBUG] Plotting total force magnitudes and directions.")
+
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
     idx = 0
@@ -466,25 +540,26 @@ def run_one_manual():
         ax.set_ylim(-0.12, 0.12)
         ax.set_zlim(-0.10, 0.10)
 
-        # --- Force visualization (magenta), like reference code ---
-        F = data["forces"][idx]          # (3, n_nodes)
-        mag = np.linalg.norm(F, axis=0)  # (n_nodes,)
+        # --- Force visualization (magenta) ---
+        if args.debug:
+            F = data["forces"][idx]          # (3, n_nodes)
+            mag = np.linalg.norm(F, axis=0)  # (n_nodes,)
 
-        force_scale = 0.02   # tune for visibility in your axis limits
-        step_nodes  = 4
+            force_scale = 0.02   # tune for visibility in your axis limits
+            step_nodes  = 4
 
-        for i in range(0, F.shape[1], step_nodes):
-            if mag[i] < 1e-6:
-                continue
-            x, y, z = P[0, i], P[1, i], P[2, i]
-            fx, fy, fz = F[0, i], F[1, i], F[2, i]
-            ax.quiver(
-                x, y, z,
-                fx, fy, fz,
-                length=force_scale,
-                normalize=True,
-                color="magenta",
-            )
+            for i in range(0, F.shape[1], step_nodes):
+                if mag[i] < 1e-6:
+                    continue
+                x, y, z = P[0, i], P[1, i], P[2, i]
+                fx, fy, fz = F[0, i], F[1, i], F[2, i]
+                ax.quiver(
+                    x, y, z,
+                    fx, fy, fz,
+                    length=force_scale,
+                    normalize=True,
+                    color="magenta",
+                )
 
         center = cylinder.position_collection[:, 0]
         axis_dir = cylinder.director_collection[2, :, 0]
@@ -500,8 +575,34 @@ def run_one_manual():
     clip.write_videofile(video_path, codec="libx264", fps=rendering_fps, logger=None)
     plt.close(fig)
 
+    if args.debug:
+        fig_live = plt.figure(figsize=(10, 8))
+        ax_live = fig_live.add_subplot(111, projection="3d")
+
+        P = pos_data[-1] 
+        
+        ax_live.scatter(P[0], P[1], P[2], s=10)
+        for j in joint_indices:
+            j = int(np.clip(j, 0, P.shape[1] - 1))
+            ax_live.scatter(P[0, j], P[1, j], P[2, j], color="red", s=40)
+
+        center = cylinder.position_collection[:, 0]
+        axis_dir = cylinder.director_collection[2, :, 0]
+        draw_cylinder(ax_live, center, axis_dir, cyl_radius, cyl_length, color="black", alpha=0.3)
+
+        ax_live.set_xlim(-0.02, 0.12)
+        ax_live.set_ylim(-0.12, 0.12)
+        ax_live.set_zlim(-0.10, 0.10)
+        ax_live.set_title(f"Steady State - Rotate with Mouse (E={E:.1e})")
+
+        ax_live.view_init(elev=30, azim=45)
+
+        plt.show()
+    else:
+        plt.close(fig)
+
     print(f"[OK] saved {video_path}")
 
 
 if __name__ == "__main__":
-    run_one_manual()
+    main()
