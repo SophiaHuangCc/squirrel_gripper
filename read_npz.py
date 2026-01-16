@@ -4,12 +4,18 @@ from mpl_toolkits.mplot3d import Axes3D
 
 # 1. Load your saved data
 # Replace with your actual filename
-data = np.load("squirrel_paw_results/master_log_20260116_011043.npz")
+data = np.load("squirrel_paw_results/master_log_20260116_045841.npz")
 
 # 2. Extract the positions (Frames, 3, Nodes)
 pos = data["position"]
 c_pos = data["cyl_position"]    # Cylinder center (3, 1)
 c_rad = data["cyl_radius"]
+tension = data["tension"]
+cyl_rad = data["cyl_radius"]
+# angle = data["approach_deg"]
+print("Tension used in this simulation:", tension)
+print("Cylinder radius:", cyl_rad)
+# print("Approach angle (deg):", angle)
 
 # 3. Create the interactive 3D plot
 fig = plt.figure(figsize=(10, 8))

@@ -524,23 +524,12 @@ def main():
     data_to_save["metric_contact_count"] = np.array([len(contact_idx)])
     print(f"[METRICS] Force Closure Stable: {is_stable}  Total Energy: {energy_score:.6f} J  Contact Points: {len(contact_idx)}")
 
-    is_fc, metrics = analyze_grasp_from_log(csv_path)
-    data_to_save["geometric_success"] = np.array([is_fc])
-    data_to_save["num_contacts"] = np.array([metrics["num_contacts"]])
-    data_to_save["angular_span"] = np.array([metrics["angular_span"]])
-    data_to_save["total_normal_force"] = np.array([metrics["total_normal_force"]])
-    data_to_save["total_friction_force"] = np.array([metrics["total_friction_force"]])
-    print(f"\n[FORCE CLOSURE] {'ACHIEVED' if is_fc else 'NOT ACHIEVED'}")
-    print(f"  Contacts: {metrics['num_contacts']}")
-    print(f"  Angular span: {metrics['angular_span']:.1f}°")
-    print(f"  Total normal force: {metrics['total_normal_force']:.6f} N")
-    print(f"  Max normal force: {metrics['max_normal_force']:.6f} N")
-    print(f"  Total friction force: {metrics['total_friction_force']:.6f} N")
+    csv_path = f"squirrel_paw_results/contact_log_{run_id}.csv"
+    
+    # filename = f"squirrel_paw_results/master_log_{run_id}.npz"
+    # np.savez_compressed(filename, **data_to_save)
 
-    filename = f"squirrel_paw_results/master_log_{run_id}.npz"
-    np.savez_compressed(filename, **data_to_save)
-
-    print(f"Archive Complete: {filename}")
+    # print(f"Archive Complete: {filename}")
 
 
     pos_data = data["position"]
@@ -630,16 +619,27 @@ def main():
         print(f"[CONTACT] Max normal force over all frames: {max_normal_force_overall:.6f} N")
         print(f"[CONTACT] Wrote squirrel_paw_results/contact_log_{run_id}.csv")
 
-    csv_path = f"squirrel_paw_results/contact_log_{run_id}.csv"
+    
     print(f"\n[AUTO-ANALYSIS] Starting geometric metrics check for: {csv_path}")
     try:
         is_fc, metrics = analyze_grasp_from_log(csv_path)
-        
-        print(f"\n[GEOMETRIC FORCE CLOSURE] {'ACHIEVED' if is_fc else 'NOT ACHIEVED'}")
+        data_to_save["geometric_success"] = np.array([is_fc])
+        data_to_save["num_contacts"] = np.array([metrics["num_contacts"]])
+        data_to_save["angular_span"] = np.array([metrics["angular_span"]])
+        data_to_save["total_normal_force"] = np.array([metrics["total_normal_force"]])
+        data_to_save["total_friction_force"] = np.array([metrics["total_friction_force"]])
+        print(f"\n[FORCE CLOSURE] {'ACHIEVED' if is_fc else 'NOT ACHIEVED'}")
         print(f"  Contacts: {metrics['num_contacts']}")
         print(f"  Angular span: {metrics['angular_span']:.1f}°")
-        print(f"  Total normal force: {metrics['total_normal_force']:.4f} N")
-        
+        print(f"  Total normal force: {metrics['total_normal_force']:.6f} N")
+        print(f"  Max normal force: {metrics['max_normal_force']:.6f} N")
+        print(f"  Total friction force: {metrics['total_friction_force']:.6f} N")
+
+        filename = f"squirrel_paw_results/master_log_{run_id}.npz"
+        np.savez_compressed(filename, **data_to_save)
+
+        print(f"Archive Complete: {filename}")
+
         # Automatically save a 2D projection plot for this specific run
         plot_path = f"squirrel_paw_results/contact_plot_{run_id}.png"
         plot_contacts_2d_from_log(csv_path, output_path=plot_path, show_plot=False)
@@ -647,6 +647,24 @@ def main():
 
     except Exception as e:
         print(f"[AUTO-ANALYSIS] Error during metrics calculation: {e}")
+
+    summary_file = "squirrel_paw_results/sweep_summary.csv"
+    file_exists = os.path.isfile(summary_file)
+
+    with open(summary_file, mode='a', newline='') as f:
+        writer = csv.writer(f)
+        # Write header only if file is new
+        if not file_exists:
+            writer.writerow(["run_id", "sol", "E", "tension", "cyl_rad", "approach_deg", 
+                            "geometric_fc", "angular_span", "num_contacts", "total_energy"])
+        
+        # Write the results for THIS run
+        writer.writerow([
+            run_id, args.sol, E, tension, cyl_radius, args.approach_deg,
+            is_fc, metrics['angular_span'], metrics['num_contacts'], 
+            # Note: assuming you calculated energy earlier
+            data_to_save.get("metric_energy_total", [0])[0] 
+        ])
 
     if args.debug:
         print("[DEBUG] Plotting total force magnitudes and directions.")

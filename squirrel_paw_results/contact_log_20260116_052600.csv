@@ -1,0 +1,2 @@
+frame_idx,time,node_idx,node_x,node_y,node_z,radial_dist,overlap,normal_force,normal_velocity,tangential_speed,friction_force,cyl_center_x,cyl_center_y,cyl_center_z,cyl_axis_x,cyl_axis_y,cyl_axis_z,cyl_radius
+6,0.1999982779646895,80,0.035886265627868494,0.0,-0.015233563297387514,0.014766436702612485,0.0002335632973875148,0.4671265947750296,0.008497036841115824,0.013960508600965971,0.2802759568650178,0.025,0.0,-0.03,0.0,1.0,0.0,0.015
