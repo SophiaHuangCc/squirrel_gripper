@@ -1,0 +1,11 @@
+Simulation Run: 20260115_184102
+------------------------------
+sol: standard
+debug: True
+E: 20000000.0
+tension: 3.0
+damping: 0.8
+n_elements: 80
+cyl_rad: 0.01
+k_contact: 2000.0
+Calculated Time Steps: 2065591

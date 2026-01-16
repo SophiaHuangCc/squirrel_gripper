@@ -3,7 +3,6 @@ single_finger_manual.py
 
 Manually tune:
 - E, G, tension
-- joint model (rigid_mult, joint_indices, joint_mult)
 - cylinder position/size
 - contact params
 - damping
@@ -17,7 +16,7 @@ Outputs:
 # solution 2: increase tendon force towards tip
 # solution 3: change tendon force direction to curl
 # softer cylinder surface (lower k_contact) --done
-# different joint positions
+# different vertebra positions
 
 import os
 import numpy as np
@@ -91,44 +90,30 @@ def draw_cylinder(ax, center, axis_dir, radius, length,
 
     ax.plot_surface(X, Y, Z, color=color, alpha=alpha, linewidth=0, shade=True)
 
-
-# def apply_rigid_links_soft_joints(finger, rigid_mult, joint_indices, joint_mult):
+# def apply_rigid_links_soft_joints(
+#     finger,
+#     rigid_mult,
+#     joint_indices,
+#     joint_mult,
+#     joint_half_width_elems,   # <-- NEW: joint "length" control
+# ):
 #     """
-#     Make rod globally rigid-ish, then locally soften a few "joint" elements.
-#     - rigid_mult multiplies bend_matrix everywhere (links)
-#     - joint_mult multiplies bend_matrix at joint_indices (joints)
+#     - rigid_mult multiplies bend_matrix everywhere
+#     - for each joint index, soften a band of elements [j-w, ..., j+w]
+#       so the joint has finite length (not a single hinge element)
 #     """
 #     finger.bend_matrix *= rigid_mult
 
-#     for j in joint_indices:
-#         j = int(np.clip(j, 0, finger.bend_matrix.shape[2] - 1))
-#         finger.bend_matrix[1, 1, j] *= joint_mult
-#         finger.bend_matrix[2, 2, j] *= joint_mult
+#     ne = finger.bend_matrix.shape[2]
+#     w = int(joint_half_width_elems)
 
-def apply_rigid_links_soft_joints(
-    finger,
-    rigid_mult,
-    joint_indices,
-    joint_mult,
-    joint_half_width_elems,   # <-- NEW: joint "length" control
-):
-    """
-    - rigid_mult multiplies bend_matrix everywhere
-    - for each joint index, soften a band of elements [j-w, ..., j+w]
-      so the joint has finite length (not a single hinge element)
-    """
-    finger.bend_matrix *= rigid_mult
+#     for j0 in joint_indices:
+#         j0 = int(np.clip(j0, 0, ne - 1))
+#         j_start = max(0, j0 - w)
+#         j_end   = min(ne - 1, j0 + w)
 
-    ne = finger.bend_matrix.shape[2]
-    w = int(joint_half_width_elems)
-
-    for j0 in joint_indices:
-        j0 = int(np.clip(j0, 0, ne - 1))
-        j_start = max(0, j0 - w)
-        j_end   = min(ne - 1, j0 + w)
-
-        finger.bend_matrix[1, 1, j_start:j_end+1] *= joint_mult
-        finger.bend_matrix[2, 2, j_start:j_end+1] *= joint_mult
+#         finger.bend_matrix[1, 1, j_start:j_end+1] *= joint_mult
+#         finger.bend_matrix[2, 2, j_start:j_end+1] *= joint_mult
 
 def compute_contact_metrics_frame(
     rod_pos,      # (3, n_nodes)
@@ -176,77 +161,117 @@ def compute_contact_metrics_frame(
     )
 
 class TendonForcesRamp(TendonForces):
-    """
-    Wrapper that ramps tension from 0 -> tension over ramp_up_time.
-    Doesn't require modifying your TendonForces implementation.
-    """
-    def __init__(self, *args, ramp_up_time=0.2, **kwargs):
+    def __init__(self, *args, ramp_up_time=0.2, use_gradient=False, center_seek=False, cyl_center=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self._tension_nominal = float(kwargs.get("tension", getattr(self, "tension", 0.0)))
+        
         self.ramp_up_time = float(ramp_up_time)
+        self.use_gradient = bool(use_gradient)
+        self.center_seek = bool(center_seek)
+        self.cyl_center = np.array(cyl_center) if cyl_center is not None else None
+        
+        self.first_vertebra_node = kwargs.get("first_vertebra_node")
+        self.final_vertebra_node = kwargs.get("final_vertebra_node")
+        self._tension_nominal = float(kwargs.get("tension", 0.0))
 
-    def _ramp_factor(self, time):
-        if self.ramp_up_time <= 0:
-            return 1.0
-        s = min(1.0, max(0.0, float(time) / self.ramp_up_time))
-        # smooth cosine ramp (less jerk than linear)
-        return 0.5 * (1.0 - np.cos(np.pi * s))
+    def _update_geometry_and_get_factor(self, system, time, i, node_idx):
+        """Helper to ensure vectors are 2D and compute the combined scaling factor."""
+        # 1. Expand 1D vector to 2D if needed (Only happens once)
+        if self.vertebra_height_vector.ndim == 1:
+            self.vertebra_height_vector = np.tile(
+                self.vertebra_height_vector.reshape(3, 1), (1, len(self.vertebra_nodes))
+            )
+
+        # 2. Apply Center-Seeking logic if enabled
+        if self.center_seek and self.cyl_center is not None:
+            to_cyl = self.cyl_center - system.position_collection[:, node_idx]
+            dist = np.linalg.norm(to_cyl)
+            if dist > 1e-6:
+                self.vertebra_height_vector[:, i] = to_cyl / dist
+
+        # 3. Calculate Factors
+        s = 1.0 if self.ramp_up_time <= 0 else min(1.0, max(0.0, float(time) / self.ramp_up_time))
+        time_factor = 0.5 * (1.0 - np.cos(np.pi * s))
+        
+        spatial_factor = 1.0
+        if self.use_gradient:
+            n_start = self.first_vertebra_node
+            n_end = self.final_vertebra_node
+            alpha = (node_idx - n_start) / (max(1, n_end - n_start))
+            spatial_factor = 0.5 + alpha 
+            
+        return time_factor * spatial_factor
 
     def apply_forces(self, system, time=0.0):
-        factor = self._ramp_factor(time)
-        old = self.tension
-        self.tension = self._tension_nominal * factor
-        super().apply_forces(system, time)
-        self.tension = old
+        for i, node_idx in enumerate(self.vertebra_nodes):
+            factor = self._update_geometry_and_get_factor(system, time, i, node_idx)
+            current_tension = self._tension_nominal * factor
+            # Now safe to index [:, i] because we expanded it in the helper
+            force = current_tension * self.vertebra_height_vector[:, i]
+            system.external_forces[:, node_idx] += force
 
     def apply_torques(self, system, time=0.0):
-        factor = self._ramp_factor(time)
-        old = self.tension
-        self.tension = self._tension_nominal * factor
-        super().apply_torques(system, time)
-        self.tension = old
+        for i, node_idx in enumerate(self.vertebra_nodes):
+            factor = self._update_geometry_and_get_factor(system, time, i, node_idx)
+            current_tension = self._tension_nominal * factor
+            
+            tangent = system.tangents[:, node_idx]
+            torque = current_tension * np.cross(self.vertebra_height_vector[:, i], tangent)
+            system.external_torques[:, node_idx] += torque
 
 def main():
 
     parser = argparse.ArgumentParser(description="Run Squirrel Finger Simulation.")
     parser.add_argument(
         "--sol", type=str, default="standard",
-        choices=["standard", "approach_angle", "nonuniform_tendon", "change_tendon_direction"],
+        choices=["standard",
+                 "approach_angle", "nonuniform_tendon", "change_tendon_direction"],
         help="Select the solution for improved curl")
+    parser.add_argument(
+        "--approach_deg", type=float, default=45.0,
+        help="Angle of approach in degrees (0 = horizontal, 90 = vertical)")
+    parser.add_argument(
+        "--mode", type=str, default="soft_joints",
+        choices=["soft_joints", "programmed_folds"],
+        help="Select the finger bending mode")
     parser.add_argument(
         "--debug", action="store_true",
         help="Enable debug mode with plot of total force magnitude and direction.")
     
     # --- MATERIAL & GEOMETRY PARAMS (Defaulted to your current values) ---
     parser.add_argument("--E", type=float, default=2e7, help="Youngs Modulus (Pa)")
-    parser.add_argument("--G", type=float, default=7e6, help="Shear Modulus (Pa)")
     parser.add_argument("--tension", type=float, default=0.4, help="Tendon tension (N)")
     parser.add_argument("--damping", type=float, default=0.8, help="Internal damping constant")
     parser.add_argument("--n_elements", type=int, default=80, help="Number of rod elements")
     
     # --- CYLINDER PARAMS ---
-    parser.add_argument("--cyl_rad", type=float, default=0.01, help="Cylinder radius (m)")
+    parser.add_argument("--cyl_rad", type=float, default=0.015, help="Cylinder radius (m)")
     parser.add_argument("--k_contact", type=float, default=2e3, help="Contact stiffness")
     
     args = parser.parse_args()
 
     # Parameters from args (key variables to tune)
     E = args.E
-    G = args.G
+    nu = 0.5  # Poisson's ratio (0.45~0.5 for TPU)
+    G = E / (2 * (1 + nu))  # Shear modulus in Pa
     tension = args.tension
     n_elements = args.n_elements
     damping_constant = args.damping
     k_contact = args.k_contact
     cyl_radius = args.cyl_rad
+
+    E_link = args.E
+    E_joint = 0.5e5
     
     # Fixed Geometry
-    base_length = 0.10
-    base_radius = 0.005
+    base_length = 0.10 # 100 mm (TODO: optimize length?)
+    base_radius = 3e-3 # 2 mm
     density = 1200
-    rigid_mult = 1 # links stiffness multiplier
+    mass_second_moment_of_inertia = 0.25 * np.pi * base_radius**4
+
+    # rigid_mult = 1 # links stiffness multiplier
     # joint_indices = [30, 50, 68]
-    joint_indices = [30, 46, 62]
-    joint_mult = 1e-2 # joints relative to links (smaller = softer joints)
+    # joint_indices = [30, 46, 62]
+    # joint_mult = 1e-2 # joints relative to links (smaller = softer joints)
 
     wave_speed = np.sqrt(E / density)
     dx = base_length / n_elements
@@ -254,7 +279,7 @@ def main():
     
     cyl_length = 0.20
     cyl_density = 1200.0
-    cyl_start = np.array([0.025, -cyl_length / 2.0, -0.025])
+    cyl_start = np.array([0.025, -cyl_length / 2.0, -0.03])
     cyl_direction = np.array([0.0, 1.0, 0.0])
     cyl_normal = np.array([1.0, 0.0, 0.0])
 
@@ -266,7 +291,9 @@ def main():
     num_vertebrae = 4
     first_vertebra_node = 30
     final_vertebra_node = n_elements - 1
-    vertebra_height = 0.010
+    vertebra_height = 0.01
+    vertebra_nodes = np.linspace(first_vertebra_node, final_vertebra_node, num_vertebrae, dtype=int)
+    print(f"[VISUALIZATION] Drawing red disks at nodes: {vertebra_nodes}")
     
     final_time = 2.0
     # time_step = 1.8e-6
@@ -294,7 +321,7 @@ def main():
     print(f"\n==== RUNNING: {args.sol} ====")
     print(f"Logging to: {log_path}")
     print(f"E={E:.2e}  G={G:.2e}  tension={tension:.2f}")
-    print(f"rigid_mult={rigid_mult:.1e}  joint_mult={joint_mult:.1e}  joints={joint_indices}")
+    # print(f"rigid_mult={rigid_mult:.1e}  joint_mult={joint_mult:.1e}  joints={joint_indices}")
     print(f"cyl_start={cyl_start}  cyl_radius={cyl_radius}  cyl_length={cyl_length}")
     print(f"contact: k={k_contact} nu={nu_contact} mu={mu_contact} vel_damp={vel_damp_contact}")
     print(f"damping_constant={damping_constant}")
@@ -307,25 +334,33 @@ def main():
     start_pos = np.array([0.0, 0.0, 0.0])
     v_height_dir = np.array([0.0, 0.0, -1.0])
 
+    E_profile = np.ones(n_elements) * E_link
+
+
+
     # 3 alternative solutions to improve curling around cylinder
     if args.sol == "approach_angle":
-        print(">>> MODE: Approach Angle Change")
-        direction = np.array([1.0, 0.0, 1.0])
-        direction = direction / np.linalg.norm(direction)
-        normal = np.array([0.0, 1.0, 0.0])
-        start_pos = np.array([0.0, 0.0, -0.02])
-        v_height_dir = np.array([-1.0, 0.0, 1.0])
-        v_height_dir /= np.linalg.norm(v_height_dir)
-    elif args.sol == "nonuniform_tendon":
-        print(">>> MODE: Non-uniform Tendon Force (Increasing toward tip)")
-        # Logic for Solution 2 will go here
-        pass
+        angle_rad = np.deg2rad(args.approach_deg)
+        print(f">>> MODE: Dynamic Approach at {args.approach_deg} degrees")
+        dir_x = np.cos(angle_rad)
+        dir_z = np.sin(angle_rad)
+        direction = np.array([dir_x, 0.0, dir_z])
+        direction /= np.linalg.norm(direction)
+        world_side = np.array([0.0, 1.0, 0.0]) 
+        normal = np.cross(world_side, direction)
+        normal /= np.linalg.norm(normal)
+        v_height_dir = normal.copy()
+        start_pos = np.array([0.0, 0.0, -0.02 * np.cos(angle_rad)])
 
-    elif args.sol == "change_tendon_direction":
-        print(">>> MODE: Change Tendon Direction to Curl")
-        # Logic for Solution 3 will go here
-        # (Usually involves varying the v_height_dir along the rod)
-        pass
+    # Inside the main logic block
+    elif args.sol == "nonuniform_tendon" or args.sol == "change_tendon_direction":
+        print(">>> MODE: Combined Gradient Magnitude + Center-Seeking Direction")
+        
+        # Setup the cylinder center reference
+        cyl_center = cyl_start + (cyl_direction * (cyl_length / 2.0))
+        cyl_center_fixed = np.array([cyl_center[0], 0.0, cyl_center[2]])
+        
+        
     
     else:
         print(">>> MODE: Standard Horizontal")
@@ -340,23 +375,41 @@ def main():
         density=density,
         youngs_modulus=E,
         shear_modulus=G,
+        mass_second_moment_of_inertia=mass_second_moment_of_inertia,
     )
     sim.append(finger)
+
+    joint_mult = 0.01   
+    rigid_mult = 1.0
+    finger.bend_matrix *= rigid_mult
+
+    if args.mode == "soft_joints": 
+        print(f">>> MODE: Automatic Soft Joints at Vertebrae Locations")
+        # Identify the exact same nodes used by TendonForces
+        joint_indices = np.linspace(first_vertebra_node, final_vertebra_node, num_vertebrae, dtype=int)
+        print(f"[SOFT JOINTS] at nodes: {joint_indices}")
+        
+        for j in joint_indices:
+            # We clip to n_elements-1 because bend_matrix is element-based
+            idx = int(np.clip(j, 0, finger.bend_matrix.shape[2] - 1))
+            finger.bend_matrix[1, 1, idx] *= joint_mult
+            finger.bend_matrix[2, 2, idx] *= joint_mult
+
+    elif args.mode == "programmed_folds":
+        print(">>> MODE: Non-Linear Programmed Folds")
+        # Manually define specific locations for folds (vertebrae)
+        # This allows you to space them non-linearly (e.g., closer at the tip)
+        fold_indices = [30, 50, 65, 75] 
+        for idx in fold_indices:
+            E_profile[max(0, idx-1) : min(n_elements, idx+2)] = E_joint
 
     # apply_rigid_links_soft_joints(
     #     finger,
     #     rigid_mult=rigid_mult,
     #     joint_indices=joint_indices,
     #     joint_mult=joint_mult,
+    #     joint_half_width_elems=1,
     # )
-
-    apply_rigid_links_soft_joints(
-        finger,
-        rigid_mult=rigid_mult,
-        joint_indices=joint_indices,
-        joint_mult=joint_mult,
-        joint_half_width_elems=1,
-    )
 
     cylinder = Cylinder(
         start=cyl_start,
@@ -379,18 +432,36 @@ def main():
         constrained_director_idx=(0,),
     )
 
-    sim.add_forcing_to(finger).using(
-        TendonForcesRamp,
-        vertebra_height=vertebra_height,
-        num_vertebrae=num_vertebrae,
-        first_vertebra_node=first_vertebra_node,
-        final_vertebra_node=final_vertebra_node,
-        vertebra_mass=vertebra_mass,
-        tension=tension,
-        vertebra_height_orientation=v_height_dir,
-        n_elements=n_elements,
-        ramp_up_time=0.2, # New feature to ramp tension
-    )
+    if args.sol == "nonuniform_tendon" or args.sol == "change_tendon_direction":
+        print(">>> MODE: Non-uniform Tendon Force (Increasing toward tip)")
+        # We can now pass these to the forcing module
+        sim.add_forcing_to(finger).using(
+            TendonForcesRamp,
+            vertebra_height=vertebra_height,
+            num_vertebrae=16, # Use 16 for smooth gradient and steering
+            first_vertebra_node=30,
+            final_vertebra_node=n_elements - 1,
+            vertebra_mass=vertebra_mass,
+            tension=tension,
+            vertebra_height_orientation=v_height_dir,
+            n_elements=n_elements,
+            ramp_up_time=0.2,
+            use_gradient=True,      # Gradient Magnitude ON
+            center_seek=True,        # Direction Steering ON
+            cyl_center=cyl_center_fixed
+        )
+    else:
+        sim.add_forcing_to(finger).using(
+            TendonForces,
+            vertebra_height=vertebra_height,
+            num_vertebrae=num_vertebrae,
+            first_vertebra_node=first_vertebra_node,
+            final_vertebra_node=final_vertebra_node,
+            vertebra_mass=vertebra_mass,
+            tension=tension,
+            vertebra_height_orientation=v_height_dir,
+            n_elements=n_elements,
+        )
 
     sim.add_forcing_to(finger).using(GravityForces, np.array([0.0, 0.0, -9.80665]))
 
@@ -526,10 +597,19 @@ def main():
 
         P = pos_data[idx]
         ax.scatter(P[0], P[1], P[2], s=6)
-        for j in joint_indices:
-            j = int(np.clip(j, 0, P.shape[1] - 1))
+        # for j in joint_indices:
+        #     j = int(np.clip(j, 0, P.shape[1] - 1))
+        #     ax.scatter(
+        #         P[0, j], P[1, j], P[2, j],
+        #         color="red",
+        #         s=20,
+        #         depthshade=False,
+        #         zorder=10,
+        #     )
+        for v_idx in vertebra_nodes:
+            v_idx = int(np.clip(v_idx, 0, P.shape[1] - 1))
             ax.scatter(
-                P[0, j], P[1, j], P[2, j],
+                P[0, v_idx], P[1, v_idx], P[2, v_idx],
                 color="red",
                 s=20,
                 depthshade=False,
@@ -582,9 +662,12 @@ def main():
         P = pos_data[-1] 
         
         ax_live.scatter(P[0], P[1], P[2], s=10)
-        for j in joint_indices:
-            j = int(np.clip(j, 0, P.shape[1] - 1))
-            ax_live.scatter(P[0, j], P[1, j], P[2, j], color="red", s=40)
+        # for j in joint_indices:
+        #     j = int(np.clip(j, 0, P.shape[1] - 1))
+        #     ax_live.scatter(P[0, j], P[1, j], P[2, j], color="red", s=40)
+        for v_idx in vertebra_nodes:
+            v_idx = int(np.clip(v_idx, 0, P.shape[1] - 1))
+            ax_live.scatter(P[0, v_idx], P[1, v_idx], P[2, v_idx], color="red", s=40)
 
         center = cylinder.position_collection[:, 0]
         axis_dir = cylinder.director_collection[2, :, 0]
