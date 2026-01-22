@@ -8,13 +8,50 @@ Manually tune:
 - damping
 """
 
-# TODO ideas to improve contact performance:
-# solution 1: approach angle change --done
-# solution 2: increase tendon force towards tip --done
-# solution 3: change tendon force direction to curl --done
-# softer cylinder surface (lower k_contact) --done
-# different vertebra positions
+""""
+This file uses PyElastica to model a squirrel-inspired, tendon-driven soft robotic 
+finger and visualizes its interaction with a rigid cylindrical branch.
 
+The modeling approach is based on Cosserat rod theory, utilizing high-fidelity 
+simulations to solve the "distal tip curl" problem common in tendon-driven 
+continuum systems.
+
+Finger Configuration (Squirrel-Inspired):
+    Base Length: 100 mm
+    Base Radius: 3 mm
+    Actuation: Tendon-driven via discrete vertebrae (tendon routing points).
+    Material: TPU-equivalent (Young's Modulus E ~ 20 MPa, Poisson's Ratio 0.5).
+
+Environment (Branch):
+    Geometry: Rigid Cylinder.
+    Radius: Variable (10-15 mm).
+    Contact: Rod-Cylinder penalty-based contact with friction (RodCylinderContact).
+
+Key Solutions for Distal Tip Curling:
+    1. Dynamic Approach Angle: Modifying the landing orientation (0° to 90°).
+    2. Non-uniform Tendon Force: Linear force gradient increasing toward the tip. #TODO: not sure if realistic
+    3. Center-Seeking Direction: Dynamic tendon force vectors steered toward the 
+       cylinder axis to maximize angular span and force closure.
+
+Modeling Principles & Assumptions:
+    - Backbone modeled as a Cosserat rod with 80 elements for high-fidelity bending.
+    - Soft joints: Localized reduction of bending stiffness (EI) at vertebrae 
+      locations to mimic biological joint flexibility.
+    - Tendon Force: Applied as external forces and torques at discrete nodes, 
+      mimicking biological flexor tendons.
+    - Systematic Sweep: Automated logging of Force Closure (Geometric/Friction) 
+      and Total Energy Metrics for parameter optimization.
+"""
+
+# Ideas improve contact performance:
+# solution 1: approach angle change --works
+# solution 2: increase tendon force towards tip --realistic at manufacturing?
+# solution 3: change tendon force direction to curl --realistic at manufacturing?
+# TODO: different vertebra positions
+
+###################################################
+# IMPORTS
+###################################################
 import os
 import numpy as np
 from collections import defaultdict
@@ -22,13 +59,13 @@ import sys
 import argparse
 import time
 import datetime
-
 import matplotlib
-# matplotlib.use("Agg")  # headless
-# import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D 
 import csv
+import fcntl # Standard on Linux/Mac/Lab Servers
+# parallel -j 8 python finger.py --sol {1} --tension {2} ::: nonuniform_tendon approach_angle ::: 0.2 0.4 0.6
 
+# Matplotlib backend setup
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 if "--debug" in sys.argv:
@@ -37,9 +74,11 @@ if "--debug" in sys.argv:
 else:
     plt.switch_backend("Agg")
 
+# MoviePy for video rendering
 from moviepy.editor import VideoClip
 from moviepy.video.io.bindings import mplfig_to_npimage
 
+# PyElastica imports
 from elastica.modules import BaseSystemCollection, Connections, Constraints, Forcing, CallBacks, Damping, Contact
 from elastica.rod.cosserat_rod import CosseratRod
 from elastica.boundary_conditions import OneEndFixedBC, FixedConstraint
@@ -50,13 +89,16 @@ from elastica.timestepper.symplectic_steppers import PositionVerlet
 from elastica.timestepper import integrate
 from elastica.rigidbody.cylinder import Cylinder
 from elastica.contact_forces import RodCylinderContact
-
 from TendonForces import TendonForces
 
+# Custom metrics functions
 from grasp_metrics import check_force_closure, compute_total_energy
 from metrics import analyze_grasp_from_log, plot_contacts_2d_from_log
 
 
+###################################################
+# SIMULATOR CLASS
+###################################################
 class SquirrelFingerSimulator(
     BaseSystemCollection,
     Connections,
@@ -69,6 +111,11 @@ class SquirrelFingerSimulator(
     pass
 
 
+###################################################
+# UTILITY FUNCTIONS
+###################################################
+
+# Function to draw a cylinder branch in 3D matplotlib
 def draw_cylinder(ax, center, axis_dir, radius, length,
                   color="gray", alpha=0.3, resolution=40):
     axis_dir = axis_dir / np.linalg.norm(axis_dir)
@@ -91,6 +138,7 @@ def draw_cylinder(ax, center, axis_dir, radius, length,
 
     ax.plot_surface(X, Y, Z, color=color, alpha=alpha, linewidth=0, shade=True)
 
+# Function to compute contact metrics for a single frame
 def compute_contact_metrics_frame(
     rod_pos,      # (3, n_nodes)
     rod_vel,      # (3, n_nodes)
@@ -136,6 +184,10 @@ def compute_contact_metrics_frame(
         overlap,              # return full arrays for debugging
     )
 
+
+###################################################
+# CUSTOM FORCING CLASS WITH RAMP-UP AND DIRECTIONAL CONTROL
+###################################################
 class TendonForcesRamp(TendonForces):
     def __init__(self, *args, ramp_up_time=0.2, use_gradient=False, center_seek=False, cyl_center=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -151,20 +203,17 @@ class TendonForcesRamp(TendonForces):
 
     def _update_geometry_and_get_factor(self, system, time, i, node_idx):
         """Helper to ensure vectors are 2D and compute the combined scaling factor."""
-        # 1. Expand 1D vector to 2D if needed (Only happens once)
         if self.vertebra_height_vector.ndim == 1:
             self.vertebra_height_vector = np.tile(
                 self.vertebra_height_vector.reshape(3, 1), (1, len(self.vertebra_nodes))
             )
 
-        # 2. Apply Center-Seeking logic if enabled
         if self.center_seek and self.cyl_center is not None:
             to_cyl = self.cyl_center - system.position_collection[:, node_idx]
             dist = np.linalg.norm(to_cyl)
             if dist > 1e-6:
                 self.vertebra_height_vector[:, i] = to_cyl / dist
 
-        # 3. Calculate Factors
         s = 1.0 if self.ramp_up_time <= 0 else min(1.0, max(0.0, float(time) / self.ramp_up_time))
         time_factor = 0.5 * (1.0 - np.cos(np.pi * s))
         
@@ -181,7 +230,6 @@ class TendonForcesRamp(TendonForces):
         for i, node_idx in enumerate(self.vertebra_nodes):
             factor = self._update_geometry_and_get_factor(system, time, i, node_idx)
             current_tension = self._tension_nominal * factor
-            # Now safe to index [:, i] because we expanded it in the helper
             force = current_tension * self.vertebra_height_vector[:, i]
             system.external_forces[:, node_idx] += force
 
@@ -194,8 +242,12 @@ class TendonForcesRamp(TendonForces):
             torque = current_tension * np.cross(self.vertebra_height_vector[:, i], tangent)
             system.external_torques[:, node_idx] += torque
 
-def main():
 
+###################################################
+# MAIN SIMULATION FUNCTION
+###################################################
+def main():
+    # Argument parsing inputs
     parser = argparse.ArgumentParser(description="Run Squirrel Finger Simulation.")
     parser.add_argument(
         "--sol", type=str, default="standard",
@@ -212,14 +264,12 @@ def main():
     parser.add_argument(
         "--debug", action="store_true",
         help="Enable debug mode with plot of total force magnitude and direction.")
-    
-    # --- MATERIAL & GEOMETRY PARAMS (Defaulted to your current values) ---
+    # material and simulation params
     parser.add_argument("--E", type=float, default=2e7, help="Youngs Modulus (Pa)")
     parser.add_argument("--tension", type=float, default=0.4, help="Tendon tension (N)")
     parser.add_argument("--damping", type=float, default=0.8, help="Internal damping constant")
     parser.add_argument("--n_elements", type=int, default=80, help="Number of rod elements")
-    
-    # --- CYLINDER PARAMS ---
+    # cylinder and contact params
     parser.add_argument("--cyl_rad", type=float, default=0.015, help="Cylinder radius (m)")
     parser.add_argument("--k_contact", type=float, default=2e3, help="Contact stiffness")
     
@@ -235,26 +285,23 @@ def main():
     k_contact = args.k_contact
     cyl_radius = args.cyl_rad
     
-    # Fixed Geometry
+    # Geometry for finger (optimize later?)
     base_length = 0.10 # 100 mm (TODO: optimize length?)
     base_radius = 3e-3 # 3 mm
     density = 1200
     mass_second_moment_of_inertia = 0.25 * np.pi * base_radius**4
-
-    wave_speed = np.sqrt(E / density)
-    dx = base_length / n_elements
-    dt_critical = dx / wave_speed
     
+    # Cylinder (branch) parameters
     cyl_length = 0.20
     cyl_density = 1200.0
     cyl_start = np.array([0.025, -cyl_length / 2.0, -0.03])
     cyl_direction = np.array([0.0, 1.0, 0.0])
     cyl_normal = np.array([1.0, 0.0, 0.0])
-
     nu_contact = 5.0 # 5.0~20.0
     mu_contact = 0.6 # 0.6~1.0
     vel_damp_contact = 10 # 10~50
 
+    # Vertebrae parameters
     vertebra_mass = 0.002
     num_vertebrae = 4
     first_vertebra_node = 30
@@ -263,8 +310,11 @@ def main():
     vertebra_nodes = np.linspace(first_vertebra_node, final_vertebra_node, num_vertebrae, dtype=int)
     print(f"[VISUALIZATION] Drawing red disks at nodes: {vertebra_nodes}")
     
+    # Time stepping parameters
+    wave_speed = np.sqrt(E / density)
+    dx = base_length / n_elements
+    dt_critical = dx / wave_speed
     final_time = 2.0
-    # time_step = 1.8e-6
     time_step = 0.1 * dt_critical
     rendering_fps = 30.0
     total_steps = int(final_time / time_step)
@@ -274,15 +324,13 @@ def main():
     base_outdir = "squirrel_paw_results"
     os.makedirs(base_outdir, exist_ok=True)
     run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    
     video_path = os.path.join(base_outdir, f"output_{run_id}.mp4")
-
     print(f"\n==== RUNNING: {args.sol} ====")
-    print(f"E={E:.2e}  G={G:.2e}  tension={tension:.2f}")
-    print(f"cyl_start={cyl_start}  cyl_radius={cyl_radius}  cyl_length={cyl_length}")
+    print(f"E={E:.2e}  G={G:.2e}  tension={tension:.2f}  cyl_radius={cyl_radius:.3f}")
     print(f"contact: k={k_contact} nu={nu_contact} mu={mu_contact} vel_damp={vel_damp_contact}")
     print(f"damping_constant={damping_constant}")
 
+    # Initialize simulator
     sim = SquirrelFingerSimulator()
 
     # Standard/default finger setup
@@ -291,7 +339,7 @@ def main():
     start_pos = np.array([0.0, 0.0, 0.0])
     v_height_dir = np.array([0.0, 0.0, -1.0])
 
-    # 3 alternative solutions to improve curling around cylinder
+    # 2 alternative solutions to improve curling around cylinder
     if args.sol == "approach_angle":
         angle_rad = np.deg2rad(args.approach_deg)
         print(f">>> MODE: Dynamic Approach at {args.approach_deg} degrees")
@@ -304,18 +352,15 @@ def main():
         normal /= np.linalg.norm(normal)
         v_height_dir = normal.copy()
         start_pos = np.array([0.0, 0.0, -0.02 * np.cos(angle_rad)])
-
-    # Inside the main logic block
     elif args.sol == "nonuniform_tendon" or args.sol == "change_tendon_direction":
         print(">>> MODE: Combined Gradient Magnitude + Center-Seeking Direction")
-        
         # Setup the cylinder center reference
         cyl_center = cyl_start + (cyl_direction * (cyl_length / 2.0))
         cyl_center_fixed = np.array([cyl_center[0], 0.0, cyl_center[2]])
-    
     else:
         print(">>> MODE: Standard Horizontal")
 
+    # Create finger rod
     finger = CosseratRod.straight_rod(
         n_elements=n_elements,
         start=start_pos,
@@ -330,10 +375,12 @@ def main():
     )
     sim.append(finger)
 
+    # Apply soft joints by modifying bend_matrix at vertebrae locations
     joint_mult = 0.01   
     rigid_mult = 1.0
     finger.bend_matrix *= rigid_mult
 
+    # Apply soft joints at vertebrae locations
     if args.mode == "soft_joints": 
         print(f">>> MODE: Automatic Soft Joints at Vertebrae Locations")
         # Identify the exact same nodes used by TendonForces
@@ -341,11 +388,11 @@ def main():
         print(f"[SOFT JOINTS] at nodes: {joint_indices}")
         
         for j in joint_indices:
-            # We clip to n_elements-1 because bend_matrix is element-based
             idx = int(np.clip(j, 0, finger.bend_matrix.shape[2] - 1))
             finger.bend_matrix[1, 1, idx] *= joint_mult
             finger.bend_matrix[2, 2, idx] *= joint_mult
 
+    # Create cylinder (branch)
     cylinder = Cylinder(
         start=cyl_start,
         direction=cyl_direction,
@@ -356,6 +403,7 @@ def main():
     )
     sim.append(cylinder)
 
+    # Apply boundary conditions
     sim.constrain(finger).using(
         OneEndFixedBC,
         constrained_position_idx=(0,),
@@ -368,25 +416,23 @@ def main():
     )
 
     if args.sol == "nonuniform_tendon" or args.sol == "change_tendon_direction":
-        print(">>> MODE: Non-uniform Tendon Force (Increasing toward tip)")
-        # We can now pass these to the forcing module
         sim.add_forcing_to(finger).using(
             TendonForcesRamp,
             vertebra_height=vertebra_height,
-            num_vertebrae=16, # Use 16 for smooth gradient and steering
-            first_vertebra_node=30,
-            final_vertebra_node=n_elements - 1,
+            num_vertebrae=num_vertebrae,
+            first_vertebra_node=first_vertebra_node,
+            final_vertebra_node=final_vertebra_node,
             vertebra_mass=vertebra_mass,
             tension=tension,
             vertebra_height_orientation=v_height_dir,
             n_elements=n_elements,
             ramp_up_time=1.0,
-            use_gradient=True,      # Gradient Magnitude ON
-            center_seek=True,        # Direction Steering ON
+            use_gradient=True,
+            center_seek=True, # Direction Steering ON
             cyl_center=cyl_center_fixed
         )
     else:
-        sim.add_forcing_to(finger).using(
+        tendon_actuation = sim.add_forcing_to(finger).using(
             TendonForces,
             vertebra_height=vertebra_height,
             num_vertebrae=num_vertebrae,
@@ -398,8 +444,10 @@ def main():
             n_elements=n_elements,
         )
 
+    # Gravity
     sim.add_forcing_to(finger).using(GravityForces, np.array([0.0, 0.0, -9.80665]))
 
+    # Damping
     if damping_constant > 0.0:
         sim.dampen(finger).using(
             AnalyticalLinearDamper,
@@ -407,6 +455,7 @@ def main():
             time_step=time_step,
         )
 
+    # Contact between finger and cylinder
     sim.detect_contact_between(finger, cylinder).using(
         RodCylinderContact,
         k=k_contact,
@@ -416,12 +465,13 @@ def main():
     )
 
 
-
+    # Callbacks for data collection
     class CB(CallBackBaseClass):
-        def __init__(self, step_skip, callback_params):
+        def __init__(self, step_skip, callback_params, tendon_forcing_object):
             super().__init__()
             self.every = step_skip
             self.callback_params = callback_params
+            self.tendon_forcing = tendon_forcing_object
 
         def make_callback(self, system, time, current_step):
             if np.isnan(system.position_collection).any():
@@ -462,7 +512,8 @@ def main():
                 self.callback_params["voronoi_dilatation"].append(system.voronoi_dilatation.copy())
 
     data = defaultdict(list)
-    sim.collect_diagnostics(finger).using(CB, step_skip=step_skip, callback_params=data)
+    sim.collect_diagnostics(finger).using(CB, step_skip=step_skip, callback_params=data, 
+                                         tendon_forcing_object=tendon_actuation)
 
     sim.finalize()
 
@@ -500,37 +551,26 @@ def main():
     data_to_save["cyl_length"] = np.array([cylinder.length])
 
     # --- Automated Metric Calculation at T=Final ---
-
     # Get final state
     final_pos = data["position"][-1]      # (3, N)
     final_forces = data["external_forces"][-1] # (3, N)
     normal_forces = np.linalg.norm(final_forces, axis=0)
 
-    # 1. Identify contact points (where normal force > threshold)
-    contact_idx = np.where(normal_forces > 1e-4)[0]
+    contact_idx = np.where(normal_forces > 1.0)[0]
     contact_vertices = final_pos[:, contact_idx].T
-    # For a cylinder, normals point from axis to contact point
     cyl_axis_pos = cylinder.position_collection[:, 0]
     contact_normals = contact_vertices - cyl_axis_pos
     contact_normals /= np.linalg.norm(contact_normals, axis=1)[:, None]
 
-    # 2. Calculate Success Metrics
     is_stable = check_force_closure(contact_vertices, contact_normals, mu_contact)
     energy_score = compute_total_energy(finger, normal_forces[contact_idx], k_contact)
 
-    # 3. Store these results in the NPZ
     data_to_save["metric_is_stable"] = np.array([is_stable])
     data_to_save["metric_energy_total"] = np.array([energy_score])
     data_to_save["metric_contact_count"] = np.array([len(contact_idx)])
     print(f"[METRICS] Force Closure Stable: {is_stable}  Total Energy: {energy_score:.6f} J  Contact Points: {len(contact_idx)}")
 
     csv_path = f"squirrel_paw_results/contact_log_{run_id}.csv"
-    
-    # filename = f"squirrel_paw_results/master_log_{run_id}.npz"
-    # np.savez_compressed(filename, **data_to_save)
-
-    # print(f"Archive Complete: {filename}")
-
 
     pos_data = data["position"]
     vel_data = data["velocity"]
@@ -619,8 +659,7 @@ def main():
         print(f"[CONTACT] Max normal force over all frames: {max_normal_force_overall:.6f} N")
         print(f"[CONTACT] Wrote squirrel_paw_results/contact_log_{run_id}.csv")
 
-    
-    print(f"\n[AUTO-ANALYSIS] Starting geometric metrics check for: {csv_path}")
+    print(f"\n[CONTACT] Starting geometric metrics check for: {csv_path}")
     try:
         is_fc, metrics = analyze_grasp_from_log(csv_path)
         data_to_save["geometric_success"] = np.array([is_fc])
@@ -628,7 +667,7 @@ def main():
         data_to_save["angular_span"] = np.array([metrics["angular_span"]])
         data_to_save["total_normal_force"] = np.array([metrics["total_normal_force"]])
         data_to_save["total_friction_force"] = np.array([metrics["total_friction_force"]])
-        print(f"\n[FORCE CLOSURE] {'ACHIEVED' if is_fc else 'NOT ACHIEVED'}")
+        print(f"\n[FORM CLOSURE] {'ACHIEVED' if is_fc else 'NOT ACHIEVED'}")
         print(f"  Contacts: {metrics['num_contacts']}")
         print(f"  Angular span: {metrics['angular_span']:.1f}°")
         print(f"  Total normal force: {metrics['total_normal_force']:.6f} N")
@@ -643,31 +682,56 @@ def main():
         # Automatically save a 2D projection plot for this specific run
         plot_path = f"squirrel_paw_results/contact_plot_{run_id}.png"
         plot_contacts_2d_from_log(csv_path, output_path=plot_path, show_plot=False)
-        print(f"[AUTO-ANALYSIS] 2D Contact plot saved to: {plot_path}")
+        print(f"[CONTACT] 2D Contact plot saved to: {plot_path}")
 
     except Exception as e:
-        print(f"[AUTO-ANALYSIS] Error during metrics calculation: {e}")
+        print(f"[ERROR] Error during metrics calculation: {e}")
+
+    # summary_file = "squirrel_paw_results/sweep_summary.csv"
+    # file_exists = os.path.isfile(summary_file)
+
+    # with open(summary_file, mode='a', newline='') as f:
+    #     writer = csv.writer(f)
+    #     if not file_exists:
+    #         writer.writerow(["run_id", "sol", "E", "tension", "cyl_rad", "approach_deg", 
+    #                         "geometric_fc", "angular_span", "num_contacts", "total_energy"])
+        
+    #     writer.writerow([
+    #         run_id, args.sol, E, tension, cyl_radius, args.approach_deg,
+    #         is_fc, metrics['angular_span'], metrics['num_contacts'], 
+    #         data_to_save.get("metric_energy_total", [0])[0] 
+    #     ])
 
     summary_file = "squirrel_paw_results/sweep_summary.csv"
     file_exists = os.path.isfile(summary_file)
 
-    with open(summary_file, mode='a', newline='') as f:
-        writer = csv.writer(f)
-        # Write header only if file is new
-        if not file_exists:
-            writer.writerow(["run_id", "sol", "E", "tension", "cyl_rad", "approach_deg", 
-                            "geometric_fc", "angular_span", "num_contacts", "total_energy"])
-        
-        # Write the results for THIS run
-        writer.writerow([
-            run_id, args.sol, E, tension, cyl_radius, args.approach_deg,
-            is_fc, metrics['angular_span'], metrics['num_contacts'], 
-            # Note: assuming you calculated energy earlier
-            data_to_save.get("metric_energy_total", [0])[0] 
-        ])
+    # The data we want to save
+    row_data = [
+        run_id, args.sol, E, tension, cyl_radius, args.approach_deg,
+        is_fc, metrics['angular_span'], metrics['num_contacts'], 
+        data_to_save.get("metric_energy_total", [0])[0] 
+    ]
 
-    if args.debug:
-        print("[DEBUG] Plotting total force magnitudes and directions.")
+    # We use 'a' for append mode
+    with open(summary_file, mode='a', newline='') as f:
+        # --- LOCKING MECHANISM ---
+        # This prevents other processes from writing to the file at the same time
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX) # Exclusive lock
+            
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(["run_id", "sol", "E", "tension", "cyl_rad", "approach_deg", 
+                                "geometric_fc", "angular_span", "num_contacts", "total_energy"])
+            
+            writer.writerow(row_data)
+            f.flush() # Force write to disk
+            
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN) # Release the lock
+
+        if args.debug:
+            print("[DEBUG] Plotting total force magnitudes and directions.")
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
@@ -698,7 +762,7 @@ def main():
             F = data["external_forces"][idx]          # (3, n_nodes)
             mag = np.linalg.norm(F, axis=0)  # (n_nodes,)
 
-            force_scale = 0.02   # tune for visibility in your axis limits
+            force_scale = 0.02
             step_nodes  = 4
 
             for i in range(0, F.shape[1], step_nodes):
@@ -713,6 +777,17 @@ def main():
                     normalize=True,
                     color="magenta",
                 )
+
+            for v_idx in vertebra_nodes:
+                v_idx = int(v_idx)
+                f_vec = F[:, v_idx]
+                if np.linalg.norm(f_vec) > 1e-5:
+                    ax.quiver(
+                        P[0, v_idx], P[1, v_idx], P[2, v_idx],
+                        f_vec[0], f_vec[1], f_vec[2],
+                        length=0.02,
+                        color="cyan",
+                    )
 
         center = cylinder.position_collection[:, 0]
         axis_dir = cylinder.director_collection[2, :, 0]
