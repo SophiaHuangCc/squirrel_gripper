@@ -32,7 +32,7 @@ class TendonForces(NoForces):
 
     """
 
-    def __init__(self, vertebra_height, num_vertebrae, first_vertebra_node, final_vertebra_node, vertebra_mass, tension, vertebra_height_orientation, n_elements):
+    def __init__(self, vertebra_height, num_vertebrae, first_vertebra_node, final_vertebra_node, vertebra_mass, tension, vertebra_height_orientation, n_elements, vertebra_nodes_list=None):
         """
 
         Parameters 
@@ -53,6 +53,8 @@ class TendonForces(NoForces):
             1D (dim) numpy array. Describes the orientatation of the vertebrae in the system.
         n_elements: int
             Total amount of nodes in the rod system. This value is set in the simulator and is copied to this class for later use.
+        vertebra_nodes_list: list, optional
+            1D (dim) list. If provided, this list will be used as the vertebra_nodes instead of calculating them uniformly.
         """
         super(TendonForces, self).__init__()
 
@@ -64,11 +66,23 @@ class TendonForces(NoForces):
         self.n_elements = n_elements
         self.vertebra_weight_vector = np.array([0.0, 0.0, -vertebra_mass * 9.80665])
 
+        ##### Start of modified section #####
+        # If a manual list of vertebra nodes is provided, use it
+        if vertebra_nodes_list is not None:
+            self.vertebra_nodes = list(vertebra_nodes_list)
+            self.num_vertebrae = len(self.vertebra_nodes)
+        else: # linear interpolation of vertebra nodes
+            self.vertebra_nodes = []
+            vertebra_increment = (final_vertebra_node - first_vertebra_node)/(num_vertebrae - 1)
+            for i in range(num_vertebrae):
+                self.vertebra_nodes.append(round(i * vertebra_increment + first_vertebra_node))
+
         # Creating vector containing the node numbers with the vertebras for this instance of TendonForces
-        self.vertebra_nodes = []
-        vertebra_increment = (final_vertebra_node - first_vertebra_node)/(num_vertebrae - 1)
-        for i in range(num_vertebrae):
-            self.vertebra_nodes.append(round(i * vertebra_increment + first_vertebra_node))
+        # self.vertebra_nodes = []
+        # vertebra_increment = (final_vertebra_node - first_vertebra_node)/(num_vertebrae - 1)
+        # for i in range(num_vertebrae):
+        #     self.vertebra_nodes.append(round(i * vertebra_increment + first_vertebra_node))
+        ##### End of modified section #####
 
     def apply_forces(self, system: SystemType, time: np.float64 = 0.0):
         # The application of the force data is done outside of the @njit decorated function because self.force_data needs to be referenced in self.compute_torques()

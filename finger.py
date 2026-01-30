@@ -94,7 +94,7 @@ from TendonForces import TendonForces
 
 # Custom metrics functions
 from grasp_metrics import check_force_closure, compute_total_energy
-from metrics import analyze_grasp_from_log, plot_contacts_2d_from_log
+from metrics import analyze_grasp_from_log, plot_contacts_2d_from_log, check_stable_closure_hanging, analyze_stable_closure_from_log
 
 
 ###################################################
@@ -272,13 +272,35 @@ def main():
     parser.add_argument("--n_elements", type=int, default=80, help="Number of rod elements")
     # cylinder and contact params
     parser.add_argument("--cyl_rad", type=float, default=0.015, help="Cylinder radius (m)")
-    parser.add_argument("--k_contact", type=float, default=2e3, help="Contact stiffness")
-    
+    parser.add_argument("--k_contact", type=float, default=1.25e4, help="Contact stiffness")
+    # finger arguments
+    parser.add_argument("--base_len", type=float, default=0.10, help="Finger length in meters")
+    parser.add_argument("--base_rad", type=float, default=0.003, help="Finger radius in meters")
+    parser.add_argument("--nu_contact", type=float, default=5.0, help="Contact damping")
+    parser.add_argument("--mu_contact", type=float, default=0.6, help="Friction coefficient")
+    parser.add_argument("--vel_damp_contact", type=int, default=10, help="Numerical contact stability")
+    parser.add_argument("--poisson_nu", type=float, default=0.4, help="Poisson's ratio")
+    # vertebrae arguments
+    parser.add_argument("--v_mass", type=float, default=0.002, help="Mass of each vertebra")
+    parser.add_argument("--num_v", type=int, default=3, help="Number of vertebrae")
+    parser.add_argument("--v_start", type=int, default=30, help="Node index of first vertebra")
+    parser.add_argument("--v_end", type=int, default=62, help="Node index of final vertebra")
+    parser.add_argument("--v_height", type=float, default=0.005, help="Tendon distance from center")
+    # vertebra selector: 'uniform' or 'manual'
+    parser.add_argument("--v_mode", type=str, default="uniform", 
+                        choices=["uniform", "manual"], 
+                        help="How to place vertebrae: 'uniform' uses linspace, 'manual' uses v_list")
+    # Manual list input (passed as a string of comma-separated integers)
+    parser.add_argument("--v_list", type=str, default="30,46,62", 
+                        help="Comma-separated node indices for manual vertebrae placement")
+    # squirrel body mass for stability calculation
+    parser.add_argument("--body_mass", type=float, default=0.5, help="Mass of the squirrel body in kg")
+
     args = parser.parse_args()
 
     # Parameters from args (key variables to tune)
     E = args.E
-    nu = 0.4  # Poisson's ratio (0.45~0.5 for TPU)
+    nu = args.poisson_nu  # Poisson's ratio (0.3~0.4 for TPU)
     G = E / (2 * (1 + nu))  # Shear modulus in Pa
     tension = args.tension
     n_elements = args.n_elements
@@ -287,8 +309,8 @@ def main():
     cyl_radius = args.cyl_rad
     
     # Geometry for finger (optimize later?)
-    base_length = 0.10 # 100 mm (TODO: optimize length?)
-    base_radius = 3e-3 # 4 mm
+    base_length = args.base_len
+    base_radius = args.base_rad
     density = 1200
     mass_second_moment_of_inertia = 0.25 * np.pi * base_radius**4
     
@@ -298,17 +320,21 @@ def main():
     cyl_start = np.array([0.025, -cyl_length / 2.0, -0.03])
     cyl_direction = np.array([0.0, 1.0, 0.0])
     cyl_normal = np.array([1.0, 0.0, 0.0])
-    nu_contact = 5.0 # 5.0~20.0
-    mu_contact = 0.6 # 0.6~1.0
-    vel_damp_contact = 10 # 10~50
+    nu_contact = args.nu_contact # 5.0~20.0
+    mu_contact = args.mu_contact # 0.6~1.0
+    vel_damp_contact = args.vel_damp_contact # 10~50
 
     # Vertebrae parameters
-    vertebra_mass = 0.002
-    num_vertebrae = 3
-    first_vertebra_node = 30
-    final_vertebra_node = 62
-    vertebra_height = 0.005
-    vertebra_nodes = np.linspace(first_vertebra_node, final_vertebra_node, num_vertebrae, dtype=int)
+    vertebra_mass = args.v_mass
+    num_vertebrae = args.num_v
+    first_vertebra_node = args.v_start
+    final_vertebra_node = args.v_end
+    vertebra_height = args.v_height
+    if args.v_mode == "uniform":
+        vertebra_nodes = np.linspace(first_vertebra_node, final_vertebra_node, num_vertebrae, dtype=int)
+    elif args.v_mode == "manual":
+        vertebra_nodes = np.array([int(x) for x in args.v_list.split(",")], dtype=int)
+        num_vertebrae = len(vertebra_nodes)
     print(f"[VISUALIZATION] Drawing red disks at nodes: {vertebra_nodes}")
     
     # Time stepping parameters
@@ -385,10 +411,9 @@ def main():
     if args.mode == "soft_joints": 
         print(f">>> MODE: Automatic Soft Joints at Vertebrae Locations")
         # Identify the exact same nodes used by TendonForces
-        joint_indices = np.linspace(first_vertebra_node, final_vertebra_node, num_vertebrae, dtype=int)
-        print(f"[SOFT JOINTS] at nodes: {joint_indices}")
-        
-        for j in joint_indices:
+        # joint_indices = np.linspace(first_vertebra_node, final_vertebra_node, num_vertebrae, dtype=int)
+        print(f"[SOFT JOINTS] using mode '{args.v_mode}' at nodes: {vertebra_nodes}")        
+        for j in vertebra_nodes:
             idx = int(np.clip(j, 0, finger.bend_matrix.shape[2] - 1))
             finger.bend_matrix[1, 1, idx] *= joint_mult
             finger.bend_matrix[2, 2, idx] *= joint_mult
@@ -430,7 +455,8 @@ def main():
             ramp_up_time=1.0,
             use_gradient=True,
             center_seek=True, # Direction Steering ON
-            cyl_center=cyl_center_fixed
+            cyl_center=cyl_center_fixed,
+            vertebra_nodes_list=vertebra_nodes,
         )
     else:
         tendon_actuation = sim.add_forcing_to(finger).using(
@@ -443,6 +469,7 @@ def main():
             tension=tension,
             vertebra_height_orientation=v_height_dir,
             n_elements=n_elements,
+            vertebra_nodes_list=vertebra_nodes,
         )
 
     # Gravity
@@ -464,6 +491,18 @@ def main():
         velocity_damping_coefficient=vel_damp_contact,
         friction_coefficient=mu_contact,
     )
+
+    # --- PHYSICAL CONTACT STIFFNESS CALCULATION ---
+    dx = base_length / n_elements
+    # Assuming contact width is roughly the radius of the finger for a solid grip
+    contact_width = base_radius 
+    area_per_element = contact_width * dx
+
+    # k_contact = (E * Area) / L_characteristic
+    # L_characteristic is the thickness of the material being compressed (finger diameter)
+    k_contact_physical = (E * area_per_element) / (2 * base_radius)
+
+    print(f"[PHYSICS] Calculated k_contact: {k_contact_physical:.2e} N/m")
 
 
     # Callbacks for data collection
@@ -563,13 +602,13 @@ def main():
     contact_normals = contact_vertices - cyl_axis_pos
     contact_normals /= np.linalg.norm(contact_normals, axis=1)[:, None]
 
-    is_stable = check_force_closure(contact_vertices, contact_normals, mu_contact)
+    is_force_closure = check_force_closure(contact_vertices, contact_normals, mu_contact)
     energy_score = compute_total_energy(finger, normal_forces[contact_idx], k_contact)
 
-    data_to_save["metric_is_stable"] = np.array([is_stable])
+    data_to_save["metric_is_force_closure"] = np.array([is_force_closure])
     data_to_save["metric_energy_total"] = np.array([energy_score])
     data_to_save["metric_contact_count"] = np.array([len(contact_idx)])
-    print(f"[METRICS] Force Closure Stable: {is_stable}  Total Energy: {energy_score:.6f} J  Contact Points: {len(contact_idx)}")
+    print(f"[METRICS] Force Closure Stable: {is_force_closure}  Total Energy: {energy_score:.6f} J  Contact Points: {len(contact_idx)}")
 
     csv_path = f"squirrel_paw_results/contact_log_{run_id}.csv"
 
@@ -587,8 +626,6 @@ def main():
         cylinder.director_collection[0, :, 0].copy(),
     ]
 
-    k_contact = k_contact 
-    mu_contact = mu_contact
     dt_saved = step_skip * time_step
 
     best = None
@@ -684,6 +721,27 @@ def main():
         plot_path = f"squirrel_paw_results/contact_plot_{run_id}.png"
         plot_contacts_2d_from_log(csv_path, output_path=plot_path, show_plot=False)
         print(f"[CONTACT] 2D Contact plot saved to: {plot_path}")
+
+        # stable closure: can the squirrel hang without falling?
+        # Calculate masses
+        rod_mass = np.sum(finger.mass)
+        v_mass_total = num_vertebrae * vertebra_mass
+        
+        is_stable, stab_metrics = analyze_stable_closure_from_log(
+            csv_path,
+            rod_mass=rod_mass,
+            v_mass_total=v_mass_total,
+            args=args
+        )
+        data_to_save["stability_success"] = np.array([is_stable])
+        data_to_save["total_load_n"] = np.array([stab_metrics["total_load_n"]])
+        data_to_save["total_support_n"] = np.array([stab_metrics["total_support_n"]])
+        data_to_save["stability_margin"] = np.array([stab_metrics["margin"]])
+        
+        print(f"\n[STABILITY - HANGING]")
+        print(f"  Load: {stab_metrics['total_load_n']:.4f} N")
+        print(f"  Vertical Support: {stab_metrics['total_support_n']:.4f} N")
+        print(f"  Stable: {is_stable} (Margin: {stab_metrics['margin']:.2f}x)")
 
     except Exception as e:
         print(f"[ERROR] Error during metrics calculation: {e}")

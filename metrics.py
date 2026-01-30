@@ -388,6 +388,25 @@ def analyze_grasp_from_log(
     return is_fc, metrics
 
 
+def analyze_stable_closure_from_log(
+    csv_path: Union[str, Path],
+    frame_idx: Optional[int] = None,
+    rod_mass: float = 0.1,      # in kg
+    v_mass_total: float = 0.2,  # in kg
+    args: Optional[object] = None
+) -> Tuple[bool, Dict]:
+    data = read_contact_log(csv_path)
+    frame_data = get_frame_contacts(data, frame_idx)
+    
+    is_stable, stab_metrics = check_stable_closure_hanging(
+        frame_data, 
+        finger_mass=(rod_mass + v_mass_total),
+        body_mass=args.body_mass
+    )
+    
+    return is_stable, stab_metrics
+
+
 def plot_contacts_2d(
     contact_data: List[Dict],
     output_path: Optional[Union[str, Path]] = None,
@@ -584,3 +603,55 @@ if __name__ == "__main__":
     if plot_output or show_plot:
         print(f"\nGenerating 2D contact plot...")
         plot_contacts_2d_from_log(csv_path, output_path=plot_output, show_plot=show_plot)
+
+    
+def check_stable_closure_hanging(
+    contact_data: List[Dict],
+    finger_mass: float,  # in kg
+    body_mass: float = 0.5 # Squirrel body in kg
+) -> Tuple[bool, Dict]:
+    """
+    Evaluates if the vertical upward forces (Normal_z + Friction_z) 
+    exceed the total weight of the squirrel.
+    """
+    if len(contact_data) == 0:
+        return False, {"margin": 0.0, "support": 0.0, "load": 0.0}
+
+    # 1. Calculate the Load (Gravity pulling down)
+    g = 9.80665
+    total_weight = (finger_mass + body_mass) * g
+    
+    # 2. Calculate Vertical Support
+    # Note: In the simulation, friction_force is a magnitude. 
+    # To get the vertical COMPONENT of friction, we assume it acts 
+    # purely against gravity in the +Z direction if sliding occurs.
+    
+    total_upward_support = 0.0
+    
+    for row in contact_data:
+        # Normal Force Component:
+        # Direction is from cylinder center to node
+        dz = row['node_z'] - row['cyl_center_z']
+        radial_dist = row['radial_dist']
+        
+        # Unit vector z-component
+        nz = dz / (radial_dist + 1e-12)
+        normal_z_contribution = row['normal_force'] * nz
+        
+        # Friction Component:
+        # Friction is tangential. In a static hanging case, friction 
+        # is primarily fighting gravity, so we take its full magnitude 
+        # as a potential upward force (+Z).
+        friction_z_contribution = row['friction_force']
+        
+        total_upward_support += (normal_z_contribution + friction_z_contribution)
+
+    is_stable = total_upward_support >= total_weight
+    margin = total_upward_support / total_weight if total_weight > 0 else 0.0
+    
+    return is_stable, {
+        "is_stable": is_stable,
+        "margin": margin,
+        "total_support_n": total_upward_support,
+        "total_load_n": total_weight
+    }
