@@ -1,11 +1,3 @@
-"""
-Manually tune:
-- E, G, tension
-- cylinder position/size
-- contact params
-- damping
-"""
-
 """"
 This file uses PyElastica to model a squirrel-inspired, tendon-driven soft robotic 
 finger and visualizes its interaction with a rigid cylindrical branch.
