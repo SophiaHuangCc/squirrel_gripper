@@ -1,6 +1,4 @@
 """
-single_finger_manual.py
-
 Manually tune:
 - E, G, tension
 - cylinder position/size
@@ -27,11 +25,14 @@ Environment (Branch):
     Radius: Variable (10-15 mm).
     Contact: Rod-Cylinder penalty-based contact with friction (RodCylinderContact).
 
+Visualization:
+    Frame coordinates are as follows: X - to the right, Y - into the screen, Z - upwards.
+
 Key Solutions for Distal Tip Curling:
     1. Dynamic Approach Angle: Modifying the landing orientation (0° to 90°).
     2. Non-uniform Tendon Force: Linear force gradient increasing toward the tip. #TODO: not sure if realistic
     3. Center-Seeking Direction: Dynamic tendon force vectors steered toward the 
-       cylinder axis to maximize angular span and force closure.
+       cylinder axis to maximize angular span and form/force closure.
 
 Modeling Principles & Assumptions:
     - Backbone modeled as a Cosserat rod with 80 elements for high-fidelity bending.
@@ -39,7 +40,7 @@ Modeling Principles & Assumptions:
       locations to mimic biological joint flexibility.
     - Tendon Force: Applied as external forces and torques at discrete nodes, 
       mimicking biological flexor tendons.
-    - Systematic Sweep: Automated logging of Force Closure (Geometric/Friction) 
+    - Systematic Sweep: Automated logging of Form/Force Closure (Geometric/Friction) 
       and Total Energy Metrics for parameter optimization.
 """
 
@@ -277,7 +278,7 @@ def main():
 
     # Parameters from args (key variables to tune)
     E = args.E
-    nu = 0.5  # Poisson's ratio (0.45~0.5 for TPU)
+    nu = 0.4  # Poisson's ratio (0.45~0.5 for TPU)
     G = E / (2 * (1 + nu))  # Shear modulus in Pa
     tension = args.tension
     n_elements = args.n_elements
@@ -287,7 +288,7 @@ def main():
     
     # Geometry for finger (optimize later?)
     base_length = 0.10 # 100 mm (TODO: optimize length?)
-    base_radius = 3e-3 # 3 mm
+    base_radius = 3e-3 # 4 mm
     density = 1200
     mass_second_moment_of_inertia = 0.25 * np.pi * base_radius**4
     
@@ -303,10 +304,10 @@ def main():
 
     # Vertebrae parameters
     vertebra_mass = 0.002
-    num_vertebrae = 4
+    num_vertebrae = 3
     first_vertebra_node = 30
-    final_vertebra_node = n_elements - 1
-    vertebra_height = 0.01
+    final_vertebra_node = 62
+    vertebra_height = 0.005
     vertebra_nodes = np.linspace(first_vertebra_node, final_vertebra_node, num_vertebrae, dtype=int)
     print(f"[VISUALIZATION] Drawing red disks at nodes: {vertebra_nodes}")
     
@@ -351,7 +352,7 @@ def main():
         normal = np.cross(world_side, direction)
         normal /= np.linalg.norm(normal)
         v_height_dir = normal.copy()
-        start_pos = np.array([0.0, 0.0, -0.02 * np.cos(angle_rad)])
+        start_pos = np.array([0.0, 0.0, -0.05 * np.cos(angle_rad)])
     elif args.sol == "nonuniform_tendon" or args.sol == "change_tendon_direction":
         print(">>> MODE: Combined Gradient Magnitude + Center-Seeking Direction")
         # Setup the cylinder center reference
@@ -416,7 +417,7 @@ def main():
     )
 
     if args.sol == "nonuniform_tendon" or args.sol == "change_tendon_direction":
-        sim.add_forcing_to(finger).using(
+        tendon_actuation = sim.add_forcing_to(finger).using(
             TendonForcesRamp,
             vertebra_height=vertebra_height,
             num_vertebrae=num_vertebrae,
@@ -556,7 +557,7 @@ def main():
     final_forces = data["external_forces"][-1] # (3, N)
     normal_forces = np.linalg.norm(final_forces, axis=0)
 
-    contact_idx = np.where(normal_forces > 1.0)[0]
+    contact_idx = np.where(normal_forces > 1e-1)[0]
     contact_vertices = final_pos[:, contact_idx].T
     cyl_axis_pos = cylinder.position_collection[:, 0]
     contact_normals = contact_vertices - cyl_axis_pos
