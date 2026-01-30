@@ -295,6 +295,10 @@ def main():
                         help="Comma-separated node indices for manual vertebrae placement")
     # squirrel body mass for stability calculation
     parser.add_argument("--body_mass", type=float, default=0.5, help="Mass of the squirrel body in kg")
+    parser.add_argument("--suffix", type=str, default="default", 
+                        help="Suffix for output filenames to prevent overwriting")
+    parser.add_argument("--output_dir", type=str, default="squirrel_paw_results", 
+                        help="Directory to save output files")
 
     args = parser.parse_args()
 
@@ -307,7 +311,7 @@ def main():
     damping_constant = args.damping
     k_contact = args.k_contact
     cyl_radius = args.cyl_rad
-    
+    suffix = args.suffix
     # Geometry for finger (optimize later?)
     base_length = args.base_len
     base_radius = args.base_rad
@@ -348,10 +352,10 @@ def main():
     step_skip = int(1.0 / (rendering_fps * time_step))
 
     # Output setup
-    base_outdir = "squirrel_paw_results"
+    base_outdir = args.output_dir
     os.makedirs(base_outdir, exist_ok=True)
     run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    video_path = os.path.join(base_outdir, f"output_{run_id}.mp4")
+    video_path = os.path.join(base_outdir, f"output_{run_id}_{suffix}.mp4")
     print(f"\n==== RUNNING: {args.sol} ====")
     print(f"E={E:.2e}  G={G:.2e}  tension={tension:.2f}  cyl_radius={cyl_radius:.3f}")
     print(f"contact: k={k_contact} nu={nu_contact} mu={mu_contact} vel_damp={vel_damp_contact}")
@@ -610,7 +614,7 @@ def main():
     data_to_save["metric_contact_count"] = np.array([len(contact_idx)])
     print(f"[METRICS] Force Closure Stable: {is_force_closure}  Total Energy: {energy_score:.6f} J  Contact Points: {len(contact_idx)}")
 
-    csv_path = f"squirrel_paw_results/contact_log_{run_id}.csv"
+    csv_path = os.path.join(base_outdir, f"contact_log_{run_id}_{suffix}.csv")
 
     pos_data = data["position"]
     vel_data = data["velocity"]
@@ -650,7 +654,7 @@ def main():
     max_normal_force_overall = 0.0
     contact_data = []
 
-    with open(f"squirrel_paw_results/contact_log_{run_id}.csv", "w", newline="") as f:
+    with open(os.path.join(base_outdir, f"contact_log_{run_id}_{suffix}.csv"), "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
             "frame_idx", "time", "node_idx",
@@ -695,7 +699,7 @@ def main():
     else:
         print(f"[CONTACT] First contact frame={first_contact_frame}  t={first_contact_frame*dt_saved:.4f}s")
         print(f"[CONTACT] Max normal force over all frames: {max_normal_force_overall:.6f} N")
-        print(f"[CONTACT] Wrote squirrel_paw_results/contact_log_{run_id}.csv")
+        print(f"[CONTACT] Wrote {os.path.join(base_outdir, f'contact_log_{run_id}_{suffix}.csv')}")
 
     print(f"\n[CONTACT] Starting geometric metrics check for: {csv_path}")
     try:
@@ -712,13 +716,13 @@ def main():
         print(f"  Max normal force: {metrics['max_normal_force']:.6f} N")
         print(f"  Total friction force: {metrics['total_friction_force']:.6f} N")
 
-        filename = f"squirrel_paw_results/master_log_{run_id}.npz"
+        filename = os.path.join(base_outdir, f"master_log_{run_id}_{suffix}.npz")
         np.savez_compressed(filename, **data_to_save)
 
         print(f"Archive Complete: {filename}")
 
         # Automatically save a 2D projection plot for this specific run
-        plot_path = f"squirrel_paw_results/contact_plot_{run_id}.png"
+        plot_path = os.path.join(base_outdir, f"contact_plot_{run_id}_{suffix}.png")
         plot_contacts_2d_from_log(csv_path, output_path=plot_path, show_plot=False)
         print(f"[CONTACT] 2D Contact plot saved to: {plot_path}")
 
@@ -746,22 +750,7 @@ def main():
     except Exception as e:
         print(f"[ERROR] Error during metrics calculation: {e}")
 
-    # summary_file = "squirrel_paw_results/sweep_summary.csv"
-    # file_exists = os.path.isfile(summary_file)
-
-    # with open(summary_file, mode='a', newline='') as f:
-    #     writer = csv.writer(f)
-    #     if not file_exists:
-    #         writer.writerow(["run_id", "sol", "E", "tension", "cyl_rad", "approach_deg", 
-    #                         "geometric_fc", "angular_span", "num_contacts", "total_energy"])
-        
-    #     writer.writerow([
-    #         run_id, args.sol, E, tension, cyl_radius, args.approach_deg,
-    #         is_fc, metrics['angular_span'], metrics['num_contacts'], 
-    #         data_to_save.get("metric_energy_total", [0])[0] 
-    #     ])
-
-    summary_file = "squirrel_paw_results/sweep_summary.csv"
+    summary_file = os.path.join(base_outdir, f"sweep_summary.csv")
     file_exists = os.path.isfile(summary_file)
 
     # The data we want to save

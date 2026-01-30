@@ -5,7 +5,7 @@ import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 
-# On Ubuntu, 'spawn' prevents Numba/CUDA-related deadlocks in parallel loops
+# Ensure Mac uses the correct process start method
 if __name__ == "__main__":
     try:
         multiprocessing.set_start_method('spawn', force=True)
@@ -17,6 +17,7 @@ def run_simulation(params):
     sol, e, t, rad, ang = params
     
     # Create a unique suffix to prevent file overwriting
+    # Replaces dots with 'p' to keep filenames clean (e.g., 0.01 -> 0p01)
     suffix = f"{sol}_E{e:.1e}_T{t}_R{rad}_A{ang}".replace(".", "p")
     
     cmd = [
@@ -31,7 +32,7 @@ def run_simulation(params):
     ]
     
     try:
-        # We capture output to check for those 'numerical explosions' in the logs
+        # capture_output=True keeps the terminal clean
         result = subprocess.run(
             cmd, 
             capture_output=True, 
@@ -61,41 +62,36 @@ if __name__ == "__main__":
                         tasks.append((sol, e, t, rad, ang))
 
     # --- 2. Parallel Execution Setup ---
-    # Lab machines can handle more load. Using cpu_count - 2 to stay safe.
-    num_workers = max(1, os.cpu_count() - 2) 
+    # For Mac, 75% of cores is the "sweet spot" for speed vs system stability
+    num_workers = max(1, int(os.cpu_count() * 0.75)) 
+    tasks_to_run = tasks[:20]
     
-    # --- TEST MODE SWITCH ---
-    # Uncomment tasks[:20] for a quick test, use 'tasks' for the full 400-run sweep
-    tasks_to_run = tasks[:20] 
-    # tasks_to_run = tasks 
-    
-    print(f"--- UBUNTU LAB SWEEP START ---")
-    print(f"Total Tasks in Queue: {len(tasks)}")
-    print(f"Executing: {len(tasks_to_run)} samples")
+    print(f"--- SQUIRREL GRIP SWEEP START ---")
+    print(f"Total Tasks: {len(tasks)}")
     print(f"Parallel Workers: {num_workers}")
     print(f"---------------------------------")
 
     # --- 3. Run with Progress Bar ---
     results = []
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        # tqdm shows you exactly how many it/s the lab machine achieves
+        # list(tqdm(...)) wraps the generator to show a live progress bar
+        # results = list(tqdm(executor.map(run_simulation, tasks), total=len(tasks)))
         results = list(tqdm(executor.map(run_simulation, tasks_to_run), total=len(tasks_to_run)))
+
 
     # --- 4. Final Summary ---
     successes = sum(1 for r in results if r[0])
+    # failures = len(tasks) - successes
     failures = len(results) - successes
     
     print(f"\n--- SWEEP COMPLETE ---")
-    print(f"Total Completed: {len(results)}")
     print(f"Success: {successes}")
     print(f"Failure: {failures}")
     
     if failures > 0:
-        print("\nFailure Analysis (First 5):")
+        print("\nFirst 5 Failure Details:")
         fail_count = 0
         for success, params, err in results:
             if not success and fail_count < 5:
-                # We print more of the error log on the lab machine to help debug physics crashes
-                print(f"[-] Params {params} crashed. Tail of error log:")
-                print(f"{err[-300:]}\n")
+                print(f"Params {params} failed with error:\n{err[:200]}...")
                 fail_count += 1
