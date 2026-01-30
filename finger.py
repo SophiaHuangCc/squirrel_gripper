@@ -702,6 +702,14 @@ def main():
         print(f"[CONTACT] Wrote {os.path.join(base_outdir, f'contact_log_{run_id}_{suffix}.csv')}")
 
     print(f"\n[CONTACT] Starting geometric metrics check for: {csv_path}")
+    is_fc = False
+    metrics = {
+        "num_contacts": 0,
+        "angular_span": 0.0,
+        "total_normal_force": 0.0,
+        "total_friction_force": 0.0,
+        "max_normal_force": 0.0
+    }
     try:
         is_fc, metrics = analyze_grasp_from_log(csv_path)
         data_to_save["geometric_success"] = np.array([is_fc])
