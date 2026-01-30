@@ -21,6 +21,8 @@ manual_videos/
 manual_videos/**
 sweep_videos/
 sweep_videos/**
+runs/
+runs/**
 
 # --- Your local archive ---
 outdated_files/
