@@ -1,0 +1,28 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.nbc
+*.nbi
+
+# --- Virtual envs ---
+.venv/
+venv/
+env/
+
+# --- OS / editor ---
+.DS_Store
+.vscode/
+.idea/
+
+# --- Your large/local data ---
+squirrel_paw_results/
+squirrel_paw_results/**
+
+# --- Your local archive ---
+outdated_files/
+outdated_files/**
+
+# --- Logs / outputs (optional) ---
+*.log
+outputs/
+runs/
