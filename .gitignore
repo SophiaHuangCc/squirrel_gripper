@@ -17,12 +17,11 @@ env/
 # --- Your large/local data ---
 squirrel_paw_results/
 squirrel_paw_results/**
+manual_videos/
+manual_videos/**
+sweep_videos/
+sweep_videos/**
 
 # --- Your local archive ---
 outdated_files/
 outdated_files/**
-
-# --- Logs / outputs (optional) ---
-*.log
-outputs/
-runs/
