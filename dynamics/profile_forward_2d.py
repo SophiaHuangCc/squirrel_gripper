@@ -2,6 +2,7 @@ import math
 import torch
 import torch.nn as nn
 
+# Start with 2D for the finger-cylinder contact configuration
 class Embedder:
     def __init__(self, **kwargs):
         self.kwargs = kwargs

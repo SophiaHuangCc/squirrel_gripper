@@ -14,197 +14,95 @@ from dynamics.dataloader import DynamicsDataset
 from dynamics.trainer import Trainer
 from dynamics.parser import parse
 
-def validate(args, val_loader, trainer, threshold_std=[0.641, 0.625, 0.3846]):
-    print('validation:')
+def validate(args, val_loader, trainer, threshold_std=[0.5, 0.5, 0.5]):
+    print('--- Validation Step ---')
     average_val_loss = 0
     average_val_accuracy = 0
-    average_val_accuracy_x = 0
-    average_val_accuracy_y = 0
+    
+    trainer.model.eval()
     with torch.no_grad():
         for batch in val_loader:
-            score = batch['scores']     # [batch_size, num_ori*num_pos, 3]
-            input_ori = batch['input_ori'].reshape((-1, 1)).cuda()
-            input_pos = batch['input_pos'].reshape((-1, 2)).cuda()
-            object_vertices = None
-            if args.fingers_3d:
-                ctrlpts = torch.cat([batch['ctrlpts'] for _ in range(score.size(1))], 0).moveaxis(-1, -2).cuda()
-                object_vertices = torch.cat([batch['object_vertices'] for _ in range(score.size(1))], 0).moveaxis(-1, -2).cuda()
-            else:
-                ctrlpts = torch.cat([batch['ctrlpts'][..., 1] for _ in range(score.size(1))], 1).reshape((input_ori.shape[0], -1)).cuda()
-                object_vertices = torch.cat([batch['object_vertices'] for _ in range(score.size(1))], 1).reshape((input_ori.shape[0], -1)).cuda()
-            score = score.reshape((-1, 3)).cuda()
-            pred, loss = trainer.inference(None, ctrlpts, score, input_ori, input_pos, object_vertices)
-            accuracy = torch.mean(torch.Tensor([2 if score_ori > threshold_std[0] else 0 if score_ori < -threshold_std[0] else 1 for score_ori in score[..., 0]]) == torch.Tensor([2 if pred_ori > threshold_std[0] else 0 if pred_ori < -threshold_std[0] else 1 for pred_ori in pred[..., 0]]), dtype=torch.float32)
-            accuracy_x = torch.mean(torch.Tensor([2 if score_x > threshold_std[1] else 0 if score_x < -threshold_std[1] else 1 for score_x in score[..., 1]]) == torch.Tensor([2 if pred_x > threshold_std[1] else 0 if pred_x < -threshold_std[1] else 1 for pred_x in pred[..., 1]]), dtype=torch.float32)
-            accuracy_y = torch.mean(torch.Tensor([2 if score_y > threshold_std[2] else 0 if score_y < -threshold_std[2] else 1 for score_y in score[..., 2]]) == torch.Tensor([2 if pred_y > threshold_std[2] else 0 if pred_y < -threshold_std[2] else 1 for pred_y in pred[..., 2]]), dtype=torch.float32)
-            average_val_accuracy_x += accuracy_x
-            average_val_accuracy_y += accuracy_y
+            # Unpack Squirrel Gripper specific data
+            score = batch['scores'].cuda()
+            input_ori = batch['input_ori'].cuda()  # Approach Angle
+            input_pos = batch['input_pos'].cuda()  # [Tension, BaseRad]
+            ctrlpts = batch['ctrlpts'].cuda()      # Rod Geometry
+            
+            pred, loss = trainer.inference(None, ctrlpts, score, input_ori, input_pos, None)
+            
+            # Simple Binary Accuracy: Did we predict the success margin correctly?
+            accuracy = torch.mean((pred > threshold_std[0]).float() == (score > threshold_std[0]).float())
+            
             average_val_loss += loss
             average_val_accuracy += accuracy
+
     average_val_loss /= len(val_loader)
-    print('average val loss:', average_val_loss)
     average_val_accuracy /= len(val_loader)
-    print('average val accuracy:', average_val_accuracy)
-    average_val_accuracy_x /= len(val_loader)
-    print('average val accuracy x:', average_val_accuracy_x)
-    average_val_accuracy_y /= len(val_loader)
-    print('average val accuracy y:', average_val_accuracy_y)
-    return average_val_loss, average_val_accuracy, average_val_accuracy_x, average_val_accuracy_y
+    
+    print(f'Val Loss: {average_val_loss:.4f} | Val Accuracy: {average_val_accuracy:.4f}')
+    return average_val_loss, average_val_accuracy
 
 def train(args):
     wandb.init(
-        project='dynamics model',
+        project='squirrel-gripper-dynamics',
         config=args,
         dir=args.save_dir,
         name=args.wandb_id,
     )
-    gripper_pts_max_x = 0.12
-    gripper_pts_min_x = -0.12
-    if args.fingers_3d:
-        gripper_pts_max_y = 0
-        gripper_pts_min_y = -0.1
-        object_pts_max_x = 0.1
-        object_pts_min_x = -0.1
-        object_pts_max_y = 0.1
-        object_pts_min_y = -0.1
-    else:
-        gripper_pts_max_y = 0.015
-        gripper_pts_min_y = -0.045
-        object_pts_max_x = 0.05
-        object_pts_min_x = -0.05
-        object_pts_max_y = 0.05
-        object_pts_min_y = -0.05
-    gripper_pts_max_z = 0.12
-    gripper_pts_min_z = 0.0
-    object_pts_max_z = 0.12
-    object_pts_min_z = 0.0
-    train_dataset = DynamicsDataset(
-        dataset_dir=args.data_dir, 
-        # object_mesh_dir=args.object_mesh_dir,
-        object_mesh_dir=args.object_dir,
-        fingers_3d=args.fingers_3d, 
-        gripper_pts_max_x=gripper_pts_max_x, 
-        gripper_pts_min_x=gripper_pts_min_x, 
-        gripper_pts_max_y=gripper_pts_max_y, 
-        gripper_pts_min_y=gripper_pts_min_y, 
-        gripper_pts_max_z=gripper_pts_max_z, 
-        gripper_pts_min_z=gripper_pts_min_z, 
-        object_max_num_vertices=args.object_max_num_vertices, 
-        object_pts_max_x=object_pts_max_x, 
-        object_pts_min_x=object_pts_min_x, 
-        object_pts_max_y=object_pts_max_y, 
-        object_pts_min_y=object_pts_min_y, 
-        object_pts_max_z=object_pts_max_z, 
-        object_pts_min_z=object_pts_min_z)
-    threshold_std = train_dataset.threshold / train_dataset.std
-    val_dataset = DynamicsDataset(
-        dataset_dir=args.test_data_dir, 
-        # object_mesh_dir=args.object_mesh_dir,
-        object_mesh_dir=args.object_dir,
-        fingers_3d=args.fingers_3d,
-        gripper_pts_max_x=gripper_pts_max_x, 
-        gripper_pts_min_x=gripper_pts_min_x, 
-        gripper_pts_max_y=gripper_pts_max_y, 
-        gripper_pts_min_y=gripper_pts_min_y, 
-        gripper_pts_max_z=gripper_pts_max_z, 
-        gripper_pts_min_z=gripper_pts_min_z, 
-        object_max_num_vertices=args.object_max_num_vertices, 
-        object_pts_max_x=object_pts_max_x, 
-        object_pts_min_x=object_pts_min_x, 
-        object_pts_max_y=object_pts_max_y, 
-        object_pts_min_y=object_pts_min_y, 
-        object_pts_max_z=object_pts_max_z, 
-        object_pts_min_z=object_pts_min_z)
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, drop_last=False)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, drop_last=False)
+
+    # Initialize Dataset using the folders we set up in the previous steps
+    train_dataset = DynamicsDataset(dataset_dir=args.data_dir)
+    val_dataset = DynamicsDataset(dataset_dir=args.test_data_dir)
+    
+    # These thresholds define what we consider a "successful" grasp in training
+    threshold_std = train_dataset.threshold 
+
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+
     trainer = Trainer(args)
     trainer.create_model()
 
-    # short-cut for testing
     if args.mode == 'validate':
-        if args.checkpoint_path is None:
-            raise ValueError('checkpoint path is not specified')
         validate(args, val_loader, trainer, threshold_std=threshold_std)
         return
 
-    # train model
     if args.mode == 'train':
         best_val_loss = float('inf')
         last_best_epoch = 0
-        for epoch in tqdm(range(args.num_epochs)):
+        
+        for epoch in tqdm(range(args.num_epochs), desc="Epochs"):
             average_loss = 0
-            average_accuracy = 0
-            average_accuracy_x = 0
-            average_accuracy_y = 0
-            for idx_batch, batch in enumerate(tqdm(train_loader)):
-                score = batch['scores']     # [batch_size, num_ori*num_pos, 3]
-                input_ori = batch['input_ori'].reshape((-1, 1)).cuda()
-                input_pos = batch['input_pos'].reshape((-1, 2)).cuda()
-                object_vertices = None
-                if args.fingers_3d:
-                    ctrlpts = torch.cat([batch['ctrlpts'] for _ in range(score.size(1))], 0).moveaxis(-1, -2).cuda()
-                    object_vertices = torch.cat([batch['object_vertices'] for _ in range(score.size(1))], 0).moveaxis(-1, -2).cuda()
-                else:
-                    ctrlpts = torch.cat([batch['ctrlpts'][..., 1] for _ in range(score.size(1))], 1).reshape((input_ori.shape[0], -1)).cuda()
-                    object_vertices = torch.cat([batch['object_vertices'] for _ in range(score.size(1))], 1).reshape((input_ori.shape[0], -1)).cuda()
-                score = score.reshape((-1, 3)).cuda()
-                loss, pred = trainer.step(ctrlpts, score, input_ori, input_pos, object_vertices)
+            
+            for idx_batch, batch in enumerate(tqdm(train_loader, desc="Batches", leave=False)):
+                score = batch['scores'].cuda()
+                input_ori = batch['input_ori'].cuda()
+                input_pos = batch['input_pos'].cuda()
+                ctrlpts = batch['ctrlpts'].cuda()
 
-                accuracy = torch.mean(torch.Tensor([2 if score_ori > threshold_std[0] else 0 if score_ori < -threshold_std[0] else 1 for score_ori in score[..., 0]]) == torch.Tensor([2 if pred_ori > threshold_std[0] else 0 if pred_ori < -threshold_std[0] else 1 for pred_ori in pred[..., 0]]), dtype=torch.float32)
-                accuracy_x = torch.mean(torch.Tensor([2 if score_x > threshold_std[1] else 0 if score_x < -threshold_std[1] else 1 for score_x in score[..., 1]]) == torch.Tensor([2 if pred_x > threshold_std[1] else 0 if pred_x < -threshold_std[1] else 1 for pred_x in pred[..., 1]]), dtype=torch.float32)
-                accuracy_y = torch.mean(torch.Tensor([2 if score_y > threshold_std[2] else 0 if score_y < -threshold_std[2] else 1 for score_y in score[..., 2]]) == torch.Tensor([2 if pred_y > threshold_std[2] else 0 if pred_y < -threshold_std[2] else 1 for pred_y in pred[..., 2]]), dtype=torch.float32)
-                average_accuracy_x += accuracy_x
-                average_accuracy_y += accuracy_y
+                loss, pred = trainer.step(ctrlpts, score, input_ori, input_pos, None)
                 average_loss += loss
-                average_accuracy += accuracy
-                wandb.log({
-                    'train/lr': trainer.optimizer.param_groups[0]['lr'],
-                    'train/batch loss': loss,
-                    'train/batch accuracy ori': accuracy,
-                    'train/batch accuracy x': accuracy_x,
-                    'train/batch accuracy y': accuracy_y,
-                })
+
                 if idx_batch % args.save_ckpt_step == 0:
-                    os.makedirs(args.save_dir, exist_ok=True)
-                    trainer.save_checkpoint(os.path.join(args.save_dir, '%d_%d.pt' % (epoch, idx_batch)))
+                    trainer.save_checkpoint(os.path.join(args.save_dir, 'latest.pt'))
+
             trainer.lr_scheduler.step()
-            average_loss /= len(train_loader)
-            print('epoch:', epoch, 'loss:', average_loss)
-            average_accuracy /= len(train_loader)
-            print('epoch:', epoch, 'accuracy:', average_accuracy)
-            average_accuracy_x /= len(train_loader)
-            print('epoch:', epoch, 'accuracy x:', average_accuracy_x)
-            average_accuracy_y /= len(train_loader)
-            print('epoch:', epoch, 'accuracy y:', average_accuracy_y)
-            wandb.log({
-                'train/average loss': average_loss,
-                'train/average accuracy ori': average_accuracy,
-                'train/average accuracy x': average_accuracy_x,
-                'train/average accuracy y': average_accuracy_y,
-            })
+            
+            # Logging
             if epoch % args.val_step == 0:
-                val_loss, val_accuracy, val_accuracy_x, val_accuracy_y = validate(args, val_loader, trainer, threshold_std=threshold_std)
-                wandb.log({
-                    'val/average loss': val_loss,
-                    'val/average accuracy ori': val_accuracy,
-                    'val/average accuracy x': val_accuracy_x,
-                    'val/average accuracy y': val_accuracy_y,
-                })
+                val_loss, val_acc = validate(args, val_loader, trainer, threshold_std=threshold_std)
+                wandb.log({'train/loss': average_loss/len(train_loader), 'val/loss': val_loss, 'val/acc': val_acc})
+                
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    os.makedirs(args.save_dir, exist_ok=True)
                     trainer.save_checkpoint(os.path.join(args.save_dir, 'best.pt'))
                     last_best_epoch = epoch
-                else:
-                    if epoch - last_best_epoch >= args.patience:
-                        print('early stopping...')
-                        break
+                elif epoch - last_best_epoch >= args.patience:
+                    print('Early stopping triggered.')
+                    break
     wandb.finish()
 
 if __name__ == '__main__':
     args = parse()
     os.makedirs(args.save_dir, exist_ok=True)
     train(args)
-    
-
-
