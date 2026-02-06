@@ -4,7 +4,7 @@ from mpl_toolkits.mplot3d import Axes3D
 
 # 1. Load your saved data
 # Replace with your actual filename
-data = np.load("squirrel_paw_results/master_log_20260116_045841.npz")
+data = np.load("squirrel_paw_results/master_log_20260206_015209_default.npz")
 
 # 2. Extract the positions (Frames, 3, Nodes)
 pos = data["position"]
