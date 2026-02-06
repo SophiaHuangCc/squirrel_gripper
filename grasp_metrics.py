@@ -137,20 +137,13 @@ def compute_total_energy(finger, n_forces, k):
     Returns:
         U_total    : total potential energy (J)
     """
-    # Approx elastic energy
-    U_elastic = 0.0
-    for i in range(finger.n_elems - 1):
-        d_i   = finger.director_collection[:, 2, i]
-        d_ip1 = finger.director_collection[:, 2, i+1]
-        ds = finger.rest_lengths[i]           # element length
-        kappa = (d_ip1 - d_i) / ds            # curvature approximation
-        U_elastic += 0.5 * np.dot(kappa, finger.bend_matrix[..., i] @ kappa)
-
-    # Contact energy
+    U_potential = finger.compute_bending_energy() + finger.compute_shear_energy()
+    T_kinetic = finger.compute_translational_energy() + finger.compute_rotational_energy()
     if n_forces is not None and len(n_forces) > 0:
         U_contact = np.sum(0.5 * n_forces**2 / k)
     else:
         U_contact = 0.0
-
-    U_total = U_elastic + U_contact
-    return U_total
+        
+    print(f"Potential Energy: {U_potential:.2f} J, Kinetic Energy: {T_kinetic:.2f} J, Contact Energy: {U_contact:.2f} J")
+    print(f"Total Energy: {U_potential + T_kinetic + U_contact:.2f} J")
+    return U_potential + T_kinetic + U_contact

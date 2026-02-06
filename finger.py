@@ -87,7 +87,7 @@ from TendonForces import TendonForces
 # Custom metrics functions
 from grasp_metrics import check_force_closure, compute_total_energy
 from metrics import analyze_grasp_from_log, plot_contacts_2d_from_log, check_stable_closure_hanging, analyze_stable_closure_from_log
-from scoring_metrics import compute_weighted_grasp_score
+from scoring_metrics import compute_weighted_grasp_score, calculate_nist_scores
 
 
 ###################################################
@@ -133,52 +133,102 @@ def draw_cylinder(ax, center, axis_dir, radius, length,
     ax.plot_surface(X, Y, Z, color=color, alpha=alpha, linewidth=0, shade=True)
 
 # Function to compute contact metrics for a single frame
+# def compute_contact_metrics_frame(
+#     rod_pos,      # (3, n_nodes)
+#     rod_vel,      # (3, n_nodes)
+#     cyl_center,   # (3,)
+#     cyl_axis,     # (3,)
+#     cyl_radius,   # float
+#     k,            # normal stiffness (same as RodCylinderContact.k)
+#     mu,           # friction coefficient
+#     base_radius, # radius of the rod (for overlap calculation)
+# ):
+#     cyl_axis = cyl_axis / (np.linalg.norm(cyl_axis) + 1e-12)
+#     print(f"rod radius: {base_radius:.4f} m, cylinder radius: {cyl_radius:.4f} m")
+#     node_x = rod_pos[0, :]
+#     node_z = rod_pos[2, :]
+#     distances = np.sqrt(node_x**2 + node_z**2)
+#     overlaps = cyl_radius + base_radius - distances
+
+#     rel = rod_pos.T - cyl_center[None, :]          # (N,3)
+#     proj_len = np.dot(rel, cyl_axis)               # (N,)
+#     proj = np.outer(proj_len, cyl_axis)            # (N,3)
+#     radial = rel - proj                            # (N,3)
+#     radial_dist = np.linalg.norm(radial, axis=1)   # (N,)
+#     print(f"radial distance: {radial_dist.min():.6f} m to {radial_dist.max():.6f} m")
+
+#     # outward unit normal from cylinder axis to node
+#     normal_vec = np.zeros_like(radial)
+#     mask = radial_dist > 1e-12
+#     normal_vec[mask] = radial[mask] / radial_dist[mask, None]
+
+#     # overlap = cyl_radius + base_radius - radial_dist             # >0 => penetration/contact
+#     contact_mask = overlaps > 0.0
+#     print(f"[Overlap] Max overlap: {np.max(overlaps):.6f} m,")
+
+#     normal_force_mag = k * np.clip(overlaps, 0.0, None)
+
+#     vel = rod_vel.T
+#     normal_vel = np.sum(vel * normal_vec, axis=1)
+#     vel_t = vel - normal_vel[:, None] * normal_vec
+#     tangential_speed = np.linalg.norm(vel_t, axis=1)
+
+#     friction_force_mag = mu * normal_force_mag
+
+#     idx = np.where(contact_mask)[0]
+#     return (
+#         idx,
+#         normal_force_mag[idx],
+#         normal_vel[idx],
+#         tangential_speed[idx],
+#         friction_force_mag[idx],
+#         radial_dist,          # return full arrays for debugging
+#         overlaps,              # return full arrays for debugging
+#     )
+
+
 def compute_contact_metrics_frame(
-    rod_pos,      # (3, n_nodes)
-    rod_vel,      # (3, n_nodes)
-    cyl_center,   # (3,)
-    cyl_axis,     # (3,)
-    cyl_radius,   # float
-    k,            # normal stiffness (same as RodCylinderContact.k)
-    mu,           # friction coefficient
-    base_radius, # radius of the rod (for overlap calculation)
+    rod_pos, rod_vel, cyl_center, cyl_axis, cyl_radius, k, mu, base_radius, cyl_length,
 ):
-    cyl_axis = cyl_axis / (np.linalg.norm(cyl_axis) + 1e-12)
+    # 1. Direct XZ Plane Distance
+    dx = rod_pos[0, :] - cyl_center[0]
+    dz = rod_pos[2, :] - cyl_center[2]
+    radial_dist = np.sqrt(dx**2 + dz**2)
 
-    rel = rod_pos.T - cyl_center[None, :]          # (N,3)
-    proj_len = np.dot(rel, cyl_axis)               # (N,)
-    proj = np.outer(proj_len, cyl_axis)            # (N,3)
-    radial = rel - proj                            # (N,3)
-    radial_dist = np.linalg.norm(radial, axis=1)   # (N,)
+    # 2. Overlap (Cylinder 15mm + Rod 5mm = 20mm)
+    contact_threshold = cyl_radius + base_radius # 0.020
+    overlaps = contact_threshold - radial_dist
 
-    # outward unit normal from cylinder axis to node
-    normal_vec = np.zeros_like(radial)
-    mask = radial_dist > 1e-12
-    normal_vec[mask] = radial[mask] / radial_dist[mask, None]
+    # 3. Contact Mask
+    contact_mask = overlaps > 0.0
+    
+    # 4. Directions (Normal is in the XZ plane)
+    normal_vec = np.zeros((rod_pos.shape[1], 3))
+    normal_vec[:, 0] = dx
+    normal_vec[:, 2] = dz
+    
+    norms = np.linalg.norm(normal_vec, axis=1)
+    mask = norms > 1e-12
+    normal_vec[mask] /= norms[mask, None]
 
-    overlap = cyl_radius + base_radius - radial_dist             # >0 => penetration/contact
-    contact_mask = overlap > 0.0
-    print(f"[Overlap] Max overlap: {np.max(overlap):.6f} m,")
-
-    normal_force_mag = k * np.clip(overlap, 0.0, None)
-
+    # 5. Physics
+    normal_force_mag = k * np.where(contact_mask, overlaps, 0.0)
+    
     vel = rod_vel.T
     normal_vel = np.sum(vel * normal_vec, axis=1)
     vel_t = vel - normal_vel[:, None] * normal_vec
     tangential_speed = np.linalg.norm(vel_t, axis=1)
-
+    
     friction_force_mag = mu * normal_force_mag
 
     idx = np.where(contact_mask)[0]
-    return (
-        idx,
-        normal_force_mag[idx],
-        normal_vel[idx],
-        tangential_speed[idx],
-        friction_force_mag[idx],
-        radial_dist,          # return full arrays for debugging
-        overlap,              # return full arrays for debugging
-    )
+    return (idx, 
+            normal_force_mag[idx], 
+            normal_vel[idx], 
+            tangential_speed[idx], 
+            friction_force_mag[idx], 
+            radial_dist, 
+            overlaps)
 
 
 ###################################################
@@ -257,7 +307,7 @@ def main():
     # Argument parsing inputs
     parser = argparse.ArgumentParser(description="Run Squirrel Finger Simulation.")
     parser.add_argument(
-        "--sol", type=str, default="standard",
+        "--sol", type=str, default="approach_angle",
         choices=["standard",
                  "approach_angle", "nonuniform_tendon", "change_tendon_direction"],
         help="Select the solution for improved curl")
@@ -274,10 +324,10 @@ def main():
     parser.add_argument("--n_elements", type=int, default=80, help="Number of rod elements")
     # cylinder and contact params
     parser.add_argument("--cyl_rad", type=float, default=0.015, help="Cylinder radius (m)")
-    parser.add_argument("--k_contact", type=float, default=5e2, help="Contact stiffness")
+    parser.add_argument("--k_contact", type=float, default=1.25e3, help="Contact stiffness")
     # finger arguments
     parser.add_argument("--base_len", type=float, default=0.10, help="Finger length in meters")
-    parser.add_argument("--base_rad", type=float, default=0.003, help="Finger radius in meters")
+    parser.add_argument("--base_rad", type=float, default=0.005, help="Finger radius in meters")
     parser.add_argument("--nu_contact", type=float, default=5.0, help="Contact damping")
     parser.add_argument("--mu_contact", type=float, default=0.6, help="Friction coefficient")
     parser.add_argument("--vel_damp_contact", type=int, default=10, help="Numerical contact stability")
@@ -401,15 +451,6 @@ def main():
         normal = np.cross(world_side, direction)
         normal /= np.linalg.norm(normal)
         v_height_dir = normal.copy()
-        # dir_x = np.cos(angle_rad)
-        # dir_z = np.sin(angle_rad)
-        # direction = np.array([dir_x, 0.0, dir_z])
-        # direction /= np.linalg.norm(direction)
-        # world_side = np.array([0.0, 1.0, 0.0]) 
-        # normal = np.cross(world_side, direction)
-        # normal /= np.linalg.norm(normal)
-        # v_height_dir = normal.copy()
-        # start_pos = np.array([0.0, 0.0, -0.05 * np.cos(angle_rad)])
     elif args.sol == "nonuniform_tendon" or args.sol == "change_tendon_direction":
         print(">>> MODE: Combined Gradient Magnitude + Center-Seeking Direction")
         # Setup the cylinder center reference
@@ -501,11 +542,11 @@ def main():
     sim.add_forcing_to(finger).using(GravityForces, np.array([0.0, 0.0, -9.80665]))
 
     # Apply it to the first 5 nodes (proximal region)
-    # sim.add_forcing_to(finger).using(
-    #     BodyWeightForcing, 
-    #     force_vector=body_weight_force, 
-    #     node_indices=np.arange(0, 5)
-    # )
+    sim.add_forcing_to(finger).using(
+        BodyWeightForcing, 
+        force_vector=body_weight_force, 
+        node_indices=np.arange(0, 5)
+    )
 
     # Damping
     if damping_constant > 0.0:
@@ -669,7 +710,7 @@ def main():
         min_rad = np.inf
         for P, V in zip(pos_data, vel_data):
             (_, _, _, _, _, radial_dist, _) = compute_contact_metrics_frame(
-                P, V, cyl_center, a, cyl_radius, k_contact, mu_contact, base_radius
+                P, V, cyl_center, a, cyl_radius, k_contact, mu_contact, base_radius, cyl_length
             )
             min_rad = min(min_rad, float(np.min(radial_dist)))
             total_contacts += int(np.sum((cyl_radius - radial_dist) > 0.0))
@@ -700,8 +741,9 @@ def main():
         for frame_idx, (P, V) in enumerate(zip(pos_data, vel_data)):
             t = frame_idx * dt_saved
             (idx, nF, nV, tS, fF, radial_dist_all, overlap_all) = compute_contact_metrics_frame(
-                P, V, cyl_center, cyl_axis, cyl_radius, k_contact, mu_contact, base_radius
+                P, V, cyl_center, cyl_axis, cyl_radius, k_contact, mu_contact, base_radius, cyl_length
             )
+            # print("overlap average value:", np.mean(overlap_all))
 
             if len(idx) > 0:
                 frame_max = float(np.max(nF))
@@ -755,10 +797,7 @@ def main():
         print(f"  Max normal force: {metrics['max_normal_force']:.6f} N")
         print(f"  Total friction force: {metrics['total_friction_force']:.6f} N")
 
-        filename = os.path.join(base_outdir, f"master_log_{run_id}_{suffix}.npz")
-        np.savez_compressed(filename, **data_to_save)
 
-        print(f"Archive Complete: {filename}")
 
         # Automatically save a 2D projection plot for this specific run
         plot_path = os.path.join(base_outdir, f"contact_plot_{run_id}_{suffix}.png")
@@ -786,6 +825,10 @@ def main():
         print(f"  Vertical Support: {stab_metrics['total_support_n']:.4f} N")
         print(f"  Stable: {is_stable} (Margin: {stab_metrics['margin']:.2f}x)")
 
+
+        cycle_time, strength, slip_res = calculate_nist_scores(
+            data, cyl_radius, base_radius, k_contact, mu_contact, args.body_mass, gravity
+        )
         grasp_data = {
             "angular_span": metrics['angular_span'], # Calculate from your contact log
             "vertical_support": stab_metrics['total_support_n'],
@@ -793,10 +836,21 @@ def main():
             "total_energy": energy_score,
             "contact_count": metrics['num_contacts'],
             "max_normal_force": np.max(normal_forces),
-            "total_normal_force": np.sum(normal_forces)
+            "total_normal_force": np.sum(normal_forces),
+            "cycle_time": cycle_time,
+            "strength": strength,
+            "slip_resistance": slip_res
         }
 
         final_score, breakdown = compute_weighted_grasp_score(grasp_data)
+
+        data_to_save["final_grasp_score"] = np.array([final_score])
+        data_to_save["breakdown_of_score"] = np.array([breakdown])
+
+        filename = os.path.join(base_outdir, f"master_log_{run_id}_{suffix}.npz")
+        np.savez_compressed(filename, **data_to_save)
+
+        print(f"Archive Complete: {filename}")
 
         print(f"\n{'='*30}")
         print(f"FINAL GRASP QUALITY: {final_score:.4f}")
@@ -814,7 +868,7 @@ def main():
     row_data = [
         run_id, args.sol, E, tension, cyl_radius, args.approach_deg,
         is_fc, metrics['angular_span'], metrics['num_contacts'], 
-        data_to_save.get("metric_energy_total", [0])[0] 
+        data_to_save.get("metric_energy_total", [0])[0], final_score, breakdown,
     ]
 
     # We use 'a' for append mode
@@ -827,7 +881,8 @@ def main():
             writer = csv.writer(f)
             if not file_exists:
                 writer.writerow(["run_id", "sol", "E", "tension", "cyl_rad", "approach_deg", 
-                                "geometric_fc", "angular_span", "num_contacts", "total_energy"])
+                                "geometric_fc", "angular_span", "num_contacts", "total_energy", 
+                                "final_score", "breakdown"])
             
             writer.writerow(row_data)
             f.flush() # Force write to disk
@@ -845,9 +900,16 @@ def main():
     def make_frame(t):
         nonlocal idx
         ax.clear()
-
+        rod_radius = base_radius
         P = pos_data[idx]
         ax.scatter(P[0], P[1], P[2], s=6)
+        step = 5 
+        u, v = np.mgrid[0:2*np.pi:10j, 0:np.pi:10j]
+        for i in range(0, P.shape[1], step):
+            x = rod_radius * np.cos(u) * np.sin(v) + P[0, i]
+            y = rod_radius * np.sin(u) * np.sin(v) + P[1, i]
+            z = rod_radius * np.cos(v) + P[2, i]
+            ax.plot_surface(x, y, z, alpha=0.2)
         for v_idx in vertebra_nodes:
             v_idx = int(np.clip(v_idx, 0, P.shape[1] - 1))
             ax.scatter(
