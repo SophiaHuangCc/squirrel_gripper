@@ -1,19 +1,16 @@
-# Squirrel Gripper Workspace (sg_ws)
-
-An integrated simulation environment for studying the mechanics of a tendon-driven squirrel-inspired soft gripper. This workspace combines rod dynamics, tendon force optimization, and large-scale parametric sweeps.
+# Squirrel Gripper
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
-* **TendonForces/**: Core simulation logic. Contains `finger.py` and the `PyElastica` implementation for tendon-driven rods.
-* **dynamics/**: Parallel research folder for kinematics and dynamic modeling.
-* **runs/**: (Local Only) Directory for large-scale experiment outputs (.npz, .csv, .mp4).
-* **.venv/**: Shared Python virtual environment for the workspace.
+* **TendonForces**: Core simulation logic. Contains `finger.py` and the `PyElastica` implementation for tendon-driven rods.
+* **dynamics**: Parallel research folder for kinematics and dynamic modeling.
+
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### 1. Environment Setup
 Recreate the virtual environment and install dependencies:
@@ -21,35 +18,40 @@ Recreate the virtual environment and install dependencies:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install numpy pyelastica tqdm numba matplotlib pandas
+pip install requirements.txt # for python 3.12
+pip install req.txt # for python 3.10
+```
 
 ---
 
-### 3. Execution Commands
-```markdown
-### 2. Running the Sweep (Large Scale)
-To execute the 4,000+ sample sweep across Tension, Radius, and Vertebrae placement:
+### 2. Tendon Force Simulation for Squirrel Finger
+
+1. **Running the Sweep (Large Scale)**
+To execute the large sample sweep across the optimizable parameters:
 
 ```bash
 cd TendonForces
-python3 sweep_runner.py
+python3 parallel_runner.py # for ubuntu machine
+python3 parallel_local.py # for mac
+```
 
-python3 TendonForces/finger.py --tension 10.0 --joint_softness 0.005 --approach_deg 45
+2. **Running a single set of parameters**
+Can add the --debug flag for force visualization
+```bash
+python ./finger.py --tension 3.0 --joint_softness 0.001 --sol approach_angle --base_rad 0.005 --approach_deg 45
+```
 
 ---
 
-### 4. Data Analysis & Maintenance
+### 3. Data Analysis & Maintenance
 ```markdown
 ---
 
-## 📊 Data & Ranking
+## Data & Ranking
 The simulation uses NIST Grasping Metrics and Gravity Margin calculations to score outputs. 
 
 * Use the generated `.csv` files to rank results by performance scores.
 * `.npz` files contain full coordinate data for reconstruction and analysis.
 
 ---
-
-## 🛠 Maintenance
-* **Git Management:** This repo ignores all large data files via `.gitignore`. 
-* **Adding Data:** If you add new parallel directories, ensure they are added to the `.gitignore` to prevent tracking heavy local datasets.
+```
