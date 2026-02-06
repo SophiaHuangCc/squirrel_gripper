@@ -1,29 +1,32 @@
 # --- Python ---
-__pycache__/
-*.pyc
-*.nbc
-*.nbi
+.DS_Store
+
+TendonForces/__pycache__/
+TendonForces/*.pyc
+TendonForces/*.nbc
+TendonForces/*.nbi
+
+dynamics/__pycache__/
+dynamics/__pycache__/**
 
 # --- Virtual envs ---
-.venv/
-venv/
-env/
+TendonForces/.venv/
 
 # --- OS / editor ---
-.DS_Store
-.vscode/
-.idea/
+TendonForces/.DS_Store
+TendonForces/.vscode/
+TendonForces/.idea/
 
-# --- Your large/local data ---
-squirrel_paw_results/
-squirrel_paw_results/**
-manual_videos/
-manual_videos/**
-sweep_videos/
-sweep_videos/**
-runs/
-runs/**
+# --- Large/local data ---
+TendonForces/squirrel_paw_results/
+TendonForces/squirrel_paw_results/**
+TendonForces/manual_videos/
+TendonForces/manual_videos/**
+TendonForces/sweep_videos/
+TendonForces/sweep_videos/**
+TendonForces/runs/
+TendonForces/runs/**
 
-# --- Your local archive ---
-outdated_files/
-outdated_files/**
+# --- Local archive ---
+TendonForces/outdated_files/
+TendonForces/outdated_files/**
