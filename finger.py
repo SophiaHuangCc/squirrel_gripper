@@ -75,7 +75,7 @@ from moviepy.video.io.bindings import mplfig_to_npimage
 from elastica.modules import BaseSystemCollection, Connections, Constraints, Forcing, CallBacks, Damping, Contact
 from elastica.rod.cosserat_rod import CosseratRod
 from elastica.boundary_conditions import OneEndFixedBC, FixedConstraint
-from elastica.external_forces import GravityForces
+from elastica.external_forces import GravityForces, NoForces
 from elastica.dissipation import AnalyticalLinearDamper
 from elastica.callback_functions import CallBackBaseClass
 from elastica.timestepper.symplectic_steppers import PositionVerlet
@@ -87,6 +87,7 @@ from TendonForces import TendonForces
 # Custom metrics functions
 from grasp_metrics import check_force_closure, compute_total_energy
 from metrics import analyze_grasp_from_log, plot_contacts_2d_from_log, check_stable_closure_hanging, analyze_stable_closure_from_log
+from scoring_metrics import compute_weighted_grasp_score
 
 
 ###################################################
@@ -140,6 +141,7 @@ def compute_contact_metrics_frame(
     cyl_radius,   # float
     k,            # normal stiffness (same as RodCylinderContact.k)
     mu,           # friction coefficient
+    base_radius, # radius of the rod (for overlap calculation)
 ):
     cyl_axis = cyl_axis / (np.linalg.norm(cyl_axis) + 1e-12)
 
@@ -154,8 +156,9 @@ def compute_contact_metrics_frame(
     mask = radial_dist > 1e-12
     normal_vec[mask] = radial[mask] / radial_dist[mask, None]
 
-    overlap = cyl_radius - radial_dist             # >0 => penetration/contact
+    overlap = cyl_radius + base_radius - radial_dist             # >0 => penetration/contact
     contact_mask = overlap > 0.0
+    print(f"[Overlap] Max overlap: {np.max(overlap):.6f} m,")
 
     normal_force_mag = k * np.clip(overlap, 0.0, None)
 
@@ -235,6 +238,17 @@ class TendonForcesRamp(TendonForces):
             torque = current_tension * np.cross(self.vertebra_height_vector[:, i], tangent)
             system.external_torques[:, node_idx] += torque
 
+class BodyWeightForcing(NoForces):
+    def __init__(self, force_vector, node_indices):
+        self.force_vector = force_vector
+        self.node_indices = node_indices
+        self.total_force_mag = np.linalg.norm(force_vector)
+
+    def apply_forces(self, system, time=0.0):
+        # Distribute the total body weight across the first few nodes
+        force_per_node = self.force_vector / len(self.node_indices)
+        for idx in self.node_indices:
+            system.external_forces[:, idx] += force_per_node
 
 ###################################################
 # MAIN SIMULATION FUNCTION
@@ -251,10 +265,6 @@ def main():
         "--approach_deg", type=float, default=45.0,
         help="Angle of approach in degrees (0 = horizontal, 90 = vertical)")
     parser.add_argument(
-        "--mode", type=str, default="soft_joints",
-        choices=["soft_joints"],
-        help="Select the finger bending mode")
-    parser.add_argument(
         "--debug", action="store_true",
         help="Enable debug mode with plot of total force magnitude and direction.")
     # material and simulation params
@@ -264,7 +274,7 @@ def main():
     parser.add_argument("--n_elements", type=int, default=80, help="Number of rod elements")
     # cylinder and contact params
     parser.add_argument("--cyl_rad", type=float, default=0.015, help="Cylinder radius (m)")
-    parser.add_argument("--k_contact", type=float, default=1.25e4, help="Contact stiffness")
+    parser.add_argument("--k_contact", type=float, default=5e2, help="Contact stiffness")
     # finger arguments
     parser.add_argument("--base_len", type=float, default=0.10, help="Finger length in meters")
     parser.add_argument("--base_rad", type=float, default=0.003, help="Finger radius in meters")
@@ -278,6 +288,7 @@ def main():
     parser.add_argument("--v_start", type=int, default=30, help="Node index of first vertebra")
     parser.add_argument("--v_end", type=int, default=62, help="Node index of final vertebra")
     parser.add_argument("--v_height", type=float, default=0.005, help="Tendon distance from center")
+    parser.add_argument("--joint_softness", type=float, default=0.01, help="Multiplier for bending stiffness at vertebrae (0.01 = 1% of original stiffness)")
     # vertebra selector: 'uniform' or 'manual'
     parser.add_argument("--v_mode", type=str, default="uniform", 
                         choices=["uniform", "manual"], 
@@ -313,7 +324,9 @@ def main():
     # Cylinder (branch) parameters
     cyl_length = 0.20
     cyl_density = 1200.0
-    cyl_start = np.array([0.025, -cyl_length / 2.0, -0.03])
+    cyl_x = 0.025
+    cyl_z = -0.03
+    cyl_start = np.array([cyl_x, -cyl_length / 2.0, cyl_z])
     cyl_direction = np.array([0.0, 1.0, 0.0])
     cyl_normal = np.array([1.0, 0.0, 0.0])
     nu_contact = args.nu_contact # 5.0~20.0
@@ -332,6 +345,11 @@ def main():
         vertebra_nodes = np.array([int(x) for x in args.v_list.split(",")], dtype=int)
         num_vertebrae = len(vertebra_nodes)
     print(f"[VISUALIZATION] Drawing red disks at nodes: {vertebra_nodes}")
+
+    # Mass of squirrel body
+    body_mass = args.body_mass
+    gravity = 9.80665
+    body_weight_force = np.array([0.0, 0.0, -body_mass * gravity])
     
     # Time stepping parameters
     wave_speed = np.sqrt(E / density)
@@ -361,20 +379,37 @@ def main():
     normal = np.array([0.0, 0.0, 1.0])
     start_pos = np.array([0.0, 0.0, 0.0])
     v_height_dir = np.array([0.0, 0.0, -1.0])
+    clearance = 0.02
 
     # 2 alternative solutions to improve curling around cylinder
     if args.sol == "approach_angle":
         angle_rad = np.deg2rad(args.approach_deg)
         print(f">>> MODE: Dynamic Approach at {args.approach_deg} degrees")
+        start_x = cyl_start[0] - 2 * cyl_radius
+        start_z = cyl_z - (cyl_radius) * np.sin(angle_rad)
+        print(f"[APPROACH ANGLE] Calculated start position: x={start_x:.3f}, z={start_z:.3f}")
+        
+        start_pos = np.array([start_x, 0.0, start_z])
+        
+        # Define direction: Points 'down and forward' toward the cylinder
         dir_x = np.cos(angle_rad)
         dir_z = np.sin(angle_rad)
         direction = np.array([dir_x, 0.0, dir_z])
-        direction /= np.linalg.norm(direction)
+        
+        # Ensure normal is perpendicular for tendon routing
         world_side = np.array([0.0, 1.0, 0.0]) 
         normal = np.cross(world_side, direction)
         normal /= np.linalg.norm(normal)
         v_height_dir = normal.copy()
-        start_pos = np.array([0.0, 0.0, -0.05 * np.cos(angle_rad)])
+        # dir_x = np.cos(angle_rad)
+        # dir_z = np.sin(angle_rad)
+        # direction = np.array([dir_x, 0.0, dir_z])
+        # direction /= np.linalg.norm(direction)
+        # world_side = np.array([0.0, 1.0, 0.0]) 
+        # normal = np.cross(world_side, direction)
+        # normal /= np.linalg.norm(normal)
+        # v_height_dir = normal.copy()
+        # start_pos = np.array([0.0, 0.0, -0.05 * np.cos(angle_rad)])
     elif args.sol == "nonuniform_tendon" or args.sol == "change_tendon_direction":
         print(">>> MODE: Combined Gradient Magnitude + Center-Seeking Direction")
         # Setup the cylinder center reference
@@ -399,20 +434,14 @@ def main():
     sim.append(finger)
 
     # Apply soft joints by modifying bend_matrix at vertebrae locations
-    joint_mult = 0.01   
-    rigid_mult = 1.0
-    finger.bend_matrix *= rigid_mult
+    joint_mult = args.joint_softness   
 
     # Apply soft joints at vertebrae locations
-    if args.mode == "soft_joints": 
-        print(f">>> MODE: Automatic Soft Joints at Vertebrae Locations")
-        # Identify the exact same nodes used by TendonForces
-        # joint_indices = np.linspace(first_vertebra_node, final_vertebra_node, num_vertebrae, dtype=int)
-        print(f"[SOFT JOINTS] using mode '{args.v_mode}' at nodes: {vertebra_nodes}")        
-        for j in vertebra_nodes:
-            idx = int(np.clip(j, 0, finger.bend_matrix.shape[2] - 1))
-            finger.bend_matrix[1, 1, idx] *= joint_mult
-            finger.bend_matrix[2, 2, idx] *= joint_mult
+    print(f"[SOFT JOINTS] using mode '{args.v_mode}' at nodes: {vertebra_nodes}")        
+    for j in vertebra_nodes:
+        idx = int(np.clip(j, 0, finger.bend_matrix.shape[2] - 1))
+        finger.bend_matrix[1, 1, idx] *= joint_mult
+        finger.bend_matrix[2, 2, idx] *= joint_mult
 
     # Create cylinder (branch)
     cylinder = Cylinder(
@@ -471,6 +500,13 @@ def main():
     # Gravity
     sim.add_forcing_to(finger).using(GravityForces, np.array([0.0, 0.0, -9.80665]))
 
+    # Apply it to the first 5 nodes (proximal region)
+    # sim.add_forcing_to(finger).using(
+    #     BodyWeightForcing, 
+    #     force_vector=body_weight_force, 
+    #     node_indices=np.arange(0, 5)
+    # )
+
     # Damping
     if damping_constant > 0.0:
         sim.dampen(finger).using(
@@ -482,7 +518,7 @@ def main():
     # Contact between finger and cylinder
     sim.detect_contact_between(finger, cylinder).using(
         RodCylinderContact,
-        k=k_contact,
+        k=k_contact, 
         nu=nu_contact,
         velocity_damping_coefficient=vel_damp_contact,
         friction_coefficient=mu_contact,
@@ -598,13 +634,16 @@ def main():
     contact_normals = contact_vertices - cyl_axis_pos
     contact_normals /= np.linalg.norm(contact_normals, axis=1)[:, None]
 
-    is_force_closure = check_force_closure(contact_vertices, contact_normals, mu_contact)
+    ext_force = np.array([0.0, 0.0, -body_mass * gravity])
+    ext_torque = np.array([0.0, 0.0, 0.0])
+    body_wrench = np.concatenate([ext_force, ext_torque])
+    is_force_closure = check_force_closure(contact_vertices, contact_normals, mu_contact, external_wrench=body_wrench)
     energy_score = compute_total_energy(finger, normal_forces[contact_idx], k_contact)
 
     data_to_save["metric_is_force_closure"] = np.array([is_force_closure])
     data_to_save["metric_energy_total"] = np.array([energy_score])
     data_to_save["metric_contact_count"] = np.array([len(contact_idx)])
-    print(f"[METRICS] Force Closure Stable: {is_force_closure}  Total Energy: {energy_score:.6f} J  Contact Points: {len(contact_idx)}")
+    print(f"[METRICS] Force Closure Stable: {is_force_closure} under {body_mass}kg load  Total Energy: {energy_score:.6f} J  Contact Points: {len(contact_idx)}")
 
     csv_path = os.path.join(base_outdir, f"contact_log_{run_id}_{suffix}.csv")
 
@@ -630,7 +669,7 @@ def main():
         min_rad = np.inf
         for P, V in zip(pos_data, vel_data):
             (_, _, _, _, _, radial_dist, _) = compute_contact_metrics_frame(
-                P, V, cyl_center, a, cyl_radius, k_contact, mu_contact
+                P, V, cyl_center, a, cyl_radius, k_contact, mu_contact, base_radius
             )
             min_rad = min(min_rad, float(np.min(radial_dist)))
             total_contacts += int(np.sum((cyl_radius - radial_dist) > 0.0))
@@ -661,7 +700,7 @@ def main():
         for frame_idx, (P, V) in enumerate(zip(pos_data, vel_data)):
             t = frame_idx * dt_saved
             (idx, nF, nV, tS, fF, radial_dist_all, overlap_all) = compute_contact_metrics_frame(
-                P, V, cyl_center, cyl_axis, cyl_radius, k_contact, mu_contact
+                P, V, cyl_center, cyl_axis, cyl_radius, k_contact, mu_contact, base_radius
             )
 
             if len(idx) > 0:
@@ -746,6 +785,24 @@ def main():
         print(f"  Load: {stab_metrics['total_load_n']:.4f} N")
         print(f"  Vertical Support: {stab_metrics['total_support_n']:.4f} N")
         print(f"  Stable: {is_stable} (Margin: {stab_metrics['margin']:.2f}x)")
+
+        grasp_data = {
+            "angular_span": metrics['angular_span'], # Calculate from your contact log
+            "vertical_support": stab_metrics['total_support_n'],
+            "body_weight": args.body_mass * gravity,
+            "total_energy": energy_score,
+            "contact_count": metrics['num_contacts'],
+            "max_normal_force": np.max(normal_forces),
+            "total_normal_force": np.sum(normal_forces)
+        }
+
+        final_score, breakdown = compute_weighted_grasp_score(grasp_data)
+
+        print(f"\n{'='*30}")
+        print(f"FINAL GRASP QUALITY: {final_score:.4f}")
+        print(f"{'='*30}")
+        for key, val in breakdown.items():
+            print(f" - {key}: {val:.3f}")
 
     except Exception as e:
         print(f"[ERROR] Error during metrics calculation: {e}")
@@ -837,6 +894,18 @@ def main():
                         color="cyan",
                     )
 
+            base_pos = data["position"][-1][:, :5].mean(axis=1)
+            scale_factor = 0.01 
+            f_vec = body_weight_force * scale_factor
+            
+            # Draw the arrow
+            ax.quiver(
+                base_pos[0], base_pos[1], base_pos[2],
+                f_vec[0], f_vec[1], f_vec[2],
+                color='red', linewidth=3, label=f'Body Weight ({args.body_mass}kg)',
+                arrow_length_ratio=0.3
+            )
+            
         center = cylinder.position_collection[:, 0]
         axis_dir = cylinder.director_collection[2, :, 0]
         draw_cylinder(ax, center, axis_dir, cyl_radius, cyl_length, color="black", alpha=0.35)

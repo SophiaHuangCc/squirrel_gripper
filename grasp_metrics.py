@@ -1,27 +1,34 @@
 import numpy as np
 from grasp_utils import contact_forces_exist, random_pose_perturbation
 
-def check_force_closure(vertices, normals, mu, num_facets=10):
+def check_force_closure(vertices, normals, mu, external_wrench=None, num_facets=10):
     """
-    Check whether a grasp is in force closure.
+    Check whether a grasp is stable against a specific external wrench (e.g., body weight).
     
     Parameters
     ----------
-    vertices : (N,3) np.ndarray
-        Contact points.
-    normals : (N,3) np.ndarray
-        Surface normals at contacts.
-    num_facets : int
-        Number of vectors to approximate the friction cone.
-    mu : float
-        Friction coefficient.
+    vertices : (N,3) np.ndarray - Contact points.
+    normals : (N,3) np.ndarray - Surface normals at contacts.
+    mu : float - Friction coefficient.
+    external_wrench : (6,) np.ndarray - The wrench (force/torque) to resist.
+    num_facets : int - Approximation of friction cone.
     
     Returns
     -------
-    is_fc : bool
-        True if grasp is in force closure, False otherwise.
+    is_fc : bool - True if the finger can resist the wrench.
     """
-    status, _ = contact_forces_exist(vertices, normals, mu, np.zeros(6), num_facets)
+    # If no wrench is provided, we check for "Pure Force Closure" 
+    # (can it resist any arbitrary small wrench?) by using a zero wrench.
+    if external_wrench is None:
+        target_wrench = np.zeros(6)
+    else:
+        # To remain stable, the finger must produce an INTERNAL wrench 
+        # that is the NEGATIVE of the external wrench (F_contact + F_external = 0)
+        target_wrench = -external_wrench
+
+    # Note: contact_forces_exist uses CVXPY to see if a combination of 
+    # friction cone vectors can sum up to target_wrench.
+    status, _ = contact_forces_exist(vertices, normals, mu, target_wrench, num_facets)
     return status
 
 def compute_ferrari_canny(vertices, normals, mu, num_facets=10, num_samples=100):
