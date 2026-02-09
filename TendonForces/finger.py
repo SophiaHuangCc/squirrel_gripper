@@ -133,60 +133,6 @@ def draw_cylinder(ax, center, axis_dir, radius, length,
     ax.plot_surface(X, Y, Z, color=color, alpha=alpha, linewidth=0, shade=True)
 
 # Function to compute contact metrics for a single frame
-# def compute_contact_metrics_frame(
-#     rod_pos,      # (3, n_nodes)
-#     rod_vel,      # (3, n_nodes)
-#     cyl_center,   # (3,)
-#     cyl_axis,     # (3,)
-#     cyl_radius,   # float
-#     k,            # normal stiffness (same as RodCylinderContact.k)
-#     mu,           # friction coefficient
-#     base_radius, # radius of the rod (for overlap calculation)
-# ):
-#     cyl_axis = cyl_axis / (np.linalg.norm(cyl_axis) + 1e-12)
-#     print(f"rod radius: {base_radius:.4f} m, cylinder radius: {cyl_radius:.4f} m")
-#     node_x = rod_pos[0, :]
-#     node_z = rod_pos[2, :]
-#     distances = np.sqrt(node_x**2 + node_z**2)
-#     overlaps = cyl_radius + base_radius - distances
-
-#     rel = rod_pos.T - cyl_center[None, :]          # (N,3)
-#     proj_len = np.dot(rel, cyl_axis)               # (N,)
-#     proj = np.outer(proj_len, cyl_axis)            # (N,3)
-#     radial = rel - proj                            # (N,3)
-#     radial_dist = np.linalg.norm(radial, axis=1)   # (N,)
-#     print(f"radial distance: {radial_dist.min():.6f} m to {radial_dist.max():.6f} m")
-
-#     # outward unit normal from cylinder axis to node
-#     normal_vec = np.zeros_like(radial)
-#     mask = radial_dist > 1e-12
-#     normal_vec[mask] = radial[mask] / radial_dist[mask, None]
-
-#     # overlap = cyl_radius + base_radius - radial_dist             # >0 => penetration/contact
-#     contact_mask = overlaps > 0.0
-#     print(f"[Overlap] Max overlap: {np.max(overlaps):.6f} m,")
-
-#     normal_force_mag = k * np.clip(overlaps, 0.0, None)
-
-#     vel = rod_vel.T
-#     normal_vel = np.sum(vel * normal_vec, axis=1)
-#     vel_t = vel - normal_vel[:, None] * normal_vec
-#     tangential_speed = np.linalg.norm(vel_t, axis=1)
-
-#     friction_force_mag = mu * normal_force_mag
-
-#     idx = np.where(contact_mask)[0]
-#     return (
-#         idx,
-#         normal_force_mag[idx],
-#         normal_vel[idx],
-#         tangential_speed[idx],
-#         friction_force_mag[idx],
-#         radial_dist,          # return full arrays for debugging
-#         overlaps,              # return full arrays for debugging
-#     )
-
-
 def compute_contact_metrics_frame(
     rod_pos, rod_vel, cyl_center, cyl_axis, cyl_radius, k, mu, base_radius, cyl_length,
 ):
