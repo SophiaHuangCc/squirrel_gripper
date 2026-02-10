@@ -729,6 +729,8 @@ def main():
         "total_friction_force": 0.0,
         "max_normal_force": 0.0
     }
+    final_score = float("nan")
+    breakdown = {}
     try:
         is_fc, metrics = analyze_grasp_from_log(csv_path)
         data_to_save["geometric_success"] = np.array([is_fc])
