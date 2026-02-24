@@ -23,6 +23,18 @@ pip install requirements.txt # for python 3.12
 pip install req.txt # for python 3.10
 ```
 
+#### Alternative: Environment Setup with Mamba (https://github.com/conda-forge/miniforge?tab=readme-ov-file#unix-like-platforms-macos-linux--wsl)
+```bash
+cd TendonForces
+mamba create -n soft python=3.12
+mamba activate soft
+pip install -r requirements.txt # for python 3.12
+# or, for Python 3.10:
+# mamba create -n soft python=3.10
+# mamba activate soft
+# pip install -r req.txt
+```
+
 ---
 
 ### 2. Tendon Force Simulation for Squirrel Finger
@@ -34,6 +46,7 @@ To execute the large sample sweep across the optimizable parameters:
 cd TendonForces
 python3 parallel_runner.py # for ubuntu machine
 python3 parallel_local.py # for mac
+python3 parallel_runner_ray.py # Ray parallel (use --num_cpus N to override)
 ```
 
 2. **Running a single set of parameters:**
@@ -109,6 +122,12 @@ The simulation uses NIST Grasping Metrics and Gravity Margin calculations to sco
 
 * Use the generated `.csv` files to rank results by performance scores.
 * `.npz` files contain full coordinate data for reconstruction and analysis.
+
+## Offline Ranking
+Given a directory that contains simulation results, list out the best designs for each metric and visualize in a wandb chart
+```bash
+python offline_analysis.py
+```
 
 ---
 ```

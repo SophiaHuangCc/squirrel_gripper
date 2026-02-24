@@ -30,3 +30,5 @@ TendonForces/runs/**
 # --- Local archive ---
 TendonForces/outdated_files/
 TendonForces/outdated_files/**
+
+**/wandb/**
