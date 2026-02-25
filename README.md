@@ -52,7 +52,12 @@ python3 parallel_runner_ray.py # Ray parallel (use --num_cpus N to override)
 2. **Running a single set of parameters:**
 Can add the --debug flag for force visualization
 ```bash
-python ./finger.py --tension 3.0 --joint_softness 0.001 --sol approach_angle --base_rad 0.005 --approach_deg 45
+python ./finger.py --tension 10.0 --joint_softness 0.002 --sol approach_angle --base_rad 0.005 --approach_deg 45
+```
+
+simulate approaching motion
+```bash
+python ./finger.py --tension 10.0 --joint_softness 0.002 --sol approach_angle --base_rad 0.005 --approach_deg 45 --landing_motion --landing_height 0.03 --landing_speed 0.0 --full_visualization
 ```
 
 ---

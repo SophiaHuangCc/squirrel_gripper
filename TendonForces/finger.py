@@ -74,7 +74,7 @@ from moviepy.video.io.bindings import mplfig_to_npimage
 # PyElastica imports
 from elastica.modules import BaseSystemCollection, Connections, Constraints, Forcing, CallBacks, Damping, Contact
 from elastica.rod.cosserat_rod import CosseratRod
-from elastica.boundary_conditions import OneEndFixedBC, FixedConstraint
+from elastica.boundary_conditions import OneEndFixedBC, FixedConstraint, ConstraintBase
 from elastica.external_forces import GravityForces, NoForces
 from elastica.dissipation import AnalyticalLinearDamper
 from elastica.callback_functions import CallBackBaseClass
@@ -246,6 +246,157 @@ class BodyWeightForcing(NoForces):
         for idx in self.node_indices:
             system.external_forces[:, idx] += force_per_node
 
+
+class ConstantNodeForce(NoForces):
+    def __init__(self, force_vector, node_indices):
+        self.force_vector = np.asarray(force_vector, dtype=float)
+        self.node_indices = np.asarray(node_indices, dtype=int)
+
+    def apply_forces(self, system, time=0.0):
+        if self.node_indices.size == 0:
+            return
+        force_per_node = self.force_vector / float(self.node_indices.size)
+        for idx in self.node_indices:
+            system.external_forces[:, idx] += force_per_node
+
+
+class BaseAxisSpringDamper(NoForces):
+    """
+    Apply a spring-damper force on a base node along selected axes.
+    Useful for preventing unbounded drift in free force-driven runs.
+    """
+
+    def __init__(
+        self,
+        node_idx,
+        target_position,
+        stiffness,
+        damping,
+        active_axes=(1.0, 1.0, 0.0),
+        max_force=5.0,
+    ):
+        self.node_idx = int(node_idx)
+        self.target_position = np.asarray(target_position, dtype=float).reshape(3)
+        self.stiffness = float(stiffness)
+        self.damping = float(damping)
+        self.active_axes = np.asarray(active_axes, dtype=float).reshape(3)
+        self.max_force = max(0.0, float(max_force))
+
+    def apply_forces(self, system, time=0.0):
+        x = system.position_collection[:, self.node_idx]
+        v = system.velocity_collection[:, self.node_idx]
+        dx = (x - self.target_position) * self.active_axes
+        dv = v * self.active_axes
+        force = -self.stiffness * dx - self.damping * dv
+        fmag = np.linalg.norm(force)
+        if self.max_force > 0.0 and fmag > self.max_force:
+            force *= self.max_force / max(fmag, 1e-12)
+        system.external_forces[:, self.node_idx] += force
+
+
+class BaseOrientationSpringDamper(NoForces):
+    """
+    Apply a soft restoring torque to the base element director plus angular damping.
+    This avoids hard orientation constraints while preventing flip-over in force-driven mode.
+    """
+
+    def __init__(self, element_idx, reference_director, stiffness, damping, max_torque=0.02):
+        self.element_idx = int(element_idx)
+        self.reference_director = np.asarray(reference_director, dtype=float).reshape(3, 3)
+        self.stiffness = float(stiffness)
+        self.damping = float(damping)
+        self.max_torque = max(0.0, float(max_torque))
+
+    def apply_torques(self, system, time=0.0):
+        idx = self.element_idx
+        current = system.director_collection[:, :, idx]
+        omega = system.omega_collection[:, idx]
+        # Small-angle attitude error from frame misalignment.
+        attitude_error = 0.5 * (
+            np.cross(current[:, 0], self.reference_director[:, 0])
+            + np.cross(current[:, 1], self.reference_director[:, 1])
+            + np.cross(current[:, 2], self.reference_director[:, 2])
+        )
+        torque = -self.stiffness * attitude_error - self.damping * omega
+        tmag = np.linalg.norm(torque)
+        if self.max_torque > 0.0 and tmag > self.max_torque:
+            torque *= self.max_torque / max(tmag, 1e-12)
+        system.external_torques[:, idx] += torque
+
+
+class PrescribedLandingBC(ConstraintBase):
+    """
+    Constrain finger base orientation and prescribe only a vertical (Z) drop of node 0.
+    This avoids free-body tumbling while still simulating a landing motion.
+    """
+
+    def __init__(
+        self,
+        fixed_position,
+        fixed_director,
+        landing_distance=0.03,
+        landing_speed=0.06,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.landing_distance = max(0.0, float(landing_distance))
+        self.landing_speed = max(0.0, float(landing_speed))
+        self._base_position0 = np.array(fixed_position, dtype=float).reshape(3, -1)[:, 0].copy()
+        self._base_director0 = np.array(fixed_director, dtype=float).reshape(3, 3, -1)[:, :, 0].copy()
+
+    def constrain_values(self, system, time):
+        p_idx = int(self.constrained_position_idx[0])
+        d_idx = int(self.constrained_director_idx[0])
+
+        drop = min(self.landing_distance, self.landing_speed * max(0.0, float(time)))
+        target = self._base_position0.copy()
+        target[2] -= drop
+
+        system.position_collection[:, p_idx] = target
+        system.director_collection[:, :, d_idx] = self._base_director0
+
+    def constrain_rates(self, system, time):
+        p_idx = int(self.constrained_position_idx[0])
+        d_idx = int(self.constrained_director_idx[0])
+
+        still_dropping = (self.landing_speed > 0.0) and (self.landing_speed * float(time) < self.landing_distance)
+        vz = -self.landing_speed if still_dropping else 0.0
+
+        system.velocity_collection[:, p_idx] = 0.0
+        system.velocity_collection[2, p_idx] = vz
+        system.omega_collection[:, d_idx] = 0.0
+
+
+class BaseXYLockedBC(ConstraintBase):
+    """
+    Constrain only base X/Y of node 0; leave Z and orientation unconstrained.
+    This creates a guided vertical rail for force-driven landing.
+    """
+
+    def __init__(self, fixed_position, **kwargs):
+        super().__init__(**kwargs)
+        self._base_xy = np.array(fixed_position, dtype=float).reshape(3, -1)[:2, 0].copy()
+
+    def constrain_values(self, system, time):
+        p_idx = int(self.constrained_position_idx[0])
+        system.position_collection[0, p_idx] = self._base_xy[0]
+        system.position_collection[1, p_idx] = self._base_xy[1]
+
+    def constrain_rates(self, system, time):
+        p_idx = int(self.constrained_position_idx[0])
+        system.velocity_collection[0, p_idx] = 0.0
+        system.velocity_collection[1, p_idx] = 0.0
+
+
+def parse_vec3_from_csv(text, arg_name):
+    try:
+        vals = [float(x.strip()) for x in text.split(",")]
+    except ValueError as exc:
+        raise ValueError(f"{arg_name} must be 3 comma-separated numbers, got '{text}'") from exc
+    if len(vals) != 3:
+        raise ValueError(f"{arg_name} must have exactly 3 values, got '{text}'")
+    return np.array(vals, dtype=float)
+
 ###################################################
 # MAIN SIMULATION FUNCTION
 ###################################################
@@ -298,6 +449,113 @@ def main():
                         help="Suffix for output filenames to prevent overwriting")
     parser.add_argument("--output_dir", type=str, default="squirrel_paw_results", 
                         help="Directory to save output files")
+    parser.add_argument(
+        "--landing_motion",
+        action="store_true",
+        help="Enable landing setup (start above branch and use selected landing mode).",
+    )
+    parser.add_argument(
+        "--landing_mode",
+        type=str,
+        default="prescribed",
+        choices=["prescribed", "force_driven"],
+        help="Landing dynamics: 'prescribed' enforces base Z trajectory; 'force_driven' uses only forces.",
+    )
+    parser.add_argument(
+        "--landing_speed",
+        type=float,
+        default=0.0,
+        help="Initial vertical drop speed (m/s, downward) when landing_motion is enabled.",
+    )
+    parser.add_argument(
+        "--landing_height",
+        type=float,
+        default=0.03,
+        help="Initial extra height above the nominal start pose for landing_motion (m).",
+    )
+    parser.add_argument(
+        "--base_force_mag",
+        type=float,
+        default=0.0,
+        help="External force magnitude (N) applied to base nodes.",
+    )
+    parser.add_argument(
+        "--base_force_dir",
+        type=str,
+        default="0,0,-1",
+        help="External base force direction as 'x,y,z' (normalized internally).",
+    )
+    parser.add_argument(
+        "--base_force_nodes",
+        type=int,
+        default=1,
+        help="Number of proximal nodes sharing the external base force.",
+    )
+    parser.add_argument(
+        "--full_visualization",
+        action="store_true",
+        help="Render with fixed global axis limits (entire trajectory + cylinder) instead of auto-follow view.",
+    )
+    parser.add_argument(
+        "--force_driven_stabilize",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="In force_driven mode, add XY base spring-damper stabilization to prevent runaway drift.",
+    )
+    parser.add_argument(
+        "--force_driven_xy_k",
+        type=float,
+        default=120.0,
+        help="XY spring stiffness (N/m) for force_driven stabilization.",
+    )
+    parser.add_argument(
+        "--force_driven_xy_c",
+        type=float,
+        default=3.0,
+        help="XY damping (N*s/m) for force_driven stabilization.",
+    )
+    parser.add_argument(
+        "--force_driven_tendon_ramp",
+        type=float,
+        default=0.6,
+        help="Ramp-up time (s) for tendon actuation in force_driven mode.",
+    )
+    parser.add_argument(
+        "--force_driven_xy_fmax",
+        type=float,
+        default=5.0,
+        help="Max XY stabilization force magnitude (N) for force_driven mode.",
+    )
+    parser.add_argument(
+        "--force_driven_lock_base_xy",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="In force_driven mode, hard-lock base X/Y (orientation still free, Z force-driven).",
+    )
+    parser.add_argument(
+        "--force_driven_rot_stabilize",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="In force_driven mode, add soft rotational spring-damper at base element.",
+    )
+    parser.add_argument(
+        "--force_driven_rot_k",
+        type=float,
+        default=0.03,
+        help="Rotational spring gain for force_driven stabilization.",
+    )
+    parser.add_argument(
+        "--force_driven_rot_c",
+        type=float,
+        default=0.003,
+        help="Rotational damping gain for force_driven stabilization.",
+    )
+    parser.add_argument(
+        "--force_driven_rot_tmax",
+        type=float,
+        default=0.02,
+        help="Max rotational stabilization torque magnitude.",
+    )
 
     args = parser.parse_args()
 
@@ -308,6 +566,20 @@ def main():
     tension = args.tension
     n_elements = args.n_elements
     damping_constant = args.damping
+    landing_motion = args.landing_motion
+    landing_mode = args.landing_mode
+    landing_speed = abs(args.landing_speed)
+    landing_height = args.landing_height
+    force_driven_stabilize = bool(args.force_driven_stabilize)
+    force_driven_lock_base_xy = bool(args.force_driven_lock_base_xy)
+    force_driven_xy_k = max(0.0, float(args.force_driven_xy_k))
+    force_driven_xy_c = max(0.0, float(args.force_driven_xy_c))
+    force_driven_tendon_ramp = max(0.0, float(args.force_driven_tendon_ramp))
+    force_driven_xy_fmax = max(0.0, float(args.force_driven_xy_fmax))
+    force_driven_rot_stabilize = bool(args.force_driven_rot_stabilize)
+    force_driven_rot_k = max(0.0, float(args.force_driven_rot_k))
+    force_driven_rot_c = max(0.0, float(args.force_driven_rot_c))
+    force_driven_rot_tmax = max(0.0, float(args.force_driven_rot_tmax))
     k_contact = args.k_contact
     cyl_radius = args.cyl_rad
     suffix = args.suffix
@@ -346,6 +618,16 @@ def main():
     body_mass = args.body_mass
     gravity = 9.80665
     body_weight_force = np.array([0.0, 0.0, -body_mass * gravity])
+    base_force_mag = abs(args.base_force_mag)
+    base_force_dir = parse_vec3_from_csv(args.base_force_dir, "--base_force_dir")
+    base_force_nodes = max(1, int(args.base_force_nodes))
+    base_force_dir_norm = np.linalg.norm(base_force_dir)
+    if base_force_mag > 0.0 and base_force_dir_norm < 1e-12:
+        raise ValueError("--base_force_dir cannot be zero vector when --base_force_mag > 0")
+    base_force_unit = (
+        base_force_dir / base_force_dir_norm if base_force_dir_norm > 1e-12 else np.array([0.0, 0.0, 0.0])
+    )
+    base_external_force = base_force_mag * base_force_unit
     
     # Time stepping parameters
     wave_speed = np.sqrt(E / density)
@@ -405,6 +687,12 @@ def main():
     else:
         print(">>> MODE: Standard Horizontal")
 
+    if landing_motion:
+        # Start above the branch and let gravity produce the landing.
+        start_pos = start_pos.copy()
+        start_pos[2] += landing_height
+        print(f">>> LANDING MOTION: start height offset = +{landing_height:.3f} m")
+
     # Create finger rod
     finger = CosseratRod.straight_rod(
         n_elements=n_elements,
@@ -419,6 +707,11 @@ def main():
         mass_second_moment_of_inertia=mass_second_moment_of_inertia,
     )
     sim.append(finger)
+
+    if landing_motion and landing_speed > 0.0:
+        # Keep optional initial descent for the full finger (constraint still controls base node).
+        finger.velocity_collection[2, :] = -landing_speed
+        print(f">>> LANDING MOTION: initial vertical speed = {-landing_speed:.3f} m/s")
 
     # Apply soft joints by modifying bend_matrix at vertebrae locations
     joint_mult = args.joint_softness   
@@ -442,11 +735,31 @@ def main():
     sim.append(cylinder)
 
     # Apply boundary conditions
-    sim.constrain(finger).using(
-        OneEndFixedBC,
-        constrained_position_idx=(0,),
-        constrained_director_idx=(0,),
-    )
+    if not landing_motion:
+        sim.constrain(finger).using(
+            OneEndFixedBC,
+            constrained_position_idx=(0,),
+            constrained_director_idx=(0,),
+        )
+    else:
+        if landing_mode == "prescribed":
+            drop_speed = landing_speed if landing_speed > 0.0 else (landing_height / 0.5)
+            print(f">>> LANDING MOTION (prescribed): base drop speed={drop_speed:.3f} m/s over {landing_height:.3f} m")
+            sim.constrain(finger).using(
+                PrescribedLandingBC,
+                constrained_position_idx=(0,),
+                constrained_director_idx=(0,),
+                landing_distance=landing_height,
+                landing_speed=drop_speed,
+            )
+        else:
+            print(">>> LANDING MOTION (force_driven): orientation unconstrained, drop driven by forces")
+            if force_driven_lock_base_xy:
+                sim.constrain(finger).using(
+                    BaseXYLockedBC,
+                    constrained_position_idx=(0,),
+                )
+                print(">>> FORCE_DRIVEN: base X/Y locked (Z and orientation remain free)")
     sim.constrain(cylinder).using(
         FixedConstraint,
         constrained_position_idx=(0,),
@@ -471,28 +784,93 @@ def main():
             vertebra_nodes_list=vertebra_nodes,
         )
     else:
-        tendon_actuation = sim.add_forcing_to(finger).using(
-            TendonForces,
-            vertebra_height=vertebra_height,
-            num_vertebrae=num_vertebrae,
-            first_vertebra_node=first_vertebra_node,
-            final_vertebra_node=final_vertebra_node,
-            vertebra_mass=vertebra_mass,
-            tension=tension,
-            vertebra_height_orientation=v_height_dir,
-            n_elements=n_elements,
-            vertebra_nodes_list=vertebra_nodes,
-        )
+        if landing_motion and landing_mode == "force_driven":
+            tendon_actuation = sim.add_forcing_to(finger).using(
+                TendonForcesRamp,
+                vertebra_height=vertebra_height,
+                num_vertebrae=num_vertebrae,
+                first_vertebra_node=first_vertebra_node,
+                final_vertebra_node=final_vertebra_node,
+                vertebra_mass=vertebra_mass,
+                tension=tension,
+                vertebra_height_orientation=v_height_dir,
+                n_elements=n_elements,
+                ramp_up_time=force_driven_tendon_ramp,
+                use_gradient=False,
+                center_seek=False,
+                vertebra_nodes_list=vertebra_nodes,
+            )
+            print(f">>> FORCE_DRIVEN: tendon ramp-up enabled (ramp_up_time={force_driven_tendon_ramp:.3f}s)")
+        else:
+            tendon_actuation = sim.add_forcing_to(finger).using(
+                TendonForces,
+                vertebra_height=vertebra_height,
+                num_vertebrae=num_vertebrae,
+                first_vertebra_node=first_vertebra_node,
+                final_vertebra_node=final_vertebra_node,
+                vertebra_mass=vertebra_mass,
+                tension=tension,
+                vertebra_height_orientation=v_height_dir,
+                n_elements=n_elements,
+                vertebra_nodes_list=vertebra_nodes,
+            )
 
     # Gravity
     sim.add_forcing_to(finger).using(GravityForces, np.array([0.0, 0.0, -9.80665]))
 
-    # Apply it to the first 5 nodes (proximal region)
-    sim.add_forcing_to(finger).using(
-        BodyWeightForcing, 
-        force_vector=body_weight_force, 
-        node_indices=np.arange(0, 5)
-    )
+    # Apply body load only for base-fixed modes; in landing mode this can over-accelerate free flight.
+    if not landing_motion:
+        sim.add_forcing_to(finger).using(
+            BodyWeightForcing,
+            force_vector=body_weight_force,
+            node_indices=np.arange(0, 5)
+        )
+    else:
+        print(">>> LANDING MOTION: skipping BodyWeightForcing on proximal nodes")
+
+    if base_force_mag > 0.0:
+        base_nodes = np.arange(0, min(base_force_nodes, n_elements + 1))
+        sim.add_forcing_to(finger).using(
+            ConstantNodeForce,
+            force_vector=base_external_force,
+            node_indices=base_nodes,
+        )
+        print(
+            f">>> BASE EXTERNAL FORCE: |F|={base_force_mag:.3f} N dir={base_force_unit} "
+            f"distributed on {len(base_nodes)} node(s)"
+        )
+
+    if landing_motion and landing_mode == "force_driven" and force_driven_stabilize and not force_driven_lock_base_xy:
+        base_target = finger.position_collection[:, 0].copy()
+        sim.add_forcing_to(finger).using(
+            BaseAxisSpringDamper,
+            node_idx=0,
+            target_position=base_target,
+            stiffness=force_driven_xy_k,
+            damping=force_driven_xy_c,
+            active_axes=np.array([1.0, 1.0, 0.0]),
+            max_force=force_driven_xy_fmax,
+        )
+        print(
+            f">>> FORCE_DRIVEN STABILIZATION: XY spring-damper on base "
+            f"(k={force_driven_xy_k:.2f}, c={force_driven_xy_c:.2f}, fmax={force_driven_xy_fmax:.2f})"
+        )
+    elif landing_motion and landing_mode == "force_driven" and force_driven_lock_base_xy:
+        print(">>> FORCE_DRIVEN STABILIZATION: XY spring-damper skipped (hard XY lock enabled)")
+    if landing_motion and landing_mode == "force_driven" and force_driven_rot_stabilize:
+        base_director_ref = finger.director_collection[:, :, 0].copy()
+        sim.add_forcing_to(finger).using(
+            BaseOrientationSpringDamper,
+            element_idx=0,
+            reference_director=base_director_ref,
+            stiffness=force_driven_rot_k,
+            damping=force_driven_rot_c,
+            max_torque=force_driven_rot_tmax,
+        )
+        print(
+            f">>> FORCE_DRIVEN STABILIZATION: rotational spring-damper at base "
+            f"(k={force_driven_rot_k:.3f}, c={force_driven_rot_c:.3f}, tmax={force_driven_rot_tmax:.3f})"
+        )
 
     # Damping
     if damping_constant > 0.0:
@@ -618,14 +996,33 @@ def main():
     contact_idx = np.where(normal_forces > 1e-1)[0]
     contact_vertices = final_pos[:, contact_idx].T
     cyl_axis_pos = cylinder.position_collection[:, 0]
-    contact_normals = contact_vertices - cyl_axis_pos
-    contact_normals /= np.linalg.norm(contact_normals, axis=1)[:, None]
 
     ext_force = np.array([0.0, 0.0, -body_mass * gravity])
     ext_torque = np.array([0.0, 0.0, 0.0])
     body_wrench = np.concatenate([ext_force, ext_torque])
-    is_force_closure = check_force_closure(contact_vertices, contact_normals, mu_contact, external_wrench=body_wrench)
-    energy_score = compute_total_energy(finger, normal_forces[contact_idx], k_contact)
+    if contact_vertices.shape[0] == 0:
+        is_force_closure = False
+        energy_score = 0.0
+        print("[METRICS] No final contact vertices detected; setting force closure=False and energy=0.")
+    else:
+        contact_normals = contact_vertices - cyl_axis_pos
+        normal_norm = np.linalg.norm(contact_normals, axis=1)
+        valid_mask = normal_norm > 1e-12
+        if not np.any(valid_mask):
+            is_force_closure = False
+            energy_score = 0.0
+            print("[METRICS] Contact normals degenerate; setting force closure=False and energy=0.")
+        else:
+            contact_vertices_valid = contact_vertices[valid_mask]
+            contact_normals_valid = contact_normals[valid_mask] / normal_norm[valid_mask][:, None]
+            force_idx_valid = contact_idx[valid_mask]
+            is_force_closure = check_force_closure(
+                contact_vertices_valid,
+                contact_normals_valid,
+                mu_contact,
+                external_wrench=body_wrench,
+            )
+            energy_score = compute_total_energy(finger, normal_forces[force_idx_valid], k_contact)
 
     data_to_save["metric_is_force_closure"] = np.array([is_force_closure])
     data_to_save["metric_energy_total"] = np.array([energy_score])
@@ -843,13 +1240,24 @@ def main():
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
-    idx = 0
+
+    full_limits = None
+    if args.full_visualization:
+        pos_stack = np.stack(pos_data, axis=0)  # (n_saved, 3, n_nodes)
+        rod_min = np.min(pos_stack, axis=(0, 2))
+        rod_max = np.max(pos_stack, axis=(0, 2))
+        cyl_center_vis = cylinder.position_collection[:, 0].copy()
+        cyl_pad = np.array([cyl_radius, cyl_length * 0.5, cyl_radius])
+        vis_min = np.minimum(rod_min, cyl_center_vis - cyl_pad)
+        vis_max = np.maximum(rod_max, cyl_center_vis + cyl_pad)
+        margin = np.array([0.02, 0.02, 0.02])
+        full_limits = (vis_min - margin, vis_max + margin)
 
     def make_frame(t):
-        nonlocal idx
         ax.clear()
         rod_radius = base_radius
-        P = pos_data[idx]
+        frame_idx = min(int(max(0.0, t) / dt_saved), len(pos_data) - 1)
+        P = pos_data[frame_idx]
         ax.scatter(P[0], P[1], P[2], s=6)
         step = 5 
         u, v = np.mgrid[0:2*np.pi:10j, 0:np.pi:10j]
@@ -868,13 +1276,29 @@ def main():
                 zorder=10,
             )
 
-        ax.set_xlim(-0.02, 0.12)
-        ax.set_ylim(-0.12, 0.12)
-        ax.set_zlim(-0.10, 0.10)
+        if full_limits is not None:
+            vis_min, vis_max = full_limits
+            ax.set_xlim(vis_min[0], vis_max[0])
+            ax.set_ylim(vis_min[1], vis_max[1])
+            ax.set_zlim(vis_min[2], vis_max[2])
+        elif landing_motion:
+            # Keep both finger and branch visible in guided landing mode.
+            center_p = np.mean(P, axis=1)
+            center_c = cylinder.position_collection[:, 0]
+            center_mix = 0.5 * (center_p + center_c)
+            x_half = max(0.08, 0.5 * abs(center_p[0] - center_c[0]) + 0.04)
+            z_half = max(0.08, 0.5 * abs(center_p[2] - center_c[2]) + 0.04)
+            ax.set_xlim(center_mix[0] - x_half, center_mix[0] + x_half)
+            ax.set_ylim(-0.12, 0.12)
+            ax.set_zlim(center_mix[2] - z_half, center_mix[2] + z_half)
+        else:
+            ax.set_xlim(-0.02, 0.12)
+            ax.set_ylim(-0.12, 0.12)
+            ax.set_zlim(-0.10, 0.10)
 
         # --- Force visualization of forces ---
         if args.debug:
-            F = data["external_forces"][idx]          # (3, n_nodes)
+            F = data["external_forces"][frame_idx]          # (3, n_nodes)
             mag = np.linalg.norm(F, axis=0)  # (n_nodes,)
 
             force_scale = 0.02
@@ -923,7 +1347,6 @@ def main():
         # front view: from -Y looking toward +Y
         ax.view_init(elev=0, azim=-90)
 
-        idx = min(idx + 1, len(pos_data) - 1)
         return mplfig_to_npimage(fig)
 
     clip = VideoClip(make_frame, duration=final_time)
