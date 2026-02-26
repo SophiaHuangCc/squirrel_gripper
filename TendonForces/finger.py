@@ -324,6 +324,22 @@ class BaseOrientationSpringDamper(NoForces):
         system.external_torques[:, idx] += torque
 
 
+class NodalViscousDrag(NoForces):
+    """
+    Damps rigid-body motion by applying per-node drag force proportional to velocity.
+    """
+
+    def __init__(self, damping_coefficient, axis_weights=(1.0, 1.0, 1.0)):
+        self.damping_coefficient = max(0.0, float(damping_coefficient))
+        self.axis_weights = np.asarray(axis_weights, dtype=float).reshape(3, 1)
+
+    def apply_forces(self, system, time=0.0):
+        if self.damping_coefficient <= 0.0:
+            return
+        drag = -self.damping_coefficient * system.velocity_collection * self.axis_weights
+        system.external_forces += drag
+
+
 class PrescribedLandingBC(ConstraintBase):
     """
     Constrain finger base orientation and prescribe only a vertical (Z) drop of node 0.
@@ -419,6 +435,7 @@ def main():
     parser.add_argument("--tension", type=float, default=0.4, help="Tendon tension (N)")
     parser.add_argument("--damping", type=float, default=0.8, help="Internal damping constant")
     parser.add_argument("--n_elements", type=int, default=80, help="Number of rod elements")
+    parser.add_argument("--final_time", type=float, default=2.0, help="Total simulation time in seconds")
     # cylinder and contact params
     parser.add_argument("--cyl_rad", type=float, default=0.015, help="Cylinder radius (m)")
     parser.add_argument("--k_contact", type=float, default=1.25e3, help="Contact stiffness")
@@ -517,7 +534,7 @@ def main():
     parser.add_argument(
         "--force_driven_tendon_ramp",
         type=float,
-        default=0.6,
+        default=1.0,
         help="Ramp-up time (s) for tendon actuation in force_driven mode.",
     )
     parser.add_argument(
@@ -531,6 +548,61 @@ def main():
         action=argparse.BooleanOptionalAction,
         default=True,
         help="In force_driven mode, hard-lock base X/Y (orientation still free, Z force-driven).",
+    )
+    parser.add_argument(
+        "--force_driven_z_stabilize",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="In force_driven mode, add base Z spring-damper toward landing target to improve final settling.",
+    )
+    parser.add_argument(
+        "--force_driven_z_k",
+        type=float,
+        default=120.0,
+        help="Base Z stabilization stiffness (N/m) in force_driven mode.",
+    )
+    parser.add_argument(
+        "--force_driven_z_c",
+        type=float,
+        default=12.0,
+        help="Base Z stabilization damping (N*s/m) in force_driven mode.",
+    )
+    parser.add_argument(
+        "--force_driven_z_fmax",
+        type=float,
+        default=4.0,
+        help="Max base Z stabilization force magnitude (N) in force_driven mode.",
+    )
+    parser.add_argument(
+        "--force_driven_z_target",
+        type=str,
+        default="cylinder",
+        choices=["cylinder", "start"],
+        help="Z-stabilization target: 'cylinder' uses branch center z, 'start' uses nominal start z.",
+    )
+    parser.add_argument(
+        "--force_driven_z_target_offset",
+        type=float,
+        default=-0.01,
+        help="Offset (m) added to the chosen force-driven Z target.",
+    )
+    parser.add_argument(
+        "--force_driven_min_damping",
+        type=float,
+        default=5.0,
+        help="Minimum internal damping used in force_driven mode for better settling.",
+    )
+    parser.add_argument(
+        "--force_driven_node_drag",
+        type=float,
+        default=4.0,
+        help="External nodal viscous drag coefficient for force_driven mode.",
+    )
+    parser.add_argument(
+        "--force_driven_node_drag_axes",
+        type=str,
+        default="1,1,1",
+        help="Axis weights for nodal drag as 'x,y,z'.",
     )
     parser.add_argument(
         "--force_driven_rot_stabilize",
@@ -547,7 +619,7 @@ def main():
     parser.add_argument(
         "--force_driven_rot_c",
         type=float,
-        default=0.003,
+        default=0.02,
         help="Rotational damping gain for force_driven stabilization.",
     )
     parser.add_argument(
@@ -572,10 +644,19 @@ def main():
     landing_height = args.landing_height
     force_driven_stabilize = bool(args.force_driven_stabilize)
     force_driven_lock_base_xy = bool(args.force_driven_lock_base_xy)
+    force_driven_z_stabilize = bool(args.force_driven_z_stabilize)
     force_driven_xy_k = max(0.0, float(args.force_driven_xy_k))
     force_driven_xy_c = max(0.0, float(args.force_driven_xy_c))
     force_driven_tendon_ramp = max(0.0, float(args.force_driven_tendon_ramp))
     force_driven_xy_fmax = max(0.0, float(args.force_driven_xy_fmax))
+    force_driven_z_k = max(0.0, float(args.force_driven_z_k))
+    force_driven_z_c = max(0.0, float(args.force_driven_z_c))
+    force_driven_z_fmax = max(0.0, float(args.force_driven_z_fmax))
+    force_driven_z_target = args.force_driven_z_target
+    force_driven_z_target_offset = float(args.force_driven_z_target_offset)
+    force_driven_min_damping = max(0.0, float(args.force_driven_min_damping))
+    force_driven_node_drag = max(0.0, float(args.force_driven_node_drag))
+    force_driven_node_drag_axes = parse_vec3_from_csv(args.force_driven_node_drag_axes, "--force_driven_node_drag_axes")
     force_driven_rot_stabilize = bool(args.force_driven_rot_stabilize)
     force_driven_rot_k = max(0.0, float(args.force_driven_rot_k))
     force_driven_rot_c = max(0.0, float(args.force_driven_rot_c))
@@ -633,7 +714,9 @@ def main():
     wave_speed = np.sqrt(E / density)
     dx = base_length / n_elements
     dt_critical = dx / wave_speed
-    final_time = 2.0
+    final_time = float(args.final_time)
+    if final_time <= 0.0:
+        raise ValueError("--final_time must be > 0")
     time_step = 0.1 * dt_critical
     rendering_fps = 30.0
     total_steps = int(final_time / time_step)
@@ -686,6 +769,8 @@ def main():
         cyl_center_fixed = np.array([cyl_center[0], 0.0, cyl_center[2]])
     else:
         print(">>> MODE: Standard Horizontal")
+
+    start_pos_nominal = start_pos.copy()
 
     if landing_motion:
         # Start above the branch and let gravity produce the landing.
@@ -871,12 +956,46 @@ def main():
             f">>> FORCE_DRIVEN STABILIZATION: rotational spring-damper at base "
             f"(k={force_driven_rot_k:.3f}, c={force_driven_rot_c:.3f}, tmax={force_driven_rot_tmax:.3f})"
         )
+    if landing_motion and landing_mode == "force_driven" and force_driven_z_stabilize:
+        base_target_z = finger.position_collection[:, 0].copy()
+        if force_driven_z_target == "start":
+            z_target = start_pos_nominal[2]
+        else:
+            z_target = cyl_z
+        z_target += force_driven_z_target_offset
+        base_target_z[2] = z_target
+        sim.add_forcing_to(finger).using(
+            BaseAxisSpringDamper,
+            node_idx=0,
+            target_position=base_target_z,
+            stiffness=force_driven_z_k,
+            damping=force_driven_z_c,
+            active_axes=np.array([0.0, 0.0, 1.0]),
+            max_force=force_driven_z_fmax,
+        )
+        print(
+            f">>> FORCE_DRIVEN STABILIZATION: Z spring-damper to landing target "
+            f"(target_z={z_target:.4f}, k={force_driven_z_k:.2f}, c={force_driven_z_c:.2f}, fmax={force_driven_z_fmax:.2f})"
+        )
+    if landing_motion and landing_mode == "force_driven" and force_driven_node_drag > 0.0:
+        sim.add_forcing_to(finger).using(
+            NodalViscousDrag,
+            damping_coefficient=force_driven_node_drag,
+            axis_weights=force_driven_node_drag_axes,
+        )
+        print(
+            f">>> FORCE_DRIVEN DAMPING: nodal viscous drag "
+            f"(c={force_driven_node_drag:.2f}, axes={force_driven_node_drag_axes})"
+        )
 
     # Damping
-    if damping_constant > 0.0:
+    damping_to_apply = damping_constant
+    if landing_motion and landing_mode == "force_driven":
+        damping_to_apply = max(damping_to_apply, force_driven_min_damping)
+    if damping_to_apply > 0.0:
         sim.dampen(finger).using(
             AnalyticalLinearDamper,
-            damping_constant=damping_constant,
+            damping_constant=damping_to_apply,
             time_step=time_step,
         )
 
@@ -988,12 +1107,28 @@ def main():
     data_to_save["cyl_length"] = np.array([cylinder.length])
 
     # --- Automated Metric Calculation at T=Final ---
-    # Get final state
+    # Use geometry-based contact to keep this consistent with contact logging.
     final_pos = data["position"][-1]      # (3, N)
-    final_forces = data["external_forces"][-1] # (3, N)
-    normal_forces = np.linalg.norm(final_forces, axis=0)
-
-    contact_idx = np.where(normal_forces > 1e-1)[0]
+    final_vel = data["velocity"][-1]      # (3, N)
+    (
+        contact_idx,
+        normal_forces,
+        _,
+        _,
+        _,
+        _,
+        _,
+    ) = compute_contact_metrics_frame(
+        final_pos,
+        final_vel,
+        cylinder.position_collection[:, 0],
+        cylinder.director_collection[2, :, 0],
+        cyl_radius,
+        k_contact,
+        mu_contact,
+        base_radius,
+        cyl_length,
+    )
     contact_vertices = final_pos[:, contact_idx].T
     cyl_axis_pos = cylinder.position_collection[:, 0]
 
@@ -1015,14 +1150,13 @@ def main():
         else:
             contact_vertices_valid = contact_vertices[valid_mask]
             contact_normals_valid = contact_normals[valid_mask] / normal_norm[valid_mask][:, None]
-            force_idx_valid = contact_idx[valid_mask]
             is_force_closure = check_force_closure(
                 contact_vertices_valid,
                 contact_normals_valid,
                 mu_contact,
                 external_wrench=body_wrench,
             )
-            energy_score = compute_total_energy(finger, normal_forces[force_idx_valid], k_contact)
+            energy_score = compute_total_energy(finger, normal_forces[valid_mask], k_contact)
 
     data_to_save["metric_is_force_closure"] = np.array([is_force_closure])
     data_to_save["metric_energy_total"] = np.array([energy_score])
@@ -1056,7 +1190,8 @@ def main():
                 P, V, cyl_center, a, cyl_radius, k_contact, mu_contact, base_radius, cyl_length
             )
             min_rad = min(min_rad, float(np.min(radial_dist)))
-            total_contacts += int(np.sum((cyl_radius - radial_dist) > 0.0))
+            # Keep this threshold consistent with compute_contact_metrics_frame.
+            total_contacts += int(np.sum((cyl_radius + base_radius - radial_dist) > 0.0))
         best = max(best, (total_contacts, min_rad, a), key=lambda x: x[0]) if best else (total_contacts, min_rad, a)
 
     total_contacts, min_rad, cyl_axis = best
@@ -1174,14 +1309,18 @@ def main():
         cycle_time, strength, slip_res = calculate_nist_scores(
             data, cyl_radius, base_radius, k_contact, mu_contact, args.body_mass, gravity
         )
+        normal_forces_arr = np.asarray(normal_forces, dtype=float)
+        max_normal_force_for_score = float(np.max(normal_forces_arr)) if normal_forces_arr.size > 0 else 0.0
+        total_normal_force_for_score = float(np.sum(normal_forces_arr)) if normal_forces_arr.size > 0 else 0.0
+
         grasp_data = {
             "angular_span": metrics['angular_span'], # Calculate from your contact log
             "vertical_support": stab_metrics['total_support_n'],
             "body_weight": args.body_mass * gravity,
             "total_energy": energy_score,
             "contact_count": metrics['num_contacts'],
-            "max_normal_force": np.max(normal_forces),
-            "total_normal_force": np.sum(normal_forces),
+            "max_normal_force": max_normal_force_for_score,
+            "total_normal_force": total_normal_force_for_score,
             "cycle_time": cycle_time,
             "strength": strength,
             "slip_resistance": slip_res
