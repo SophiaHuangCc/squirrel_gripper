@@ -62,8 +62,12 @@ import fcntl # Standard on Linux/Mac/Lab Servers
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 if "--debug" in sys.argv:
-    plt.switch_backend("TkAgg")
-    print("[DEBUG] Matplotlib interactive backend enabled.")
+    try:
+        plt.switch_backend("TkAgg")
+        print("[DEBUG] Matplotlib interactive backend enabled.")
+    except ImportError:
+        plt.switch_backend("Agg")
+        print("[DEBUG] TkAgg unavailable in headless mode; falling back to Agg backend.")
 else:
     plt.switch_backend("Agg")
 
@@ -175,6 +179,150 @@ def compute_contact_metrics_frame(
             friction_force_mag[idx], 
             radial_dist, 
             overlaps)
+
+
+def compute_contact_force_vectors(
+    rod_pos,
+    rod_vel,
+    cyl_center,
+    cyl_radius,
+    k,
+    mu,
+    base_radius,
+    friction_velocity_override=None,
+):
+    """
+    Compute per-contact force vectors from geometry + Coulomb friction.
+    friction_velocity_override: optional 3-vector used to define disturbance slip direction.
+    """
+    dx = rod_pos[0, :] - cyl_center[0]
+    dz = rod_pos[2, :] - cyl_center[2]
+    radial_dist = np.sqrt(dx**2 + dz**2)
+    contact_threshold = cyl_radius + base_radius
+    overlaps = contact_threshold - radial_dist
+    contact_mask = overlaps > 0.0
+
+    normal_vec = np.zeros((rod_pos.shape[1], 3))
+    normal_vec[:, 0] = dx
+    normal_vec[:, 2] = dz
+    norms = np.linalg.norm(normal_vec, axis=1)
+    mask = norms > 1e-12
+    normal_vec[mask] /= norms[mask, None]
+
+    normal_force_mag = k * np.where(contact_mask, overlaps, 0.0)
+
+    if friction_velocity_override is None:
+        vel = rod_vel.T
+    else:
+        v_override = np.asarray(friction_velocity_override, dtype=float).reshape(1, 3)
+        vel = np.repeat(v_override, rod_pos.shape[1], axis=0)
+
+    normal_vel = np.sum(vel * normal_vec, axis=1)
+    vel_t = vel - normal_vel[:, None] * normal_vec
+    tangential_speed = np.linalg.norm(vel_t, axis=1)
+
+    friction_dir = np.zeros_like(vel_t)
+    tan_mask = tangential_speed > 1e-12
+    friction_dir[tan_mask] = -vel_t[tan_mask] / tangential_speed[tan_mask][:, None]
+    friction_force_mag = mu * normal_force_mag
+
+    f_n = normal_force_mag[:, None] * normal_vec
+    f_t = friction_force_mag[:, None] * friction_dir
+    f_total = f_n + f_t
+
+    idx = np.where(contact_mask)[0]
+    return (
+        idx,
+        f_total[idx],
+        f_n[idx],
+        f_t[idx],
+        normal_force_mag[idx],
+        overlaps[idx],
+    )
+
+
+def evaluate_disturbance_contact_response(
+    rod_pos,
+    cyl_center,
+    cyl_radius,
+    k,
+    mu,
+    base_radius,
+    base_point,
+    disturbance_force,
+    disturbance_point,
+):
+    """
+    Estimate net contact force/torque resisting an external disturbance.
+    Friction direction is aligned to oppose disturbance-induced tangential slip.
+    """
+    disturbance_force = np.asarray(disturbance_force, dtype=float).reshape(3)
+    base_point = np.asarray(base_point, dtype=float).reshape(3)
+    disturbance_point = np.asarray(disturbance_point, dtype=float).reshape(3)
+
+    (
+        idx,
+        contact_forces,
+        _,
+        _,
+        normal_force_mag,
+        _,
+    ) = compute_contact_force_vectors(
+        rod_pos=rod_pos,
+        rod_vel=np.zeros_like(rod_pos),
+        cyl_center=cyl_center,
+        cyl_radius=cyl_radius,
+        k=k,
+        mu=mu,
+        base_radius=base_radius,
+        friction_velocity_override=disturbance_force,
+    )
+
+    if len(idx) == 0:
+        net_contact_force = np.zeros(3)
+        net_contact_torque = np.zeros(3)
+    else:
+        pts = rod_pos[:, idx].T
+        r = pts - base_point[None, :]
+        net_contact_force = np.sum(contact_forces, axis=0)
+        net_contact_torque = np.sum(np.cross(r, contact_forces), axis=0)
+
+    applied_torque = np.cross(disturbance_point - base_point, disturbance_force)
+    fmag = np.linalg.norm(disturbance_force)
+    tmag = np.linalg.norm(applied_torque)
+
+    f_dir = disturbance_force / fmag if fmag > 1e-12 else np.zeros(3)
+    t_dir = applied_torque / tmag if tmag > 1e-12 else np.zeros(3)
+    resist_force = -float(np.dot(net_contact_force, f_dir)) if fmag > 1e-12 else 0.0
+    resist_torque = -float(np.dot(net_contact_torque, t_dir)) if tmag > 1e-12 else 0.0
+
+    force_alignment = 0.0
+    if fmag > 1e-12 and np.linalg.norm(net_contact_force) > 1e-12:
+        force_alignment = float(
+            np.dot(net_contact_force, disturbance_force)
+            / (np.linalg.norm(net_contact_force) * fmag)
+        )
+    torque_alignment = 0.0
+    if tmag > 1e-12 and np.linalg.norm(net_contact_torque) > 1e-12:
+        torque_alignment = float(
+            np.dot(net_contact_torque, applied_torque)
+            / (np.linalg.norm(net_contact_torque) * tmag)
+        )
+
+    return {
+        "num_contacts": int(len(idx)),
+        "applied_force": disturbance_force,
+        "applied_torque": applied_torque,
+        "net_contact_force": net_contact_force,
+        "net_contact_torque": net_contact_torque,
+        "resist_force": resist_force,
+        "resist_torque": resist_torque,
+        "force_alignment": force_alignment,
+        "torque_alignment": torque_alignment,
+        "force_resisted": bool(resist_force >= fmag and fmag > 0.0),
+        "torque_resisted": bool(resist_torque >= tmag and tmag > 0.0),
+        "total_normal_force": float(np.sum(normal_force_mag)) if len(idx) else 0.0,
+    }
 
 
 ###################################################
@@ -352,11 +500,15 @@ class PrescribedLandingBC(ConstraintBase):
         fixed_director,
         landing_distance=0.03,
         landing_speed=0.06,
+        landing_direction=(0.0, 0.0, -1.0),
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.landing_distance = max(0.0, float(landing_distance))
         self.landing_speed = max(0.0, float(landing_speed))
+        d = np.asarray(landing_direction, dtype=float).reshape(3)
+        dnorm = np.linalg.norm(d)
+        self.landing_direction = d / dnorm if dnorm > 1e-12 else np.array([0.0, 0.0, -1.0])
         self._base_position0 = np.array(fixed_position, dtype=float).reshape(3, -1)[:, 0].copy()
         self._base_director0 = np.array(fixed_director, dtype=float).reshape(3, 3, -1)[:, :, 0].copy()
 
@@ -365,8 +517,7 @@ class PrescribedLandingBC(ConstraintBase):
         d_idx = int(self.constrained_director_idx[0])
 
         drop = min(self.landing_distance, self.landing_speed * max(0.0, float(time)))
-        target = self._base_position0.copy()
-        target[2] -= drop
+        target = self._base_position0 + drop * self.landing_direction
 
         system.position_collection[:, p_idx] = target
         system.director_collection[:, :, d_idx] = self._base_director0
@@ -376,10 +527,8 @@ class PrescribedLandingBC(ConstraintBase):
         d_idx = int(self.constrained_director_idx[0])
 
         still_dropping = (self.landing_speed > 0.0) and (self.landing_speed * float(time) < self.landing_distance)
-        vz = -self.landing_speed if still_dropping else 0.0
-
-        system.velocity_collection[:, p_idx] = 0.0
-        system.velocity_collection[2, p_idx] = vz
+        v = self.landing_speed * self.landing_direction if still_dropping else np.zeros(3)
+        system.velocity_collection[:, p_idx] = v
         system.omega_collection[:, d_idx] = 0.0
 
 
@@ -439,6 +588,18 @@ def main():
     # cylinder and contact params
     parser.add_argument("--cyl_rad", type=float, default=0.015, help="Cylinder radius (m)")
     parser.add_argument("--k_contact", type=float, default=1.25e3, help="Contact stiffness")
+    parser.add_argument(
+        "--auto_contact_stiffness",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Auto-raise k_contact to a physically motivated minimum based on E and element size.",
+    )
+    parser.add_argument(
+        "--max_penetration_warn",
+        type=float,
+        default=0.002,
+        help="Warn if measured overlap exceeds this value (m).",
+    )
     # finger arguments
     parser.add_argument("--base_len", type=float, default=0.10, help="Finger length in meters")
     parser.add_argument("--base_rad", type=float, default=0.005, help="Finger radius in meters")
@@ -482,13 +643,31 @@ def main():
         "--landing_speed",
         type=float,
         default=0.0,
-        help="Initial vertical drop speed (m/s, downward) when landing_motion is enabled.",
+        help="Approach speed magnitude (m/s) when landing_motion is enabled.",
     )
     parser.add_argument(
         "--landing_height",
         type=float,
         default=0.03,
         help="Initial extra height above the nominal start pose for landing_motion (m).",
+    )
+    parser.add_argument(
+        "--landing_approach_deg",
+        type=float,
+        default=30.0,
+        help="Approach direction angle from horizontal in XZ plane (deg). 0=horizontal, 90=vertical down.",
+    )
+    parser.add_argument(
+        "--prescribed_stop_at_contact",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="In prescribed landing mode, shorten commanded drop so base does not cross cylinder contact boundary.",
+    )
+    parser.add_argument(
+        "--prescribed_contact_margin",
+        type=float,
+        default=5e-4,
+        help="Extra radial clearance (m) used by prescribed stop-at-contact guard.",
     )
     parser.add_argument(
         "--base_force_mag",
@@ -628,6 +807,18 @@ def main():
         default=0.02,
         help="Max rotational stabilization torque magnitude.",
     )
+    parser.add_argument(
+        "--disturbance_force_mag",
+        type=float,
+        default=0.5,
+        help="Disturbance force magnitude (N) for post-run contact stability checks.",
+    )
+    parser.add_argument(
+        "--disturbance_base_nodes",
+        type=int,
+        default=5,
+        help="Number of proximal nodes used to define base point for disturbance torque calculation.",
+    )
 
     args = parser.parse_args()
 
@@ -642,6 +833,8 @@ def main():
     landing_mode = args.landing_mode
     landing_speed = abs(args.landing_speed)
     landing_height = args.landing_height
+    prescribed_stop_at_contact = bool(args.prescribed_stop_at_contact)
+    prescribed_contact_margin = max(0.0, float(args.prescribed_contact_margin))
     force_driven_stabilize = bool(args.force_driven_stabilize)
     force_driven_lock_base_xy = bool(args.force_driven_lock_base_xy)
     force_driven_z_stabilize = bool(args.force_driven_z_stabilize)
@@ -661,7 +854,11 @@ def main():
     force_driven_rot_k = max(0.0, float(args.force_driven_rot_k))
     force_driven_rot_c = max(0.0, float(args.force_driven_rot_c))
     force_driven_rot_tmax = max(0.0, float(args.force_driven_rot_tmax))
+    disturbance_force_mag = max(0.0, float(args.disturbance_force_mag))
+    disturbance_base_nodes = max(1, int(args.disturbance_base_nodes))
     k_contact = args.k_contact
+    auto_contact_stiffness = bool(args.auto_contact_stiffness)
+    max_penetration_warn = max(0.0, float(args.max_penetration_warn))
     cyl_radius = args.cyl_rad
     suffix = args.suffix
     # Geometry for finger (optimize later?)
@@ -713,6 +910,18 @@ def main():
     # Time stepping parameters
     wave_speed = np.sqrt(E / density)
     dx = base_length / n_elements
+    # Physical estimate: k ~ E*A/L where A~(radius*dx), L~(2*radius)
+    # This avoids unrealistically deep penetration with low penalty stiffness.
+    contact_width = base_radius
+    area_per_element = contact_width * dx
+    k_contact_physical = (E * area_per_element) / max(2 * base_radius, 1e-12)
+    if auto_contact_stiffness and k_contact < k_contact_physical:
+        print(
+            f"[CONTACT] Auto-raising k_contact from {k_contact:.2e} to physical estimate "
+            f"{k_contact_physical:.2e} N/m"
+        )
+        k_contact = float(k_contact_physical)
+
     dt_critical = dx / wave_speed
     final_time = float(args.final_time)
     if final_time <= 0.0:
@@ -778,6 +987,13 @@ def main():
         start_pos[2] += landing_height
         print(f">>> LANDING MOTION: start height offset = +{landing_height:.3f} m")
 
+    landing_angle_rad = np.deg2rad(float(args.landing_approach_deg))
+    landing_drop_dir = np.array(
+        [np.cos(landing_angle_rad), 0.0, -np.sin(landing_angle_rad)],
+        dtype=float,
+    )
+    landing_drop_dir /= max(np.linalg.norm(landing_drop_dir), 1e-12)
+
     # Create finger rod
     finger = CosseratRod.straight_rod(
         n_elements=n_elements,
@@ -794,9 +1010,13 @@ def main():
     sim.append(finger)
 
     if landing_motion and landing_speed > 0.0:
-        # Keep optional initial descent for the full finger (constraint still controls base node).
-        finger.velocity_collection[2, :] = -landing_speed
-        print(f">>> LANDING MOTION: initial vertical speed = {-landing_speed:.3f} m/s")
+        # Give whole finger an initial approach velocity along angled drop direction.
+        finger.velocity_collection[:, :] = landing_speed * landing_drop_dir.reshape(3, 1)
+        print(
+            ">>> LANDING MOTION: initial approach velocity = "
+            f"{landing_speed * landing_drop_dir} m/s "
+            f"(angle={args.landing_approach_deg:.1f} deg from horizontal)"
+        )
 
     # Apply soft joints by modifying bend_matrix at vertebrae locations
     joint_mult = args.joint_softness   
@@ -829,13 +1049,44 @@ def main():
     else:
         if landing_mode == "prescribed":
             drop_speed = landing_speed if landing_speed > 0.0 else (landing_height / 0.5)
-            print(f">>> LANDING MOTION (prescribed): base drop speed={drop_speed:.3f} m/s over {landing_height:.3f} m")
+            landing_distance_cmd = landing_height
+            if prescribed_stop_at_contact:
+                p0_xz = start_pos[[0, 2]].copy()
+                c_xz = np.array([cyl_x, cyl_z], dtype=float)
+                d_xz = landing_drop_dir[[0, 2]].copy()
+                d_norm = np.linalg.norm(d_xz)
+                if d_norm > 1e-12:
+                    d_xz /= d_norm
+                    r_guard = cyl_radius + base_radius + prescribed_contact_margin
+                    rel = p0_xz - c_xz
+                    a = np.dot(d_xz, d_xz)
+                    b = 2.0 * np.dot(rel, d_xz)
+                    c_quad = np.dot(rel, rel) - r_guard**2
+                    disc = b * b - 4.0 * a * c_quad
+                    if disc >= 0.0:
+                        sqrt_disc = np.sqrt(disc)
+                        roots = [(-b - sqrt_disc) / (2.0 * a), (-b + sqrt_disc) / (2.0 * a)]
+                        roots = [r for r in roots if r >= 0.0]
+                        if roots:
+                            hit_dist = min(roots)
+                            if hit_dist < landing_distance_cmd:
+                                landing_distance_cmd = max(0.0, hit_dist)
+                                print(
+                                    ">>> LANDING MOTION (prescribed): stop-at-contact active, "
+                                    f"landing_distance reduced to {landing_distance_cmd:.4f} m "
+                                    f"(guard radius={r_guard:.4f} m)"
+                                )
+            print(
+                f">>> LANDING MOTION (prescribed): base downward drop speed={drop_speed:.3f} m/s "
+                f"over {landing_distance_cmd:.3f} m"
+            )
             sim.constrain(finger).using(
                 PrescribedLandingBC,
                 constrained_position_idx=(0,),
                 constrained_director_idx=(0,),
-                landing_distance=landing_height,
+                landing_distance=landing_distance_cmd,
                 landing_speed=drop_speed,
+                landing_direction=landing_drop_dir,
             )
         else:
             print(">>> LANDING MOTION (force_driven): orientation unconstrained, drop driven by forces")
@@ -1008,16 +1259,7 @@ def main():
         friction_coefficient=mu_contact,
     )
 
-    # --- PHYSICAL CONTACT STIFFNESS CALCULATION ---
-    dx = base_length / n_elements
-    # Assuming contact width is roughly the radius of the finger for a solid grip
-    contact_width = base_radius 
-    area_per_element = contact_width * dx
-
-    # k_contact = (E * Area) / L_characteristic
-    # L_characteristic is the thickness of the material being compressed (finger diameter)
-    k_contact_physical = (E * area_per_element) / (2 * base_radius)
-
+    # --- PHYSICAL CONTACT STIFFNESS DIAGNOSTIC ---
     print(f"[PHYSICS] Calculated k_contact: {k_contact_physical:.2e} N/m")
 
 
@@ -1202,6 +1444,7 @@ def main():
 
     first_contact_frame = None
     max_normal_force_overall = 0.0
+    max_overlap_overall = 0.0
     contact_data = []
 
     with open(os.path.join(base_outdir, f"contact_log_{run_id}_{suffix}.csv"), "w", newline="") as f:
@@ -1226,6 +1469,8 @@ def main():
             if len(idx) > 0:
                 frame_max = float(np.max(nF))
                 max_normal_force_overall = max(max_normal_force_overall, frame_max)
+                frame_overlap_max = float(np.max(overlap_all[idx]))
+                max_overlap_overall = max(max_overlap_overall, frame_overlap_max)
                 if first_contact_frame is None:
                     first_contact_frame = frame_idx
 
@@ -1250,10 +1495,25 @@ def main():
     else:
         print(f"[CONTACT] First contact frame={first_contact_frame}  t={first_contact_frame*dt_saved:.4f}s")
         print(f"[CONTACT] Max normal force over all frames: {max_normal_force_overall:.6f} N")
+        print(f"[CONTACT] Max overlap over all frames: {max_overlap_overall:.6f} m")
+        if max_overlap_overall > max_penetration_warn:
+            print(
+                "[CONTACT WARNING] Large penetration detected. "
+                f"overlap={max_overlap_overall:.6f} m > warn={max_penetration_warn:.6f} m. "
+                "Consider increasing --k_contact/--nu_contact, reducing --tension, or using --landing_mode force_driven."
+            )
+            if landing_motion and landing_mode == "prescribed":
+                print(
+                    "[CONTACT WARNING] Prescribed landing enforces a kinematic base path; "
+                    "this can still drive penetration under high tendon load."
+                )
         print(f"[CONTACT] Wrote {os.path.join(base_outdir, f'contact_log_{run_id}_{suffix}.csv')}")
+
+    data_to_save["metric_contact_max_overlap"] = np.array([max_overlap_overall])
 
     print(f"\n[CONTACT] Starting geometric metrics check for: {csv_path}")
     is_fc = False
+    is_stable = False
     metrics = {
         "num_contacts": 0,
         "angular_span": 0.0,
@@ -1263,6 +1523,7 @@ def main():
     }
     final_score = float("nan")
     breakdown = {}
+    disturbance_results = {}
     try:
         is_fc, metrics = analyze_grasp_from_log(csv_path)
         data_to_save["geometric_success"] = np.array([is_fc])
@@ -1305,6 +1566,61 @@ def main():
         print(f"  Vertical Support: {stab_metrics['total_support_n']:.4f} N")
         print(f"  Stable: {is_stable} (Margin: {stab_metrics['margin']:.2f}x)")
 
+        # Disturbance stability checks from final settled contact state.
+        base_count = min(disturbance_base_nodes, final_pos.shape[1])
+        tip_count = min(5, final_pos.shape[1])
+        base_point = final_pos[:, :base_count].mean(axis=1)
+        disturbance_point = final_pos[:, -tip_count:].mean(axis=1)
+        disturbance_cases = {
+            "drag_left": np.array([-1.0, 0.0, 0.0]),
+            "drag_right": np.array([1.0, 0.0, 0.0]),
+            "drag_down": np.array([0.0, 0.0, -1.0]),
+        }
+        for name, dvec in disturbance_cases.items():
+            applied_force = disturbance_force_mag * dvec
+            resp = evaluate_disturbance_contact_response(
+                rod_pos=final_pos,
+                cyl_center=cylinder.position_collection[:, 0],
+                cyl_radius=cyl_radius,
+                k=k_contact,
+                mu=mu_contact,
+                base_radius=base_radius,
+                base_point=base_point,
+                disturbance_force=applied_force,
+                disturbance_point=disturbance_point,
+            )
+            disturbance_results[name] = resp
+            data_to_save[f"disturbance_{name}_applied_force"] = resp["applied_force"]
+            data_to_save[f"disturbance_{name}_applied_torque"] = resp["applied_torque"]
+            data_to_save[f"disturbance_{name}_net_contact_force"] = resp["net_contact_force"]
+            data_to_save[f"disturbance_{name}_net_contact_torque"] = resp["net_contact_torque"]
+            data_to_save[f"disturbance_{name}_resist_force"] = np.array([resp["resist_force"]])
+            data_to_save[f"disturbance_{name}_resist_torque"] = np.array([resp["resist_torque"]])
+            data_to_save[f"disturbance_{name}_force_alignment"] = np.array([resp["force_alignment"]])
+            data_to_save[f"disturbance_{name}_torque_alignment"] = np.array([resp["torque_alignment"]])
+            data_to_save[f"disturbance_{name}_force_resisted"] = np.array([resp["force_resisted"]])
+            data_to_save[f"disturbance_{name}_torque_resisted"] = np.array([resp["torque_resisted"]])
+
+        data_to_save["disturbance_base_point"] = base_point
+        data_to_save["disturbance_force_application_point"] = disturbance_point
+
+        print("\n[DISTURBANCE STABILITY CHECK]")
+        for name, resp in disturbance_results.items():
+            print(
+                f"  {name}: contacts={resp['num_contacts']} "
+                f"|F_app|={np.linalg.norm(resp['applied_force']):.3f} "
+                f"|F_contact|={np.linalg.norm(resp['net_contact_force']):.3f} "
+                f"align_F={resp['force_alignment']:.3f} "
+                f"resist_F={resp['resist_force']:.3f} "
+                f"force_resisted={resp['force_resisted']}"
+            )
+            print(
+                f"    |tau_app|={np.linalg.norm(resp['applied_torque']):.3f} "
+                f"|tau_contact|={np.linalg.norm(resp['net_contact_torque']):.3f} "
+                f"align_tau={resp['torque_alignment']:.3f} "
+                f"resist_tau={resp['resist_torque']:.3f} "
+                f"torque_resisted={resp['torque_resisted']}"
+            )
 
         cycle_time, strength, slip_res = calculate_nist_scores(
             data, cyl_radius, base_radius, k_contact, mu_contact, args.body_mass, gravity
@@ -1397,6 +1713,7 @@ def main():
         rod_radius = base_radius
         frame_idx = min(int(max(0.0, t) / dt_saved), len(pos_data) - 1)
         P = pos_data[frame_idx]
+        V = vel_data[frame_idx]
         ax.scatter(P[0], P[1], P[2], s=6)
         step = 5 
         u, v = np.mgrid[0:2*np.pi:10j, 0:np.pi:10j]
@@ -1478,6 +1795,60 @@ def main():
                 color='red', linewidth=3, label=f'Body Weight ({args.body_mass}kg)',
                 arrow_length_ratio=0.3
             )
+
+            # Contact force vectors and net contact wrench (about base).
+            (
+                cidx,
+                contact_forces,
+                _,
+                _,
+                _,
+                _,
+            ) = compute_contact_force_vectors(
+                rod_pos=P,
+                rod_vel=V,
+                cyl_center=cylinder.position_collection[:, 0],
+                cyl_radius=cyl_radius,
+                k=k_contact,
+                mu=mu_contact,
+                base_radius=base_radius,
+            )
+            base_count_vis = min(disturbance_base_nodes, P.shape[1])
+            base_point_vis = P[:, :base_count_vis].mean(axis=1)
+            if len(cidx) > 0:
+                cp = P[:, cidx]
+                cscale = 0.01
+                for j, node_idx in enumerate(cidx):
+                    cf = contact_forces[j]
+                    if np.linalg.norm(cf) < 1e-8:
+                        continue
+                    ax.quiver(
+                        cp[0, j], cp[1, j], cp[2, j],
+                        cf[0], cf[1], cf[2],
+                        length=cscale,
+                        normalize=True,
+                        color="yellow",
+                    )
+                net_cf = np.sum(contact_forces, axis=0)
+                contact_center = cp.mean(axis=1)
+                if np.linalg.norm(net_cf) > 1e-8:
+                    ax.quiver(
+                        contact_center[0], contact_center[1], contact_center[2],
+                        net_cf[0], net_cf[1], net_cf[2],
+                        length=0.03,
+                        normalize=True,
+                        color="lime",
+                    )
+                r = cp.T - base_point_vis[None, :]
+                net_tau = np.sum(np.cross(r, contact_forces), axis=0)
+                if np.linalg.norm(net_tau) > 1e-8:
+                    ax.quiver(
+                        base_point_vis[0], base_point_vis[1], base_point_vis[2],
+                        net_tau[0], net_tau[1], net_tau[2],
+                        length=0.03,
+                        normalize=True,
+                        color="orange",
+                    )
             
         center = cylinder.position_collection[:, 0]
         axis_dir = cylinder.director_collection[2, :, 0]
@@ -1506,6 +1877,40 @@ def main():
         center = cylinder.position_collection[:, 0]
         axis_dir = cylinder.director_collection[2, :, 0]
         draw_cylinder(ax_live, center, axis_dir, cyl_radius, cyl_length, color="black", alpha=0.3)
+
+        if disturbance_results:
+            base_count_live = min(disturbance_base_nodes, P.shape[1])
+            tip_count_live = min(5, P.shape[1])
+            base_point_live = P[:, :base_count_live].mean(axis=1)
+            disturbance_point_live = P[:, -tip_count_live:].mean(axis=1)
+            colors = {
+                "drag_left": "tab:blue",
+                "drag_right": "tab:green",
+                "drag_down": "tab:red",
+            }
+            for key, resp in disturbance_results.items():
+                col = colors.get(key, "black")
+                f_app = resp["applied_force"]
+                f_net = resp["net_contact_force"]
+                t_net = resp["net_contact_torque"]
+                if np.linalg.norm(f_app) > 1e-12:
+                    ax_live.quiver(
+                        disturbance_point_live[0], disturbance_point_live[1], disturbance_point_live[2],
+                        f_app[0], f_app[1], f_app[2],
+                        length=0.03, normalize=True, color=col,
+                    )
+                if np.linalg.norm(f_net) > 1e-12:
+                    ax_live.quiver(
+                        base_point_live[0], base_point_live[1], base_point_live[2],
+                        f_net[0], f_net[1], f_net[2],
+                        length=0.03, normalize=True, color=col, alpha=0.6,
+                    )
+                if np.linalg.norm(t_net) > 1e-12:
+                    ax_live.quiver(
+                        base_point_live[0], base_point_live[1], base_point_live[2],
+                        t_net[0], t_net[1], t_net[2],
+                        length=0.03, normalize=True, color="orange", alpha=0.7,
+                    )
 
         ax_live.set_xlim(-0.02, 0.12)
         ax_live.set_ylim(-0.12, 0.12)

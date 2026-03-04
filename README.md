@@ -57,7 +57,7 @@ python ./finger.py --tension 10.0 --joint_softness 0.002 --sol approach_angle --
 
 simulate approaching motion
 ```bash
-python ./finger.py --tension 10.0 --joint_softness 0.002 --sol approach_angle --base_rad 0.005 --approach_deg 45 --landing_motion --landing_height 0.03 --landing_speed 0.0 --full_visualization
+python ./finger.py --tension 10.0 --joint_softness 0.002 --sol approach_angle --base_rad 0.005 --approach_deg 45 --landing_approach_deg 30 --landing_motion --landing_height 0.03 --landing_speed 0.0 --full_visualization --debug
 ```
 
 ---
