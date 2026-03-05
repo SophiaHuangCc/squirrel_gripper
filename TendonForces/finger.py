@@ -1699,8 +1699,10 @@ def main():
             data_to_save[f"disturbance_{name}_force_history"] = resp["force_history"]
 
         data_to_save["disturbance_base_point"] = base_point
-        data_to_save["disturbance_force_application_point"] = disturbance_point
-        data_to_save["disturbance_resistance_score"] = np.array([resistance_count / total_cases])
+        data_to_save["disturbance_force_application_point"] = base_point
+        data_to_save["disturbance_resistance_score"] = np.array(
+            [resistance_count / max(total_cases, 1)]
+        )
 
         print("\n[DISTURBANCE STABILITY CHECK]")
         for name, resp in disturbance_results.items():
