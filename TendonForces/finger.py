@@ -243,58 +243,94 @@ def compute_contact_force_vectors(
 
 def evaluate_disturbance_contact_response(
     rod_pos,
+    rod_vel,
     cyl_center,
     cyl_radius,
     k,
     mu,
     base_radius,
-    base_point,
+    base_indices,
+    node_masses,
     disturbance_force,
-    disturbance_point,
+    n_steps,
+    dt,
 ):
     """
-    Estimate net contact force/torque resisting an external disturbance.
-    Friction direction is aligned to oppose disturbance-induced tangential slip.
+    Apply a disturbance pulse for a few explicit steps and measure resulting contact wrench.
+    This is a lightweight post-process rollout (not a full Cosserat re-simulation).
     """
     disturbance_force = np.asarray(disturbance_force, dtype=float).reshape(3)
-    base_point = np.asarray(base_point, dtype=float).reshape(3)
-    disturbance_point = np.asarray(disturbance_point, dtype=float).reshape(3)
+    pos = np.asarray(rod_pos, dtype=float).copy()
+    vel = np.asarray(rod_vel, dtype=float).copy()
+    base_indices = np.asarray(base_indices, dtype=int)
+    if base_indices.size == 0:
+        raise ValueError("base_indices must have at least one node index")
 
-    (
-        idx,
-        contact_forces,
-        _,
-        _,
-        normal_force_mag,
-        _,
-    ) = compute_contact_force_vectors(
-        rod_pos=rod_pos,
-        rod_vel=np.zeros_like(rod_pos),
-        cyl_center=cyl_center,
-        cyl_radius=cyl_radius,
-        k=k,
-        mu=mu,
-        base_radius=base_radius,
-        friction_velocity_override=disturbance_force,
-    )
+    node_masses = np.asarray(node_masses, dtype=float).reshape(-1)
+    if node_masses.size != pos.shape[1]:
+        raise ValueError("node_masses length must equal number of rod nodes")
+    node_masses = np.maximum(node_masses, 1e-9)
 
-    if len(idx) == 0:
-        net_contact_force = np.zeros(3)
-        net_contact_torque = np.zeros(3)
-    else:
-        pts = rod_pos[:, idx].T
-        r = pts - base_point[None, :]
-        net_contact_force = np.sum(contact_forces, axis=0)
-        net_contact_torque = np.sum(np.cross(r, contact_forces), axis=0)
+    dt = max(float(dt), 1e-8)
+    n_steps = max(int(n_steps), 1)
+    base_force_per_node = disturbance_force / float(base_indices.size)
 
-    applied_torque = np.cross(disturbance_point - base_point, disturbance_force)
+    idx = np.array([], dtype=int)
+    contact_forces = np.zeros((0, 3))
+    normal_force_mag = np.zeros((0,), dtype=float)
+    net_contact_force = np.zeros(3)
+    net_contact_torque = np.zeros(3)
+    base_point = pos[:, base_indices].mean(axis=1)
+
+    force_hist = []
+    torque_hist = []
+    contacts_hist = []
+
+    for _ in range(n_steps):
+        (
+            idx,
+            contact_forces,
+            _,
+            _,
+            normal_force_mag,
+            _,
+        ) = compute_contact_force_vectors(
+            rod_pos=pos,
+            rod_vel=vel,
+            cyl_center=cyl_center,
+            cyl_radius=cyl_radius,
+            k=k,
+            mu=mu,
+            base_radius=base_radius,
+        )
+
+        nodal_forces = np.zeros_like(pos)
+        if len(idx) > 0:
+            nodal_forces[:, idx] += contact_forces.T
+        nodal_forces[:, base_indices] += base_force_per_node.reshape(3, 1)
+
+        acc = nodal_forces / node_masses.reshape(1, -1)
+        vel = vel + dt * acc
+        pos = pos + dt * vel
+
+        base_point = pos[:, base_indices].mean(axis=1)
+        if len(idx) > 0:
+            cp = pos[:, idx].T
+            net_contact_force = np.sum(contact_forces, axis=0)
+            net_contact_torque = np.sum(np.cross(cp - base_point[None, :], contact_forces), axis=0)
+        else:
+            net_contact_force = np.zeros(3)
+            net_contact_torque = np.zeros(3)
+
+        force_hist.append(net_contact_force.copy())
+        torque_hist.append(net_contact_torque.copy())
+        contacts_hist.append(int(len(idx)))
+
+    applied_torque = np.zeros(3)
     fmag = np.linalg.norm(disturbance_force)
-    tmag = np.linalg.norm(applied_torque)
-
     f_dir = disturbance_force / fmag if fmag > 1e-12 else np.zeros(3)
-    t_dir = applied_torque / tmag if tmag > 1e-12 else np.zeros(3)
     resist_force = -float(np.dot(net_contact_force, f_dir)) if fmag > 1e-12 else 0.0
-    resist_torque = -float(np.dot(net_contact_torque, t_dir)) if tmag > 1e-12 else 0.0
+    resist_torque = 0.0
 
     force_alignment = 0.0
     if fmag > 1e-12 and np.linalg.norm(net_contact_force) > 1e-12:
@@ -303,11 +339,6 @@ def evaluate_disturbance_contact_response(
             / (np.linalg.norm(net_contact_force) * fmag)
         )
     torque_alignment = 0.0
-    if tmag > 1e-12 and np.linalg.norm(net_contact_torque) > 1e-12:
-        torque_alignment = float(
-            np.dot(net_contact_torque, applied_torque)
-            / (np.linalg.norm(net_contact_torque) * tmag)
-        )
 
     return {
         "num_contacts": int(len(idx)),
@@ -320,8 +351,16 @@ def evaluate_disturbance_contact_response(
         "force_alignment": force_alignment,
         "torque_alignment": torque_alignment,
         "force_resisted": bool(resist_force >= fmag and fmag > 0.0),
-        "torque_resisted": bool(resist_torque >= tmag and tmag > 0.0),
+        "torque_resisted": False,
         "total_normal_force": float(np.sum(normal_force_mag)) if len(idx) else 0.0,
+        "contact_positions": pos[:, idx].copy() if len(idx) else np.zeros((3, 0)),
+        "contact_forces": contact_forces.copy(),
+        "position_final": pos.copy(),
+        "velocity_final": vel.copy(),
+        "base_point_final": base_point.copy(),
+        "force_history": np.array(force_hist),
+        "torque_history": np.array(torque_hist),
+        "contacts_history": np.array(contacts_hist, dtype=int),
     }
 
 
@@ -652,6 +691,15 @@ def main():
         help="Initial extra height above the nominal start pose for landing_motion (m).",
     )
     parser.add_argument(
+        "--initial_x_gap",
+        type=float,
+        default=None,
+        help=(
+            "Initial horizontal X distance (m) from finger base to cylinder center. "
+            "If unset, keeps mode-specific default placement."
+        ),
+    )
+    parser.add_argument(
         "--landing_approach_deg",
         type=float,
         default=30.0,
@@ -666,8 +714,8 @@ def main():
     parser.add_argument(
         "--prescribed_contact_margin",
         type=float,
-        default=5e-4,
-        help="Extra radial clearance (m) used by prescribed stop-at-contact guard.",
+        default=0.0,
+        help="Optional radial margin (m) added to cylinder radius for prescribed base stop condition.",
     )
     parser.add_argument(
         "--base_force_mag",
@@ -810,7 +858,7 @@ def main():
     parser.add_argument(
         "--disturbance_force_mag",
         type=float,
-        default=0.5,
+        default=1.0,
         help="Disturbance force magnitude (N) for post-run contact stability checks.",
     )
     parser.add_argument(
@@ -818,6 +866,18 @@ def main():
         type=int,
         default=5,
         help="Number of proximal nodes used to define base point for disturbance torque calculation.",
+    )
+    parser.add_argument(
+        "--disturbance_steps",
+        type=int,
+        default=40,
+        help="Number of short rollout steps used to apply disturbance and measure contact response.",
+    )
+    parser.add_argument(
+        "--disturbance_dt_scale",
+        type=float,
+        default=1.0,
+        help="Multiplier on simulation time_step for disturbance rollout integration dt.",
     )
 
     args = parser.parse_args()
@@ -833,6 +893,7 @@ def main():
     landing_mode = args.landing_mode
     landing_speed = abs(args.landing_speed)
     landing_height = args.landing_height
+    initial_x_gap = None if args.initial_x_gap is None else max(0.0, float(args.initial_x_gap))
     prescribed_stop_at_contact = bool(args.prescribed_stop_at_contact)
     prescribed_contact_margin = max(0.0, float(args.prescribed_contact_margin))
     force_driven_stabilize = bool(args.force_driven_stabilize)
@@ -856,6 +917,8 @@ def main():
     force_driven_rot_tmax = max(0.0, float(args.force_driven_rot_tmax))
     disturbance_force_mag = max(0.0, float(args.disturbance_force_mag))
     disturbance_base_nodes = max(1, int(args.disturbance_base_nodes))
+    disturbance_steps = max(1, int(args.disturbance_steps))
+    disturbance_dt_scale = max(0.01, float(args.disturbance_dt_scale))
     k_contact = args.k_contact
     auto_contact_stiffness = bool(args.auto_contact_stiffness)
     max_penetration_warn = max(0.0, float(args.max_penetration_warn))
@@ -955,9 +1018,13 @@ def main():
     if args.sol == "approach_angle":
         angle_rad = np.deg2rad(args.approach_deg)
         print(f">>> MODE: Dynamic Approach at {args.approach_deg} degrees")
-        start_x = cyl_start[0] - 2 * cyl_radius
+        x_gap = (2.0 * cyl_radius) if initial_x_gap is None else initial_x_gap
+        start_x = cyl_start[0] - x_gap
         start_z = cyl_z - (cyl_radius) * np.sin(angle_rad)
-        print(f"[APPROACH ANGLE] Calculated start position: x={start_x:.3f}, z={start_z:.3f}")
+        print(
+            f"[APPROACH ANGLE] Calculated start position: x={start_x:.3f}, z={start_z:.3f} "
+            f"(x_gap={x_gap:.3f})"
+        )
         
         start_pos = np.array([start_x, 0.0, start_z])
         
@@ -978,6 +1045,14 @@ def main():
         cyl_center_fixed = np.array([cyl_center[0], 0.0, cyl_center[2]])
     else:
         print(">>> MODE: Standard Horizontal")
+
+    if initial_x_gap is not None and args.sol != "approach_angle":
+        start_pos = start_pos.copy()
+        start_pos[0] = cyl_x - initial_x_gap
+        print(
+            f">>> INITIAL GAP OVERRIDE: base x set to {start_pos[0]:.3f} m "
+            f"(x_gap={initial_x_gap:.3f} m from cylinder center)"
+        )
 
     start_pos_nominal = start_pos.copy()
 
@@ -1057,7 +1132,8 @@ def main():
                 d_norm = np.linalg.norm(d_xz)
                 if d_norm > 1e-12:
                     d_xz /= d_norm
-                    r_guard = cyl_radius + base_radius + prescribed_contact_margin
+                    # Stop when base-center distance to cylinder center reaches cylinder radius.
+                    r_guard = cyl_radius + prescribed_contact_margin
                     rel = p0_xz - c_xz
                     a = np.dot(d_xz, d_xz)
                     b = 2.0 * np.dot(rel, d_xz)
@@ -1494,6 +1570,11 @@ def main():
 
     if first_contact_frame is None:
         print("[CONTACT] No contact in any saved frame. (Likely cylinder too far, too small, or axis mismatch.)")
+        if landing_motion and landing_mode == "prescribed" and prescribed_stop_at_contact:
+            print(
+                "[CONTACT HINT] prescribed_stop_at_contact may be too conservative for this setup. "
+                "Try --no-prescribed_stop_at_contact to allow full landing motion."
+            )
     else:
         print(f"[CONTACT] First contact frame={first_contact_frame}  t={first_contact_frame*dt_saved:.4f}s")
         print(f"[CONTACT] Max normal force over all frames: {max_normal_force_overall:.6f} N")
@@ -1570,9 +1651,11 @@ def main():
 
         # Disturbance stability checks from final settled contact state.
         base_count = min(disturbance_base_nodes, final_pos.shape[1])
-        tip_count = min(5, final_pos.shape[1])
         base_point = final_pos[:, :base_count].mean(axis=1)
-        disturbance_point = final_pos[:, -tip_count:].mean(axis=1)
+        base_indices = np.arange(base_count, dtype=int)
+        total_rod_mass = float(np.sum(finger.mass))
+        node_mass_uniform = np.full(final_pos.shape[1], total_rod_mass / max(1, final_pos.shape[1]))
+        disturbance_dt = time_step * disturbance_dt_scale
         disturbance_cases = {
             "drag_left": np.array([-1.0, 0.0, 0.0]),
             "drag_right": np.array([1.0, 0.0, 0.0]),
@@ -1585,14 +1668,17 @@ def main():
             applied_force = disturbance_force_mag * dvec
             resp = evaluate_disturbance_contact_response(
                 rod_pos=final_pos,
+                rod_vel=final_vel,
                 cyl_center=cylinder.position_collection[:, 0],
                 cyl_radius=cyl_radius,
                 k=k_contact,
                 mu=mu_contact,
                 base_radius=base_radius,
-                base_point=base_point,
+                base_indices=base_indices,
+                node_masses=node_mass_uniform,
                 disturbance_force=applied_force,
-                disturbance_point=disturbance_point,
+                n_steps=disturbance_steps,
+                dt=disturbance_dt,
             )
             disturbance_results[name] = resp
 
@@ -1609,6 +1695,8 @@ def main():
             data_to_save[f"disturbance_{name}_torque_alignment"] = np.array([resp["torque_alignment"]])
             data_to_save[f"disturbance_{name}_force_resisted"] = np.array([resp["force_resisted"]])
             data_to_save[f"disturbance_{name}_torque_resisted"] = np.array([resp["torque_resisted"]])
+            data_to_save[f"disturbance_{name}_contacts_history"] = resp["contacts_history"]
+            data_to_save[f"disturbance_{name}_force_history"] = resp["force_history"]
 
         data_to_save["disturbance_base_point"] = base_point
         data_to_save["disturbance_force_application_point"] = disturbance_point
@@ -1631,6 +1719,81 @@ def main():
                 f"resist_tau={resp['resist_torque']:.3f} "
                 f"torque_resisted={resp['torque_resisted']}"
             )
+
+        # Save one force-visualization image per disturbance case.
+        for name, resp in disturbance_results.items():
+            fig_dist = plt.figure(figsize=(13, 6))
+            ax_dist = fig_dist.add_subplot(121, projection="3d")
+            ax_contact = fig_dist.add_subplot(122, projection="3d")
+            P_dist = resp["position_final"]
+            ax_dist.scatter(P_dist[0], P_dist[1], P_dist[2], s=8, alpha=0.8)
+            center_dist = cylinder.position_collection[:, 0]
+            axis_dist = cylinder.director_collection[2, :, 0]
+            draw_cylinder(ax_dist, center_dist, axis_dist, cyl_radius, cyl_length, color="black", alpha=0.25)
+
+            # Mark base point used for disturbance application and wrench reference.
+            ax_dist.scatter(
+                base_point[0], base_point[1], base_point[2],
+                color="black", s=60, marker="x", depthshade=False,
+            )
+
+            f_app = resp["applied_force"]
+            f_net = resp["net_contact_force"]
+            if np.linalg.norm(f_app) > 1e-12:
+                ax_dist.quiver(
+                    base_point[0], base_point[1], base_point[2],
+                    f_app[0], f_app[1], f_app[2],
+                    length=0.03, normalize=True, color="tab:red",
+                )
+            if np.linalg.norm(f_net) > 1e-12:
+                ax_dist.quiver(
+                    base_point[0], base_point[1], base_point[2],
+                    f_net[0], f_net[1], f_net[2],
+                    length=0.03, normalize=True, color="tab:green",
+                )
+
+            ax_dist.set_xlim(-0.02, 0.12)
+            ax_dist.set_ylim(-0.12, 0.12)
+            ax_dist.set_zlim(-0.10, 0.10)
+            ax_dist.set_title(
+                f"Disturbance: {name} |F_app|={np.linalg.norm(f_app):.3f} "
+                f"|F_contact|={np.linalg.norm(f_net):.3f}"
+            )
+            ax_dist.view_init(elev=0, azim=-90)
+            ax_dist.grid(True, alpha=0.3)
+
+            # Subplot 2: all per-contact force vectors on contact elements.
+            ax_contact.scatter(P_dist[0], P_dist[1], P_dist[2], s=6, alpha=0.25, color="gray")
+            draw_cylinder(ax_contact, center_dist, axis_dist, cyl_radius, cyl_length, color="black", alpha=0.2)
+            cp = resp["contact_positions"]
+            cf = resp["contact_forces"]
+            if cp.shape[1] > 0:
+                ax_contact.scatter(cp[0], cp[1], cp[2], s=28, color="tab:blue", alpha=0.9)
+                for j in range(cp.shape[1]):
+                    if np.linalg.norm(cf[j]) < 1e-10:
+                        continue
+                    ax_contact.quiver(
+                        cp[0, j], cp[1, j], cp[2, j],
+                        cf[j, 0], cf[j, 1], cf[j, 2],
+                        length=0.02, normalize=True, color="tab:purple", alpha=0.9,
+                    )
+            ax_contact.scatter(
+                base_point[0], base_point[1], base_point[2],
+                color="black", s=60, marker="x", depthshade=False,
+            )
+            ax_contact.set_xlim(-0.02, 0.12)
+            ax_contact.set_ylim(-0.12, 0.12)
+            ax_contact.set_zlim(-0.10, 0.10)
+            ax_contact.set_title(f"Per-contact force vectors ({cp.shape[1]} contacts)")
+            ax_contact.view_init(elev=0, azim=-90)
+            ax_contact.grid(True, alpha=0.3)
+            plt.tight_layout()
+            disturbance_plot_path = os.path.join(
+                base_outdir, f"disturbance_force_{name}_{run_id}_{suffix}.png"
+            )
+            plt.savefig(disturbance_plot_path, dpi=180, bbox_inches="tight")
+            plt.close(fig_dist)
+            print(f"[DISTURBANCE] Force visualization saved: {disturbance_plot_path}")
 
         cycle_time, strength, slip_res = calculate_nist_scores(
             data, cyl_radius, base_radius, k_contact, mu_contact, args.body_mass, gravity
@@ -1794,17 +1957,16 @@ def main():
                         color="cyan",
                     )
 
-            base_pos = data["position"][-1][:, :5].mean(axis=1)
-            scale_factor = 0.01 
-            f_vec = body_weight_force * scale_factor
-            
-            # Draw the arrow
-            ax.quiver(
-                base_pos[0], base_pos[1], base_pos[2],
-                f_vec[0], f_vec[1], f_vec[2],
-                color='red', linewidth=3, label=f'Body Weight ({args.body_mass}kg)',
-                arrow_length_ratio=0.3
-            )
+            # Draw configured base external force only when enabled.
+            if base_force_mag > 0.0:
+                base_pos = data["position"][-1][:, :5].mean(axis=1)
+                f_vec = base_external_force
+                ax.quiver(
+                    base_pos[0], base_pos[1], base_pos[2],
+                    f_vec[0], f_vec[1], f_vec[2],
+                    color='red', linewidth=3, label='Base external force',
+                    arrow_length_ratio=0.3
+                )
 
             # Contact force vectors and net contact wrench (about base).
             (
@@ -1825,30 +1987,33 @@ def main():
             )
             base_count_vis = min(disturbance_base_nodes, P.shape[1])
             base_point_vis = P[:, :base_count_vis].mean(axis=1)
+            ax.scatter(
+                base_point_vis[0], base_point_vis[1], base_point_vis[2],
+                color="black", s=45, marker="x", depthshade=False,
+            )
             if len(cidx) > 0:
-                cp = P[:, cidx]
                 cscale = 0.01
-                for j, node_idx in enumerate(cidx):
+                for j in range(len(cidx)):
                     cf = contact_forces[j]
                     if np.linalg.norm(cf) < 1e-8:
                         continue
                     ax.quiver(
-                        cp[0, j], cp[1, j], cp[2, j],
+                        base_point_vis[0], base_point_vis[1], base_point_vis[2],
                         cf[0], cf[1], cf[2],
                         length=cscale,
                         normalize=True,
                         color="yellow",
                     )
                 net_cf = np.sum(contact_forces, axis=0)
-                contact_center = cp.mean(axis=1)
                 if np.linalg.norm(net_cf) > 1e-8:
                     ax.quiver(
-                        contact_center[0], contact_center[1], contact_center[2],
+                        base_point_vis[0], base_point_vis[1], base_point_vis[2],
                         net_cf[0], net_cf[1], net_cf[2],
                         length=0.03,
                         normalize=True,
                         color="lime",
                     )
+                cp = P[:, cidx]
                 r = cp.T - base_point_vis[None, :]
                 net_tau = np.sum(np.cross(r, contact_forces), axis=0)
                 if np.linalg.norm(net_tau) > 1e-8:
@@ -1890,9 +2055,12 @@ def main():
 
         if disturbance_results:
             base_count_live = min(disturbance_base_nodes, P.shape[1])
-            tip_count_live = min(5, P.shape[1])
             base_point_live = P[:, :base_count_live].mean(axis=1)
-            disturbance_point_live = P[:, -tip_count_live:].mean(axis=1)
+            ax_live.scatter(
+                base_point_live[0], base_point_live[1], base_point_live[2],
+                color="black", s=70, marker="x", depthshade=False,
+            )
+            disturbance_point_live = base_point_live
             colors = {
                 "drag_left": "tab:blue",
                 "drag_right": "tab:green",

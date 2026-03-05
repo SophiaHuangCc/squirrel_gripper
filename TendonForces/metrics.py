@@ -460,41 +460,11 @@ def plot_contacts_2d(
     # Extract normal forces for color coding
     normal_forces = np.array([row['normal_force'] for row in contact_data])
     
-    # Normalize cylinder axis
-    cyl_axis_norm = cyl_axis / (np.linalg.norm(cyl_axis) + 1e-12)
-    
-    # Project contact points onto plane perpendicular to cylinder axis
+    # Align 2D plot with video front view (azim=-90, elev=0): horizontal=X, vertical=Z.
+    # Use coordinates relative to cylinder center so the circle cross-section remains centered at (0,0).
     rel_vecs = contact_positions.T - cyl_center[None, :]  # (n_contacts, 3)
-    proj_lengths = np.dot(rel_vecs, cyl_axis_norm)  # (n_contacts,)
-    proj_vecs = np.outer(proj_lengths, cyl_axis_norm)  # (n_contacts, 3)
-    radial_vecs = rel_vecs - proj_vecs  # (n_contacts, 3)
-    
-    # Compute radial distances
-    radial_dists = np.linalg.norm(radial_vecs, axis=1)  # (n_contacts,)
-    
-    # Build coordinate system in the plane perpendicular to cylinder axis
-    # Use first contact as reference for x-axis
-    if len(radial_vecs) > 0:
-        ref_idx = 0
-        ref_vec = radial_vecs[ref_idx]
-        ref_vec_norm = ref_vec / (np.linalg.norm(ref_vec) + 1e-12)
-    else:
-        # Fallback: use arbitrary perpendicular vector
-        if np.abs(cyl_axis_norm[2]) < 0.9:
-            ref_vec_norm = np.array([0, 0, 1])
-        else:
-            ref_vec_norm = np.array([1, 0, 0])
-        ref_vec_norm = ref_vec_norm - np.dot(ref_vec_norm, cyl_axis_norm) * cyl_axis_norm
-        ref_vec_norm = ref_vec_norm / (np.linalg.norm(ref_vec_norm) + 1e-12)
-    
-    # Create orthonormal basis in the plane
-    y_axis = np.cross(cyl_axis_norm, ref_vec_norm)
-    y_axis = y_axis / (np.linalg.norm(y_axis) + 1e-12)
-    x_axis = np.cross(y_axis, cyl_axis_norm)
-    
-    # Project contact points onto 2D plane
-    x_coords = np.dot(radial_vecs, x_axis)  # (n_contacts,)
-    y_coords = np.dot(radial_vecs, y_axis)  # (n_contacts,)
+    x_coords = rel_vecs[:, 0]  # world X
+    y_coords = rel_vecs[:, 2]  # world Z
     
     # Create figure
     fig, ax = plt.subplots(figsize=figsize)
@@ -522,8 +492,8 @@ def plot_contacts_2d(
     # Set equal aspect ratio and labels
     ax.set_aspect('equal')
     ax.set_xlabel('X (m)', fontsize=12)
-    ax.set_ylabel('Y (m)', fontsize=12)
-    ax.set_title('Contact Points Projected onto Plane Perpendicular to Cylinder Axis', 
+    ax.set_ylabel('Z (m)', fontsize=12)
+    ax.set_title('Contact Points (Front View: X-Z)', 
                 fontsize=14, fontweight='bold')
     ax.grid(True, alpha=0.3)
     ax.legend(loc='upper right')
