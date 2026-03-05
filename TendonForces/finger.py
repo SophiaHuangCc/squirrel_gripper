@@ -1330,6 +1330,7 @@ def main():
     data_to_save["nu_contact"] = np.array([nu_contact])
     data_to_save["mu_contact"] = np.array([mu_contact])
     data_to_save["base_length"] = np.array([base_length])
+    data_to_save["base_radius"] = np.array([base_radius])
     data_to_save["vertebra_nodes"] = vertebra_nodes
     data_to_save["dt_critical"] = np.array([dt_critical])
     data_to_save["time_step"] = np.array([time_step])
@@ -1403,6 +1404,7 @@ def main():
     data_to_save["metric_is_force_closure"] = np.array([is_force_closure])
     data_to_save["metric_energy_total"] = np.array([energy_score])
     data_to_save["metric_contact_count"] = np.array([len(contact_idx)])
+    data_to_save["body_mass"] = np.array([body_mass])
     print(f"[METRICS] Force Closure Stable: {is_force_closure} under {body_mass}kg load  Total Energy: {energy_score:.6f} J  Contact Points: {len(contact_idx)}")
 
     csv_path = os.path.join(base_outdir, f"contact_log_{run_id}_{suffix}.csv")
@@ -1576,6 +1578,9 @@ def main():
             "drag_right": np.array([1.0, 0.0, 0.0]),
             "drag_down": np.array([0.0, 0.0, -1.0]),
         }
+
+        resistance_count = 0
+        total_cases = len(disturbance_cases)
         for name, dvec in disturbance_cases.items():
             applied_force = disturbance_force_mag * dvec
             resp = evaluate_disturbance_contact_response(
@@ -1590,6 +1595,10 @@ def main():
                 disturbance_point=disturbance_point,
             )
             disturbance_results[name] = resp
+
+            if resp["force_resisted"] and resp["torque_resisted"]:
+                resistance_count += 1
+
             data_to_save[f"disturbance_{name}_applied_force"] = resp["applied_force"]
             data_to_save[f"disturbance_{name}_applied_torque"] = resp["applied_torque"]
             data_to_save[f"disturbance_{name}_net_contact_force"] = resp["net_contact_force"]
@@ -1603,6 +1612,7 @@ def main():
 
         data_to_save["disturbance_base_point"] = base_point
         data_to_save["disturbance_force_application_point"] = disturbance_point
+        data_to_save["disturbance_resistance_score"] = np.array([resistance_count / total_cases])
 
         print("\n[DISTURBANCE STABILITY CHECK]")
         for name, resp in disturbance_results.items():

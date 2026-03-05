@@ -77,140 +77,131 @@ def timestep_embedding(timesteps, dim, max_period=10000):
     return embedding
 
 # class ProfileForward2DModel(nn.Module):
-#     def __init__(self, W=256, params_ch=400, ori_ch=1, pos_ch=2, output_ch=3, object_ch=20):
-#         super(ProfileForward2DModel, self).__init__()
-#         self.W = W
-#         self.params_ch = params_ch
-#         self.ori_ch = ori_ch
-#         self.pos_ch = pos_ch
-#         self.output_ch = output_ch
-#         self.ori_embed, ori_embed_dim = get_embedder(ori_ch, 4, 0, scalar_factor=1)
-#         self.pos_embed, pos_embed_dim = get_embedder(pos_ch, 4, 0, scalar_factor=1)
-#         self.ori_ch = ori_embed_dim
-#         self.pos_ch = pos_embed_dim
-#         self.pose_embed_dim = ori_embed_dim + pos_embed_dim
-#         self.time_embed_dim = W
-#         self.time_encoder = nn.Sequential(
-#             nn.Linear(W // 2, self.time_embed_dim),
-#             nn.SiLU(),
-#             nn.Linear(self.time_embed_dim, self.time_embed_dim),
-#         )
-#         self.object_encode_dim = W
-#         self.object_encoder = nn.Sequential(
-#             nn.Linear(object_ch, self.object_encode_dim),
-#             nn.ReLU(),
-#             nn.Linear(self.object_encode_dim, self.object_encode_dim),
-#         )
-#         self.gripper_encoder = nn.Sequential(
-#             nn.Linear(params_ch, W),
-#             nn.ReLU(),
-#             nn.Linear(W, W),
-#         )
-#         self.gripper_encode_dim = W
-#         self.linears = nn.Sequential(
-#             nn.Linear(self.gripper_encode_dim + self.pose_embed_dim + self.time_embed_dim + self.object_encode_dim, W),
-#             nn.BatchNorm1d(W),
-#             nn.ReLU(),
-#             nn.Linear(W, W),
-#             nn.BatchNorm1d(W),
-#             nn.ReLU(),
-#             nn.Linear(W, W),
-#             nn.BatchNorm1d(W),
-#             nn.ReLU(),
-#             nn.Linear(W, W),
-#             nn.BatchNorm1d(W),
-#             nn.ReLU(),
-#             nn.Linear(W, W),
-#             nn.BatchNorm1d(W),
-#             nn.ReLU(),
-#             nn.Linear(W, W),
-#             nn.BatchNorm1d(W),
-#             nn.ReLU(),
-#             nn.Linear(W, W),
-#             nn.BatchNorm1d(W),
-#             nn.ReLU(),
-#             nn.Linear(W, W),
-#             nn.BatchNorm1d(W),
-#             nn.ReLU(),
-#         )
-#         self.output = nn.Linear(W, output_ch)
+
+#     def __init__(self, W=256, params_ch=3, ori_ch=1, pos_ch=2, output_ch=1, physics_ch=1, object_ch=2):
+#         super().__init__()
         
-#     def forward(self, x_ctrl, x_ori, x_pos, timesteps, object_vertices):
-#         '''
-#         input: 
-#             ctrlpts [batch_size, 400]
-#             ori [batch_size, 1]
-#             pos [batch_size, 2]
-#             timesteps [batch_size,]
-#             object_vertices [batch_size, 20]
-#         output: 
-#             profile [batch_size, 9]
-#         '''
-#         x_ctrl = self.gripper_encoder(x_ctrl)
-#         x_ori = self.ori_embed(x_ori)
-#         x_pos = self.pos_embed(x_pos)
-#         x_pose = torch.cat([x_ori, x_pos], dim=1)
-#         x_object = self.object_encoder(object_vertices)
-#         time_emb = self.time_encoder(timestep_embedding(timesteps, self.W // 2))
-#         x = self.linears(torch.cat([x_object, x_ctrl, x_pose, time_emb], dim=1))
-#         x = self.output(x)
-#         return x
+#         # 1. Individual Encoders (Mapping raw inputs to a shared feature space)
+#         self.nodes_encoder = nn.Sequential(
+#             nn.Linear(params_ch, W), # params_ch = 160 (80 nodes * 2)
+#             nn.ReLU(),
+#             nn.Linear(W, W)
+#         )
+        
+#         # Stiffness (E, G)
+#         self.stiffness_encoder = nn.Sequential(
+#             nn.Linear(physics_ch, W // 4), 
+#             nn.ReLU()
+#         )
+        
+#         # Object Params (Cyl_rad, etc.)
+#         self.obj_encoder = nn.Sequential(
+#             nn.Linear(object_ch, W // 4),
+#             nn.ReLU()
+#         )
+
+#         # 2. The Fusion Layer
+#         # Summing the input dimensions: 
+#         # nodes_feat(W) + stiffness(W/4) + obj(W/4) + ori(1) + pos(2)
+#         input_dim = W + (W // 4) + (W // 4) + ori_ch + pos_ch
+        
+#         self.backbone = nn.Sequential(
+#             nn.Linear(input_dim, W),
+#             nn.ReLU(),
+#             nn.Linear(W, W),
+#             nn.ReLU(),
+#             nn.Linear(W, output_ch)
+#         )
+
+#     def forward(self, ctrlpts, input_ori, input_pos, timesteps, nodes, stiffness, cyl_rad):
+#         # Flatten nodes if they come in as (B, 80, 2)
+#         nodes_flat = nodes.view(nodes.shape[0], -1)
+        
+#         # Extract features
+#         feat_nodes = self.nodes_encoder(nodes_flat)
+#         feat_stiff = self.stiffness_encoder(stiffness)
+#         feat_obj = self.obj_encoder(cyl_rad)
+        
+#         # Combine everything into one feature vector
+#         combined = torch.cat([
+#             feat_nodes, 
+#             feat_stiff, 
+#             feat_obj, 
+#             input_ori, 
+#             input_pos
+#         ], dim=-1)
+        
+#         # Pass through the main network
+#         output = self.backbone(combined)
+#         return output
 
 class ProfileForward2DModel(nn.Module):
-
-    def __init__(self, W=256, params_ch=3, ori_ch=1, pos_ch=2, output_ch=1, physics_ch=1, object_ch=2):
+    def __init__(self, W=256, params_ch=160, ori_ch=1, pos_ch=1, output_ch=1, design_ch=8, physics_ch=1, object_ch=16):
         super().__init__()
         
-        # 1. Individual Encoders (Mapping raw inputs to a shared feature space)
-        self.nodes_encoder = nn.Sequential(
-            nn.Linear(params_ch, W), # params_ch = 160 (80 nodes * 2)
+        # 1. State Encoder (The Rod Shape)
+        # params_ch = 160 (80 nodes * 2D)
+        self.state_encoder = nn.Sequential(
+            nn.Linear(params_ch, W),
+            nn.LayerNorm(W),
             nn.ReLU(),
-            nn.Linear(W, W)
+            nn.Linear(W, W // 2)
         )
         
-        # Stiffness (E, G)
-        self.stiffness_encoder = nn.Sequential(
-            nn.Linear(physics_ch, W // 4), 
-            nn.ReLU()
+        # 2. Design Encoder (Finger structural/inertial params)
+        # design_ch = 8 (nodes, base_len, base_rad, masses, joint_soft)
+        self.design_encoder = nn.Sequential(
+            nn.Linear(design_ch, W // 4),
+            nn.ReLU(),
+            nn.Linear(W // 4, W // 4)
         )
         
-        # Object Params (Cyl_rad, etc.)
-        self.obj_encoder = nn.Sequential(
-            nn.Linear(object_ch, W // 4),
-            nn.ReLU()
+        # 3. Physics & Environment Encoder (Cylinder + Contact + Material)
+        # physics_ch = 1 (Youngs Modulus)
+        # object_ch = 16 (Cyl pos/dir/rad/len + nu/mu contact)
+        self.env_encoder = nn.Sequential(
+            nn.Linear(physics_ch + object_ch, W // 2),
+            nn.ReLU(),
+            nn.Linear(W // 2, W // 4)
         )
 
-        # 2. The Fusion Layer
-        # Summing the input dimensions: 
-        # nodes_feat(W) + stiffness(W/4) + obj(W/4) + ori(1) + pos(2)
-        input_dim = W + (W // 4) + (W // 4) + ori_ch + pos_ch
+        # 4. Fusion Backbone
+        # state(W/2) + design(W/4) + env(W/4) + ori(1) + pos(1)
+        fusion_dim = (W // 2) + (W // 4) + (W // 4) + ori_ch + pos_ch
         
         self.backbone = nn.Sequential(
-            nn.Linear(input_dim, W),
+            nn.Linear(fusion_dim, W),
             nn.ReLU(),
-            nn.Linear(W, W),
+            nn.Linear(W, W // 2),
             nn.ReLU(),
-            nn.Linear(W, output_ch)
+            nn.Linear(W // 2, output_ch),
+            nn.Sigmoid() # CRITICAL: Constrains output to [0, 1] stability score
         )
 
-    def forward(self, ctrlpts, input_ori, input_pos, timesteps, nodes, stiffness, cyl_rad):
-        # Flatten nodes if they come in as (B, 80, 2)
-        nodes_flat = nodes.view(nodes.shape[0], -1)
+    def forward(self, ctrlpts, input_ori, input_tension, timesteps, design_tensor, physics_tensor, object_tensor):
+        """
+        Inputs provided by the Trainer._prepare_tensors() helper:
+        - ctrlpts: Flattened rod (B, 160)
+        - input_ori: Orientation (B, 1)
+        - input_tension: Tension (B, 1)
+        - design_tensor: (B, 8)
+        - physics_tensor: (B, 1)
+        - object_tensor: (B, 16)
+        """
         
-        # Extract features
-        feat_nodes = self.nodes_encoder(nodes_flat)
-        feat_stiff = self.stiffness_encoder(stiffness)
-        feat_obj = self.obj_encoder(cyl_rad)
+        # Encode separate knowledge branches
+        feat_state = self.state_encoder(ctrlpts)
+        feat_design = self.design_encoder(design_tensor)
+        feat_env = self.env_encoder(torch.cat([physics_tensor, object_tensor], dim=-1))
         
-        # Combine everything into one feature vector
+        # Concatenate all features with the direct action inputs
         combined = torch.cat([
-            feat_nodes, 
-            feat_stiff, 
-            feat_obj, 
+            feat_state, 
+            feat_design, 
+            feat_env, 
             input_ori, 
-            input_pos
+            input_tension
         ], dim=-1)
         
-        # Pass through the main network
-        output = self.backbone(combined)
-        return output
+        # Final prediction
+        return self.backbone(combined)

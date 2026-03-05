@@ -14,79 +14,50 @@ from dynamics.dataloader import DynamicsDataset
 from dynamics.trainer import Trainer
 from dynamics.parser import parse
 
-# def validate(args, val_loader, trainer, threshold_std=10):
-#     print('--- Validation Step ---')
-#     average_val_loss = 0
-#     average_val_accuracy = 0
-    
-#     trainer.model.eval()
-#     with torch.no_grad():
-#         for batch in val_loader:
-#             # Unpack Squirrel Gripper specific data
-#             # score = batch['scores'].cuda()
-#             # input_ori = batch['input_ori'].cuda()  # Approach Angle
-#             # input_pos = batch['input_pos'].cuda()  # [Tension, BaseRad]
-#             # ctrlpts = batch['ctrlpts'].cuda()      # Rod Geometry
 
-#             score = batch['num_contacts'].to(trainer.device).float()
-#             input_ori = batch['input_ori'].to(trainer.device).float()  # Approach Angle
-#             input_pos = batch['input_pos'].to(trainer.device).float()  # [Tension, BaseRad]
-#             ctrlpts = batch['ctrlpts'].to(trainer.device).float()      # Rod Geometry
-#             obj_params = batch['obj_params'].to(trainer.device).float()
-            
-#             pred, loss = trainer.inference(None, ctrlpts, score, input_ori, input_pos, obj_params)
-
-#             mae = torch.abs(pred - score).mean()
-#             real_error = mae * 80
-            
-#             # Simple Binary Accuracy: Did we predict the success margin correctly?
-#             accuracy = ((pred > threshold_std) == (score > threshold_std)).float().mean()
-            
-#             average_val_loss += loss
-#             average_val_accuracy += accuracy
-
-#     average_val_loss /= len(val_loader)
-#     average_val_accuracy /= len(val_loader)
-    
-#     print(f'Val Loss: {average_val_loss:.4f} | Val Accuracy: {average_val_accuracy:.4f}')
-#     return average_val_loss, average_val_accuracy
-
-def validate(args, val_loader, trainer, threshold_std=10):
+def validate(args, val_loader, trainer):
     print('--- Validation Step ---')
     total_mae = 0
     total_val_loss = 0
-    
-    # Define a tolerance for "New Accuracy" 
-    # (e.g., predicting within 5 contacts of the real value)
-    tolerance = 5.0 
+    tolerance = 0.1 
     correct_predictions = 0
     total_samples = 0
-
     trainer.model.eval()
     with torch.no_grad():
         for batch in val_loader:
-            score = batch['num_contacts'].to(trainer.device).float()
-            input_ori = batch['input_ori'].to(trainer.device).float()  # Approach Angle
-            input_pos = batch['input_pos'].to(trainer.device).float()  # [Tension, BaseRad]
-            ctrlpts = batch['ctrlpts'].to(trainer.device).float()      # Rod Geometry
-            design_dict = batch['design_params']
-            physics_dict = batch['physics_params']
-            obj_dict = batch['obj_params']
-            nodes = design_dict['nodes'].to(trainer.device).float()
-            stiffness = physics_dict['stiffness'].to(trainer.device).float()
-            cyl_rad = obj_dict['cyl_radius'].to(trainer.device).float()
-            # design_params = batch['design_params'].to(trainer.device).float()
-            # physics_params = batch['physics_params'].to(trainer.device).float()
-            # obj_params = batch['obj_params'].to(trainer.device).float()
+            score = batch['disturbance_params'].to(trainer.device).float()
+            ctrlpts = batch['ctrlpts'].to(trainer.device).float()
+            tension = batch['input_tension'].to(trainer.device).float()
+
+            finger_dict = batch['finger_params']
+            nodes = finger_dict['nodes'].to(trainer.device).float()
+            base_length = finger_dict['base_length'].to(trainer.device).float()
+            base_radius = finger_dict['base_radius'].to(trainer.device).float()
+            input_ori = finger_dict['input_ori'].to(trainer.device).float()
+            youngs_modulus = finger_dict['youngs_modulus'].to(trainer.device).float()
+            finger_mass = finger_dict['finger_mass'].to(trainer.device).float() 
+            body_mass = finger_dict['body_mass'].to(trainer.device).float()
+            joint_softness = finger_dict['joint_softness'].to(trainer.device).float()
+
+            cylinder_dict = batch['cylinder_params']
+            cyl_position = cylinder_dict['cyl_position'].to(trainer.device).float()
+            cyl_directors = cylinder_dict['cyl_directors'].to(trainer.device).float()
+            cyl_radius = cylinder_dict['cyl_radius'].to(trainer.device).float()
+            cyl_length = cylinder_dict['cyl_length'].to(trainer.device).float()
+
+            contact_dict = batch['contact_params']
+            nu_contact = contact_dict['nu_contact'].to(trainer.device).float()
+            mu_contact = contact_dict['mu_contact'].to(trainer.device).float()
             
-            pred, loss = trainer.inference(None, ctrlpts, score, input_ori, input_pos, nodes, stiffness, cyl_rad)
+            pred, loss = trainer.inference(ctrlpts, tension, nodes, base_length, 
+                                           base_radius, input_ori, youngs_modulus, 
+                                           finger_mass, body_mass, joint_softness,
+                                           cyl_position, cyl_directors, cyl_radius, cyl_length,
+                                           nu_contact, mu_contact)
             
-            # 1. Compute MAE (Average distance from the truth)
             batch_mae = torch.abs(pred - score)
             total_mae += batch_mae.mean().item()
 
-            # 2. Compute "New Accuracy"
-            # How many predictions fell within our tolerance?
             within_tolerance = (batch_mae < tolerance).float()
             correct_predictions += within_tolerance.sum().item()
             total_samples += score.size(0)
@@ -112,8 +83,6 @@ def train(args):
     train_dataset = DynamicsDataset(dataset_dir=args.data_dir)
     val_dataset = DynamicsDataset(dataset_dir=args.test_data_dir)
     
-    threshold_std = train_dataset.threshold 
-
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
@@ -121,7 +90,7 @@ def train(args):
     trainer.create_model()
 
     if args.mode == 'validate':
-        validate(args, val_loader, trainer, threshold_std=threshold_std)
+        validate(args, val_loader, trainer)
         return
 
     if args.mode == 'train':
@@ -132,30 +101,33 @@ def train(args):
             average_loss = 0
             
             for idx_batch, batch in enumerate(tqdm(train_loader, desc="Batches", leave=False)):
-                # score = batch['scores'].cuda()
-                # input_ori = batch['input_ori'].cuda()
-                # input_pos = batch['input_pos'].cuda()
-                # ctrlpts = batch['ctrlpts'].cuda()
-                # obj_params = batch['obj_params'].cuda()
-                # print("keys in batch:", batch.keys())
-
-                score = batch['num_contacts'].to(trainer.device).float()
-                input_ori = batch['input_ori'].to(trainer.device).float()
-                input_pos = batch['input_pos'].to(trainer.device).float()
+                score = batch['disturbance_params'].to(trainer.device).float()
+                
+                # Input Unpacking (Mirroring your validate function)
                 ctrlpts = batch['ctrlpts'].to(trainer.device).float()
-                design_dict = batch['design_params']
-                physics_dict = batch['physics_params']
-                obj_dict = batch['obj_params']
-                nodes = design_dict['nodes'].to(trainer.device).float()
-                stiffness = physics_dict['stiffness'].to(trainer.device).float()
-                cyl_rad = obj_dict['cyl_radius'].to(trainer.device).float()
-                # physics_params = batch['physics_params'].to(trainer.device).float()
-                # obj_params = batch['obj_params'].to(trainer.device).float()
-                # print(f"Nodes shape: {nodes.shape}")
-                # print(f"Nodes flat shape: {nodes.view(nodes.shape[0], -1).shape}")
+                tension = batch['input_tension'].to(trainer.device).float()
+                
+                f_d = batch['finger_params']
+                c_d = batch['cylinder_params']
+                ct_d = batch['contact_params']
 
-                loss, pred = trainer.step(ctrlpts, score, input_ori, input_pos, 
-                                          nodes, stiffness, cyl_rad)
+                loss, pred = trainer.step(
+                    score, ctrlpts, tension, 
+                    f_d['nodes'].to(trainer.device).float(),
+                    f_d['base_length'].to(trainer.device).float(),
+                    f_d['base_radius'].to(trainer.device).float(),
+                    f_d['input_ori'].to(trainer.device).float(),
+                    f_d['youngs_modulus'].to(trainer.device).float(),
+                    f_d['finger_mass'].to(trainer.device).float(),
+                    f_d['body_mass'].to(trainer.device).float(),
+                    f_d['joint_softness'].to(trainer.device).float(),
+                    c_d['cyl_position'].to(trainer.device).float(),
+                    c_d['cyl_directors'].to(trainer.device).float(),
+                    c_d['cyl_radius'].to(trainer.device).float(),
+                    c_d['cyl_length'].to(trainer.device).float(),
+                    ct_d['nu_contact'].to(trainer.device).float(),
+                    ct_d['mu_contact'].to(trainer.device).float()
+                )
                 average_loss += loss
 
                 if idx_batch % args.save_ckpt_step == 0:
@@ -165,7 +137,7 @@ def train(args):
             
             # Logging
             if epoch % args.val_step == 0:
-                val_loss, val_acc, avg_mae = validate(args, val_loader, trainer, threshold_std=threshold_std)
+                val_loss, val_acc, avg_mae = validate(args, val_loader, trainer)
                 wandb.log({'train/loss': average_loss/len(train_loader), 
                            'val/loss': val_loss, 'val/acc': val_acc,
                            'val/avg_mae': avg_mae})

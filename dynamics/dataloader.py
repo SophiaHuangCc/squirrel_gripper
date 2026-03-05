@@ -24,42 +24,49 @@ class DynamicsDataset(Dataset):
             max_contacts = 80.0
             num_contacts = torch.tensor([float(data.get('num_contacts', 0)) / max_contacts]).float()
             
-            input_ori = torch.tensor([float(data.get('arg_approach_deg', 0))]).float()
-            input_pos = torch.tensor([
-                float(data.get('tension', 0)), 
-                float(data.get('arg_base_rad', 0.007))
-            ]).float()
+            # Input geometry (final frame)
+            pos = data["position"][-1]
+            ctrlpts = torch.from_numpy(pos[[0, 2], :]).float()
 
-            design_params = {
+            # Actuation and orientation inputs
+            input_tension = torch.tensor([float(data.get('tension', 0))]).float()
+
+            finger_params = {
                 'nodes': torch.from_numpy(data['vertebra_nodes']).float(),
-                'rest_kappa': torch.from_numpy(data['rest_kappa']).float(),
-                'rest_lengths': torch.from_numpy(data['rest_lengths']).float()
+                'base_length': torch.from_numpy(data['base_length']).float(),
+                'base_radius': torch.tensor([float(data.get('base_radius', 0.005))]).float(),                'input_ori': torch.tensor([float(data.get('arg_approach_deg', 0))]).float(),
+                'youngs_modulus': torch.tensor(data['E']).float().flatten(),
+                'finger_mass': torch.from_numpy(data.get('mass', 0.0)).float(),
+                'body_mass': torch.tensor([float(data.get('body_mass', 0.0))]).float(),
+                'joint_softness': torch.tensor([float(data.get('joint_softness', 0.001))]).float(),
             }
-
-            physics_params = {
-                'stiffness': torch.tensor(data['E']).float().flatten(),
-                'mass_props': torch.from_numpy(data['mass']).float(),
-                'bend_matrix': torch.from_numpy(data['bend_matrix']).float(),
-                'softness': torch.tensor([float(data.get('joint_softness', 0.001))]).float()            }
             
-            obj_params = {
-                'cyl_radius': torch.from_numpy(data['cyl_radius']).float(),
-                'cyl_pos': torch.from_numpy(data['cyl_position']).float().flatten(),
+            cylinder_params = {
+                'cyl_position': torch.from_numpy(data['cyl_position']).float().flatten(),
                 'cyl_directors': torch.from_numpy(data['cyl_directors']).float().flatten(),
+                'cyl_radius': torch.from_numpy(data['cyl_radius']).float(),
+                'cyl_length': torch.from_numpy(data['cyl_length']).float().flatten(),
             }
 
-            all_pos = data.get('position')
+            contact_params = {
+                'nu_contact': torch.from_numpy(data['nu_contact']).float(),
+                'mu_contact': torch.from_numpy(data['mu_contact']).float(),
+            }
+
+            disturbance_params = torch.tensor([float(data.get('force_resistance_score', 0.0))]).float()
+
+            # all_pos = data.get('position')
             
-            initial_shape = all_pos[0, :2, :80].T # Results in (80, 2)
+            # initial_shape = all_pos[0, :2, :80].T # Results in (80, 2)
             
-            ctrlpts = torch.from_numpy(initial_shape).float()
+            # ctrlpts = torch.from_numpy(initial_shape).float()
 
         return {
             'num_contacts': num_contacts,
-            'input_ori': input_ori,
-            'input_pos': input_pos,
             'ctrlpts': ctrlpts,
-            'design_params': design_params,
-            'physics_params': physics_params,
-            'obj_params': obj_params
+            'input_tension': input_tension,
+            'finger_params': finger_params,
+            'cylinder_params': cylinder_params,
+            'contact_params': contact_params,
+            'disturbance_params': disturbance_params,
         }
