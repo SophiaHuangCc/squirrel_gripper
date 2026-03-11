@@ -39,16 +39,9 @@ class Trainer:
                          cyl_position, cyl_directors, cyl_radius, cyl_length,
                          nu_contact, mu_contact):
         
-        # Flatten Rod Geometry
         ctrlpts = ctrlpts.view(ctrlpts.shape[0], -1)
-        
-        # Design Group [Batch, 8]
         design_tensor = torch.cat([nodes, base_length, base_radius, finger_mass, body_mass, joint_softness], dim=1)
-        
-        # Physics Group [Batch, 1] - Ensure it is (B, 1)
         physics_tensor = youngs_modulus.view(-1, 1) if youngs_modulus.dim() == 1 else youngs_modulus
-        
-        # Object & Contact Group [Batch, 16]
         object_tensor = torch.cat([cyl_position, cyl_directors, cyl_radius, cyl_length, nu_contact, mu_contact], dim=1)
         
         timesteps = torch.zeros(tension.shape[0], 1).to(self.device)

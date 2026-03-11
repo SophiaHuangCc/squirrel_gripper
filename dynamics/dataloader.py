@@ -55,12 +55,6 @@ class DynamicsDataset(Dataset):
 
             disturbance_params = torch.tensor([float(data.get('force_resistance_score', 0.0))]).float()
 
-            # all_pos = data.get('position')
-            
-            # initial_shape = all_pos[0, :2, :80].T # Results in (80, 2)
-            
-            # ctrlpts = torch.from_numpy(initial_shape).float()
-
         return {
             'num_contacts': num_contacts,
             'ctrlpts': ctrlpts,
