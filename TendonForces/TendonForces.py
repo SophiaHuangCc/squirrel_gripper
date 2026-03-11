@@ -32,7 +32,8 @@ class TendonForces(NoForces):
 
     """
 
-    def __init__(self, vertebra_height, num_vertebrae, first_vertebra_node, final_vertebra_node, vertebra_mass, tension, vertebra_height_orientation, n_elements, vertebra_nodes_list=None):
+    def __init__(self, vertebra_height, num_vertebrae, first_vertebra_node, final_vertebra_node, vertebra_mass, tension, vertebra_height_orientation, n_elements, 
+                 vertebra_nodes_list=None, debug_store=None, landing_state=None, angle_force_mode=False, angle_gain=0.0, angle_offset=0.0, min_tension=0.0, max_tension=100.0):
         """
 
         Parameters 
@@ -65,6 +66,19 @@ class TendonForces(NoForces):
         self.tension = tension
         self.n_elements = n_elements
         self.vertebra_weight_vector = np.array([0.0, 0.0, -vertebra_mass * 9.80665])
+        self.debug_store = debug_store
+        
+        self.debug_store = debug_store
+        self.landing_state = landing_state
+        self.angle_force_mode = angle_force_mode
+        self.angle_gain = float(angle_gain)
+        self.angle_offset = float(angle_offset)
+        self.min_tension = float(min_tension)
+        self.max_tension = None if max_tension is None else float(max_tension)
+        self.nominal_tension = float(tension)
+
+        # self.stretch_next = np.zeros((self.num_vertebrae, 3))
+        # self.stretch_prev = np.zeros((self.num_vertebrae, 3))
 
         ##### Start of modified section #####
         # If a manual list of vertebra nodes is provided, use it
@@ -84,11 +98,48 @@ class TendonForces(NoForces):
         #     self.vertebra_nodes.append(round(i * vertebra_increment + first_vertebra_node))
         ##### End of modified section #####
 
+    def _get_current_tension(self):
+        current_tension = self.nominal_tension
+
+        if self.landing_state is not None:
+            angle = float(self.landing_state.get("ankle_angle", 0.0))
+
+            if self.angle_force_mode == "constant":
+                current_tension = self.nominal_tension
+
+            elif self.angle_force_mode == "linear":
+                current_tension = self.nominal_tension + self.angle_gain * max(0.0, angle - self.angle_offset)
+
+            elif self.angle_force_mode == "sin":
+                current_tension = self.nominal_tension + self.angle_gain * np.sin(max(0.0, angle - self.angle_offset))
+
+            elif self.angle_force_mode == "cos":
+                current_tension = self.nominal_tension + self.angle_gain * (1.0 - np.cos(max(0.0, angle - self.angle_offset)))
+
+            else:
+                raise ValueError(f"Unknown angle_force_mode: {self.angle_force_mode}")
+
+        current_tension = max(self.min_tension, current_tension)
+        if self.max_tension is not None:
+            current_tension = min(self.max_tension, current_tension)
+
+        if self.landing_state is not None:
+            self.landing_state["tendon_tension"] = current_tension
+
+        return current_tension
+
     def apply_forces(self, system: SystemType, time: np.float64 = 0.0):
         # The application of the force data is done outside of the @njit decorated function because self.force_data needs to be referenced in self.compute_torques()
 
         # Retrieves relative position unit norm vectors between each vertebra top (where the tendon contacts the vertebra)
         unit_norm_vector_array = self.get_rotations(np.array(system.position_collection), np.array(system.director_collection), np.array(self.vertebra_nodes), self.vertebra_height_vector)
+
+
+        current_tension = self._get_current_tension()
+
+        # Modified: add stretch forces
+        self.stretch_next = unit_norm_vector_array[1:] * current_tension
+        self.stretch_prev = unit_norm_vector_array[:-1] * -current_tension
 
         # Computes the forces in each vertebra
         self.force_data = self.compute_forces(self.tension, np.array(self.vertebra_nodes), unit_norm_vector_array)
@@ -102,6 +153,10 @@ class TendonForces(NoForces):
 
         # Applies forces to the rod
         system.external_forces += apply_force
+
+        if self.debug_store is not None:
+            self.debug_store["stretch_next"] = self.stretch_next.copy()
+            self.debug_store["stretch_prev"] = self.stretch_prev.copy()
 
 
     def apply_torques(self, system: SystemType, time: np.float64 = 0.0):

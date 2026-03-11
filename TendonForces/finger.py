@@ -511,6 +511,22 @@ class BaseOrientationSpringDamper(NoForces):
         system.external_torques[:, idx] += torque
 
 
+class BaseAngleMonitor(NoForces):
+    """
+    Reads the current base angle from the first rod element and stores it in landing_state.
+    No force or torque is applied.
+    """
+
+    def __init__(self, reference_tangent, landing_state):
+        self.reference_tangent = np.asarray(reference_tangent, dtype=float).reshape(3)
+        self.landing_state = landing_state
+
+    def apply_forces(self, system, time=0.0):
+        current_tangent = system.tangents[:, 0]
+        angle = signed_angle_xz(self.reference_tangent, current_tangent)
+        self.landing_state["ankle_angle"] = angle
+
+
 class NodalViscousDrag(NoForces):
     """
     Damps rigid-body motion by applying per-node drag force proportional to velocity.
@@ -527,16 +543,15 @@ class NodalViscousDrag(NoForces):
         system.external_forces += drag
 
 
-class PrescribedLandingBC(ConstraintBase):
+class PrescribedLandingPositionBC(ConstraintBase):
     """
-    Constrain finger base orientation and prescribe only a vertical (Z) drop of node 0.
-    This avoids free-body tumbling while still simulating a landing motion.
+    Prescribe only base position during landing; leave orientation free
+    so ankle/base rotational dynamics can happen.
     """
 
     def __init__(
         self,
         fixed_position,
-        fixed_director,
         landing_distance=0.03,
         landing_speed=0.06,
         landing_direction=(0.0, 0.0, -1.0),
@@ -549,26 +564,20 @@ class PrescribedLandingBC(ConstraintBase):
         dnorm = np.linalg.norm(d)
         self.landing_direction = d / dnorm if dnorm > 1e-12 else np.array([0.0, 0.0, -1.0])
         self._base_position0 = np.array(fixed_position, dtype=float).reshape(3, -1)[:, 0].copy()
-        self._base_director0 = np.array(fixed_director, dtype=float).reshape(3, 3, -1)[:, :, 0].copy()
 
     def constrain_values(self, system, time):
         p_idx = int(self.constrained_position_idx[0])
-        d_idx = int(self.constrained_director_idx[0])
 
         drop = min(self.landing_distance, self.landing_speed * max(0.0, float(time)))
         target = self._base_position0 + drop * self.landing_direction
-
         system.position_collection[:, p_idx] = target
-        system.director_collection[:, :, d_idx] = self._base_director0
 
     def constrain_rates(self, system, time):
         p_idx = int(self.constrained_position_idx[0])
-        d_idx = int(self.constrained_director_idx[0])
 
         still_dropping = (self.landing_speed > 0.0) and (self.landing_speed * float(time) < self.landing_distance)
         v = self.landing_speed * self.landing_direction if still_dropping else np.zeros(3)
         system.velocity_collection[:, p_idx] = v
-        system.omega_collection[:, d_idx] = 0.0
 
 
 class BaseXYLockedBC(ConstraintBase):
@@ -600,6 +609,38 @@ def parse_vec3_from_csv(text, arg_name):
     if len(vals) != 3:
         raise ValueError(f"{arg_name} must have exactly 3 values, got '{text}'")
     return np.array(vals, dtype=float)
+
+def parse_float_list_with_resize(text, target_len, arg_name):
+    try:
+        vals = [float(x.strip()) for x in text.split(",") if x.strip() != ""]
+    except ValueError as exc:
+        raise ValueError(f"{arg_name} must be a comma-separated list of floats, got '{text}'") from exc
+
+    if len(vals) == 0:
+        raise ValueError(f"{arg_name} must contain at least one float")
+
+    if len(vals) < target_len:
+        vals.extend([vals[-1]] * (target_len - len(vals)))
+    elif len(vals) > target_len:
+        vals = vals[:target_len]
+
+    return np.array(vals, dtype=float)
+
+def signed_angle_xz(v_ref, v_cur):
+    ref = np.array([v_ref[0], v_ref[2]], dtype=float)
+    cur = np.array([v_cur[0], v_cur[2]], dtype=float)
+
+    n1 = np.linalg.norm(ref)
+    n2 = np.linalg.norm(cur)
+    if n1 < 1e-12 or n2 < 1e-12:
+        return 0.0
+
+    ref /= n1
+    cur /= n2
+
+    dot = np.clip(np.dot(ref, cur), -1.0, 1.0)
+    det = ref[0] * cur[1] - ref[1] * cur[0]
+    return np.arctan2(det, dot)
 
 ###################################################
 # MAIN SIMULATION FUNCTION
@@ -652,7 +693,7 @@ def main():
     parser.add_argument("--v_start", type=int, default=30, help="Node index of first vertebra")
     parser.add_argument("--v_end", type=int, default=62, help="Node index of final vertebra")
     parser.add_argument("--v_height", type=float, default=0.005, help="Tendon distance from center")
-    parser.add_argument("--joint_softness", type=float, default=0.01, help="Multiplier for bending stiffness at vertebrae (0.01 = 1% of original stiffness)")
+    parser.add_argument("--joint_softness", type=str, default="0.001", help="Multiplier for bending stiffness at vertebrae (0.01 = 1% of original stiffness)")
     # vertebra selector: 'uniform' or 'manual'
     parser.add_argument("--v_mode", type=str, default="uniform", 
                         choices=["uniform", "manual"], 
@@ -880,6 +921,43 @@ def main():
         help="Multiplier on simulation time_step for disturbance rollout integration dt.",
     )
 
+    parser.add_argument(
+        '--confirm_tendon', 
+        action='store_true', 
+        help='Enable tendon force verification mode')
+    
+    parser.add_argument(
+        "--angle_force_mode",
+        type=str,
+        default="constant",
+        choices=["constant", "linear", "sin", "cos"],
+        help="How tendon tension varies with ankle angle.",
+    )
+    parser.add_argument(
+        "--angle_gain",
+        type=float,
+        default=0.0,
+        help="Gain for angle-dependent tendon tension.",
+    )
+    parser.add_argument(
+        "--angle_offset",
+        type=float,
+        default=0.0,
+        help="Angle offset (rad) before tension modulation starts.",
+    )
+    parser.add_argument(
+        "--min_tension",
+        type=float,
+        default=0.0,
+        help="Minimum tendon tension.",
+    )
+    parser.add_argument(
+        "--max_tension",
+        type=float,
+        default=None,
+        help="Maximum tendon tension.",
+    )
+
     args = parser.parse_args()
 
     # Parameters from args (key variables to tune)
@@ -933,7 +1011,7 @@ def main():
     # Cylinder (branch) parameters
     cyl_length = 0.20
     cyl_density = 1200.0
-    cyl_x = 0.025
+    cyl_x = 0.025 # 0.025 default
     cyl_z = -0.03
     cyl_start = np.array([cyl_x, -cyl_length / 2.0, cyl_z])
     cyl_direction = np.array([0.0, 1.0, 0.0])
@@ -954,6 +1032,12 @@ def main():
         vertebra_nodes = np.array([int(x) for x in args.v_list.split(",")], dtype=int)
         num_vertebrae = len(vertebra_nodes)
     print(f"[VISUALIZATION] Drawing red disks at nodes: {vertebra_nodes}")
+
+    joint_softness_list = parse_float_list_with_resize(
+        args.joint_softness,
+        target_len=len(vertebra_nodes),
+        arg_name="--joint_softness",
+    )
 
     # Mass of squirrel body
     body_mass = args.body_mass
@@ -1003,6 +1087,12 @@ def main():
     print(f"E={E:.2e}  G={G:.2e}  tension={tension:.2f}  cyl_radius={cyl_radius:.3f}")
     print(f"contact: k={k_contact} nu={nu_contact} mu={mu_contact} vel_damp={vel_damp_contact}")
     print(f"damping_constant={damping_constant}")
+
+    landing_state = {
+        "ankle_angle": 0.0,         # current ankle/base angle in radians
+        "pull_scale": 1.0,          # optional debug
+        "current_tension": tension, # actual tendon tension used this step
+    }
 
     # Initialize simulator
     sim = SquirrelFingerSimulator()
@@ -1084,6 +1174,16 @@ def main():
     )
     sim.append(finger)
 
+    base_tangent_ref = finger.tangents[:, 0].copy()
+    base_director_ref = finger.director_collection[:, :, 0].copy()
+
+    if landing_motion:
+        sim.add_forcing_to(finger).using(
+            BaseAngleMonitor,
+            reference_tangent=base_tangent_ref,
+            landing_state=landing_state,
+        )
+
     if landing_motion and landing_speed > 0.0:
         # Give whole finger an initial approach velocity along angled drop direction.
         finger.velocity_collection[:, :] = landing_speed * landing_drop_dir.reshape(3, 1)
@@ -1093,15 +1193,18 @@ def main():
             f"(angle={args.landing_approach_deg:.1f} deg from horizontal)"
         )
 
-    # Apply soft joints by modifying bend_matrix at vertebrae locations
-    joint_mult = args.joint_softness   
-
     # Apply soft joints at vertebrae locations
-    print(f"[SOFT JOINTS] using mode '{args.v_mode}' at nodes: {vertebra_nodes}")        
-    for j in vertebra_nodes:
+    print(f"[SOFT JOINTS] using mode '{args.v_mode}' at nodes: {vertebra_nodes}")
+    print(f"[SOFT JOINTS] multipliers: {joint_softness_list}")  
+
+    for i, j in enumerate(vertebra_nodes):
+
         idx = int(np.clip(j, 0, finger.bend_matrix.shape[2] - 1))
+        joint_mult = joint_softness_list[i]
+        # progressively softer joints toward tip
         finger.bend_matrix[1, 1, idx] *= joint_mult
         finger.bend_matrix[2, 2, idx] *= joint_mult
+        print(f"  node {idx}: softness multiplier = {joint_mult:.6f}")
 
     # Create cylinder (branch)
     cylinder = Cylinder(
@@ -1157,13 +1260,14 @@ def main():
                 f"over {landing_distance_cmd:.3f} m"
             )
             sim.constrain(finger).using(
-                PrescribedLandingBC,
+                PrescribedLandingPositionBC,
                 constrained_position_idx=(0,),
-                constrained_director_idx=(0,),
                 landing_distance=landing_distance_cmd,
                 landing_speed=drop_speed,
                 landing_direction=landing_drop_dir,
             )
+            print(">>> PRESCRIBED LANDING: position prescribed, orientation free for ankle motion")
+
         else:
             print(">>> LANDING MOTION (force_driven): orientation unconstrained, drop driven by forces")
             if force_driven_lock_base_xy:
@@ -1214,6 +1318,10 @@ def main():
             )
             print(f">>> FORCE_DRIVEN: tendon ramp-up enabled (ramp_up_time={force_driven_tendon_ramp:.3f}s)")
         else:
+            tendon_debug = {
+                "stretch_prev": np.zeros((len(vertebra_nodes), 3)),
+                "stretch_next": np.zeros((len(vertebra_nodes), 3)),
+            }
             tendon_actuation = sim.add_forcing_to(finger).using(
                 TendonForces,
                 vertebra_height=vertebra_height,
@@ -1225,6 +1333,13 @@ def main():
                 vertebra_height_orientation=v_height_dir,
                 n_elements=n_elements,
                 vertebra_nodes_list=vertebra_nodes,
+                debug_store=tendon_debug,
+                landing_state=landing_state,
+                angle_force_mode=args.angle_force_mode,
+                angle_gain=args.angle_gain,
+                angle_offset=args.angle_offset,
+                min_tension=args.min_tension,
+                max_tension=args.max_tension,
             )
 
     # Gravity
@@ -1283,6 +1398,7 @@ def main():
             f">>> FORCE_DRIVEN STABILIZATION: rotational spring-damper at base "
             f"(k={force_driven_rot_k:.3f}, c={force_driven_rot_c:.3f}, tmax={force_driven_rot_tmax:.3f})"
         )
+
     if landing_motion and landing_mode == "force_driven" and force_driven_z_stabilize:
         base_target_z = finger.position_collection[:, 0].copy()
         if force_driven_z_target == "start":
@@ -1341,11 +1457,12 @@ def main():
 
     # Callbacks for data collection
     class CB(CallBackBaseClass):
-        def __init__(self, step_skip, callback_params, tendon_forcing_object):
+        def __init__(self, step_skip, callback_params, tendon_debug, landing_state):
             super().__init__()
             self.every = step_skip
             self.callback_params = callback_params
-            self.tendon_forcing = tendon_forcing_object
+            self.tendon_debug = tendon_debug
+            self.landing_state = landing_state
 
         def make_callback(self, system, time, current_step):
             if np.isnan(system.position_collection).any():
@@ -1385,9 +1502,15 @@ def main():
                 self.callback_params["dilatation_rate"].append(system.dilatation_rate.copy())
                 self.callback_params["voronoi_dilatation"].append(system.voronoi_dilatation.copy())
 
+                self.callback_params["stretch_prev"].append(self.tendon_debug["stretch_prev"].copy())
+                self.callback_params["stretch_next"].append(self.tendon_debug["stretch_next"].copy())
+
+                self.callback_params["ankle_angle"].append(self.landing_state["ankle_angle"])
+                self.callback_params["current_tension"].append(self.landing_state["current_tension"])
+
     data = defaultdict(list)
     sim.collect_diagnostics(finger).using(CB, step_skip=step_skip, callback_params=data, 
-                                         tendon_forcing_object=tendon_actuation)
+                                         tendon_debug=tendon_debug, landing_state=landing_state)
 
     sim.finalize()
 
@@ -1483,12 +1606,90 @@ def main():
     data_to_save["body_mass"] = np.array([body_mass])
     print(f"[METRICS] Force Closure Stable: {is_force_closure} under {body_mass}kg load  Total Energy: {energy_score:.6f} J  Contact Points: {len(contact_idx)}")
 
-    csv_path = os.path.join(base_outdir, f"contact_log_{run_id}_{suffix}.csv")
-
     pos_data = data["position"]
     vel_data = data["velocity"]
     if len(pos_data) < 2:
         raise RuntimeError("No saved frames")
+
+    if args.confirm_tendon:
+        print("\n" + "="*70)
+        print("TENDON FORCE VALIDATION (LAST FRAME)")
+        print("="*70)
+
+        ext_force_data = data["external_forces"]
+        stretch_prev_data = data["stretch_prev"]
+        stretch_next_data = data["stretch_next"]
+
+        last_idx = min(
+            len(pos_data),
+            len(stretch_prev_data),
+            len(stretch_next_data),
+            len(ext_force_data),
+        ) - 1
+
+        F_last = ext_force_data[last_idx]
+        SP_last = stretch_prev_data[last_idx]
+        SN_last = stretch_next_data[last_idx]
+
+        for i, v_idx in enumerate(vertebra_nodes):
+            v_idx = int(v_idx)
+
+            sp_vec = SP_last[i]
+            sn_vec = SN_last[i]
+            tendon_sum_vec = sp_vec + sn_vec
+            external_vec = F_last[:, v_idx]
+
+            sp_mag = np.linalg.norm(sp_vec)
+            sn_mag = np.linalg.norm(sn_vec)
+            sum_mag = np.linalg.norm(tendon_sum_vec)
+            ext_mag = np.linalg.norm(external_vec)
+
+            sum_dir = tendon_sum_vec / sum_mag if sum_mag > 1e-12 else np.zeros(3)
+            ext_dir = external_vec / ext_mag if ext_mag > 1e-12 else np.zeros(3)
+
+            diff_vec = external_vec - tendon_sum_vec
+            diff_mag = np.linalg.norm(diff_vec)
+
+            print(f"\nNode {v_idx:3}")
+            print(f"  stretch_prev mag = {sp_mag:.6f} | vec = [{sp_vec[0]: .6f}, {sp_vec[1]: .6f}, {sp_vec[2]: .6f}]")
+            print(f"  stretch_next mag = {sn_mag:.6f} | vec = [{sn_vec[0]: .6f}, {sn_vec[1]: .6f}, {sn_vec[2]: .6f}]")
+            print(f"  tendon_sum   mag = {sum_mag:.6f} | dir = [{sum_dir[0]: .3f}, {sum_dir[1]: .3f}, {sum_dir[2]: .3f}]")
+            print(f"  external     mag = {ext_mag:.6f} | dir = [{ext_dir[0]: .3f}, {ext_dir[1]: .3f}, {ext_dir[2]: .3f}]")
+            print(f"  |external - tendon_sum| = {diff_mag:.6e}")
+
+    csv_path = os.path.join(base_outdir, f"contact_log_{run_id}_{suffix}.csv")
+
+    print("\n" + "="*60)
+    print("ANGLE-DEPENDENT PULLING SUMMARY")
+    print("="*60)
+    print(f"Final ankle angle (rad): {data['ankle_angle'][-1]:.6f}")
+    print(f"Final ankle angle (deg): {np.degrees(data['ankle_angle'][-1]):.3f}")
+    last_idx = min(
+        len(data["stretch_prev"]),
+        len(data["stretch_next"]),
+        len(data["current_tension"]),
+        len(data["ankle_angle"]),
+    ) - 1
+
+    SP_last = data["stretch_prev"][last_idx]
+    SN_last = data["stretch_next"][last_idx]
+    current_tension_last = data["current_tension"][last_idx]
+
+    for i, v_idx in enumerate(vertebra_nodes):
+        sp_vec = SP_last[i]
+        sn_vec = SN_last[i]
+        tendon_sum_vec = sp_vec + sn_vec
+
+        sp_mag = np.linalg.norm(sp_vec)
+        sn_mag = np.linalg.norm(sn_vec)
+        sum_mag = np.linalg.norm(tendon_sum_vec)
+
+        print(f"\nNode {int(v_idx):3}")
+        print(f"  stretch_prev      = [{sp_vec[0]: .6f}, {sp_vec[1]: .6f}, {sp_vec[2]: .6f}] |mag|={sp_mag:.6f}")
+        print(f"  stretch_next      = [{sn_vec[0]: .6f}, {sn_vec[1]: .6f}, {sn_vec[2]: .6f}] |mag|={sn_mag:.6f}")
+        print(f"  tendon_resultant  = [{tendon_sum_vec[0]: .6f}, {tendon_sum_vec[1]: .6f}, {tendon_sum_vec[2]: .6f}] |mag|={sum_mag:.6f}")
+        print(f"  current tension   = {current_tension_last:.6f}")
+    print("\n" + "="*60)
     
     # --------------------------
     # Contact logging (debug)
@@ -1699,10 +1900,15 @@ def main():
             data_to_save[f"disturbance_{name}_force_history"] = resp["force_history"]
 
         data_to_save["disturbance_base_point"] = base_point
+<<<<<<< HEAD
         data_to_save["disturbance_force_application_point"] = base_point
         data_to_save["disturbance_resistance_score"] = np.array(
             [resistance_count / max(total_cases, 1)]
         )
+=======
+        data_to_save["disturbance_force_application_point"] = base_point # TODO
+        data_to_save["disturbance_resistance_score"] = np.array([resistance_count / total_cases])
+>>>>>>> 9ea4a90 (implement varied pulling force)
 
         print("\n[DISTURBANCE STABILITY CHECK]")
         for name, resp in disturbance_results.items():
@@ -1928,104 +2134,163 @@ def main():
             ax.set_zlim(-0.10, 0.10)
 
         # --- Force visualization of forces ---
-        if args.debug:
+        if args.confirm_tendon or args.debug:
             F = data["external_forces"][frame_idx]          # (3, n_nodes)
             mag = np.linalg.norm(F, axis=0)  # (n_nodes,)
 
-            force_scale = 0.02
-            step_nodes  = 4
+            if args.confirm_tendon:
+                sp_frame = data["stretch_prev"][frame_idx]  # Red Arrow 1
+                sn_frame = data["stretch_next"][frame_idx]  # Red Arrow 2
 
-            for i in range(0, F.shape[1], step_nodes):
-                if mag[i] < 1e-6:
-                    continue
-                x, y, z = P[0, i], P[1, i], P[2, i]
-                fx, fy, fz = F[0, i], F[1, i], F[2, i]
-                ax.quiver(
-                    x, y, z,
-                    fx, fy, fz,
-                    length=force_scale,
-                    normalize=True,
-                    color="magenta",
-                )
+                for i, v_idx in enumerate(vertebra_nodes):
 
-            for v_idx in vertebra_nodes:
-                v_idx = int(v_idx)
-                f_vec = F[:, v_idx]
-                if np.linalg.norm(f_vec) > 1e-5:
+                    pos = P[:, v_idx]
+
+                    stretch_prev_vec = sp_frame[i]
+                    stretch_next_vec = sn_frame[i]
+
+                    tendon_sum_vec = stretch_prev_vec + stretch_next_vec
+                    external_vec = F[:, v_idx]
+
+                    # red = stretch_prev
                     ax.quiver(
-                        P[0, v_idx], P[1, v_idx], P[2, v_idx],
-                        f_vec[0], f_vec[1], f_vec[2],
-                        length=0.02,
-                        color="cyan",
+                        pos[0], pos[1], pos[2],
+                        stretch_prev_vec[0], stretch_prev_vec[1], stretch_prev_vec[2],
+                        color="red", length=0.02
                     )
 
-            # Draw configured base external force only when enabled.
-            if base_force_mag > 0.0:
-                base_pos = data["position"][-1][:, :5].mean(axis=1)
-                f_vec = base_external_force
-                ax.quiver(
-                    base_pos[0], base_pos[1], base_pos[2],
-                    f_vec[0], f_vec[1], f_vec[2],
-                    color='red', linewidth=3, label='Base external force',
-                    arrow_length_ratio=0.3
-                )
+                    # blue = stretch_next
+                    ax.quiver(
+                        pos[0], pos[1], pos[2],
+                        stretch_next_vec[0], stretch_next_vec[1], stretch_next_vec[2],
+                        color="blue", length=0.02
+                    )
 
-            # Contact force vectors and net contact wrench (about base).
-            (
-                cidx,
-                contact_forces,
-                _,
-                _,
-                _,
-                _,
-            ) = compute_contact_force_vectors(
-                rod_pos=P,
-                rod_vel=V,
-                cyl_center=cylinder.position_collection[:, 0],
-                cyl_radius=cyl_radius,
-                k=k_contact,
-                mu=mu_contact,
-                base_radius=base_radius,
-            )
-            base_count_vis = min(disturbance_base_nodes, P.shape[1])
-            base_point_vis = P[:, :base_count_vis].mean(axis=1)
-            ax.scatter(
-                base_point_vis[0], base_point_vis[1], base_point_vis[2],
-                color="black", s=45, marker="x", depthshade=False,
-            )
-            if len(cidx) > 0:
-                cscale = 0.01
-                for j in range(len(cidx)):
-                    cf = contact_forces[j]
-                    if np.linalg.norm(cf) < 1e-8:
+                    # green = SUM (actual tendon resultant)
+                    ax.quiver(
+                        pos[0], pos[1], pos[2],
+                        tendon_sum_vec[0], tendon_sum_vec[1], tendon_sum_vec[2],
+                        color="green", length=0.02
+                    )
+
+                    # magenta = simulation external force
+                    ax.quiver(
+                        pos[0], pos[1], pos[2],
+                        external_vec[0], external_vec[1], external_vec[2],
+                        color="magenta", length=0.02
+                    )
+                
+                # for i, v_idx in enumerate(vertebra_nodes):
+                #     v_idx = int(v_idx)
+                #     pos = P[:, v_idx]
+                    
+                #     # Plot Red Arrows (The Stretch)
+                #     ax.quiver(pos[0], pos[1], pos[2], sp_frame[i,0], sp_frame[i,1], sp_frame[i,2], 
+                #             color='red', length=0.02, normalize=True)
+                #     ax.quiver(pos[0], pos[1], pos[2], sn_frame[i,0], sn_frame[i,1], sn_frame[i,2], 
+                #             color='red', length=0.02, normalize=True)
+                    
+                #     # Plot Green Arrow (The Resultant)
+                #     f_res = F_last[:, v_idx]
+                #     ax.quiver(pos[0], pos[1], pos[2], f_res[0], f_res[1], f_res[2], 
+                #             color='green', length=0.02)
+
+
+            else: 
+                force_scale = 0.02
+                step_nodes  = 4
+
+                for i in range(0, F.shape[1], step_nodes):
+                    if mag[i] < 1e-6:
                         continue
+                    x, y, z = P[0, i], P[1, i], P[2, i]
+                    fx, fy, fz = F[0, i], F[1, i], F[2, i]
                     ax.quiver(
-                        base_point_vis[0], base_point_vis[1], base_point_vis[2],
-                        cf[0], cf[1], cf[2],
-                        length=cscale,
+                        x, y, z,
+                        fx, fy, fz,
+                        length=force_scale,
                         normalize=True,
-                        color="yellow",
+                        color="magenta",
                     )
-                net_cf = np.sum(contact_forces, axis=0)
-                if np.linalg.norm(net_cf) > 1e-8:
+
+                for v_idx in vertebra_nodes:
+                    v_idx = int(v_idx)
+                    f_vec = F[:, v_idx]
+                    if np.linalg.norm(f_vec) > 1e-5:
+                        ax.quiver(
+                            P[0, v_idx], P[1, v_idx], P[2, v_idx],
+                            f_vec[0], f_vec[1], f_vec[2],
+                            length=0.02,
+                            color="cyan",
+                        )
+
+                # Draw configured base external force only when enabled.
+                if base_force_mag > 0.0:
+                    base_pos = data["position"][-1][:, :5].mean(axis=1)
+                    f_vec = base_external_force
                     ax.quiver(
-                        base_point_vis[0], base_point_vis[1], base_point_vis[2],
-                        net_cf[0], net_cf[1], net_cf[2],
-                        length=0.03,
-                        normalize=True,
-                        color="lime",
+                        base_pos[0], base_pos[1], base_pos[2],
+                        f_vec[0], f_vec[1], f_vec[2],
+                        color='red', linewidth=3, label='Base external force',
+                        arrow_length_ratio=0.3
                     )
-                cp = P[:, cidx]
-                r = cp.T - base_point_vis[None, :]
-                net_tau = np.sum(np.cross(r, contact_forces), axis=0)
-                if np.linalg.norm(net_tau) > 1e-8:
-                    ax.quiver(
-                        base_point_vis[0], base_point_vis[1], base_point_vis[2],
-                        net_tau[0], net_tau[1], net_tau[2],
-                        length=0.03,
-                        normalize=True,
-                        color="orange",
-                    )
+
+                # Contact force vectors and net contact wrench (about base).
+                (
+                    cidx,
+                    contact_forces,
+                    _,
+                    _,
+                    _,
+                    _,
+                ) = compute_contact_force_vectors(
+                    rod_pos=P,
+                    rod_vel=V,
+                    cyl_center=cylinder.position_collection[:, 0],
+                    cyl_radius=cyl_radius,
+                    k=k_contact,
+                    mu=mu_contact,
+                    base_radius=base_radius,
+                )
+                base_count_vis = min(disturbance_base_nodes, P.shape[1])
+                base_point_vis = P[:, :base_count_vis].mean(axis=1)
+                ax.scatter(
+                    base_point_vis[0], base_point_vis[1], base_point_vis[2],
+                    color="black", s=45, marker="x", depthshade=False,
+                )
+                if len(cidx) > 0:
+                    cscale = 0.01
+                    for j in range(len(cidx)):
+                        cf = contact_forces[j]
+                        if np.linalg.norm(cf) < 1e-8:
+                            continue
+                        ax.quiver(
+                            base_point_vis[0], base_point_vis[1], base_point_vis[2],
+                            cf[0], cf[1], cf[2],
+                            length=cscale,
+                            normalize=True,
+                            color="yellow",
+                        )
+                    net_cf = np.sum(contact_forces, axis=0)
+                    if np.linalg.norm(net_cf) > 1e-8:
+                        ax.quiver(
+                            base_point_vis[0], base_point_vis[1], base_point_vis[2],
+                            net_cf[0], net_cf[1], net_cf[2],
+                            length=0.03,
+                            normalize=True,
+                            color="lime",
+                        )
+                    cp = P[:, cidx]
+                    r = cp.T - base_point_vis[None, :]
+                    net_tau = np.sum(np.cross(r, contact_forces), axis=0)
+                    if np.linalg.norm(net_tau) > 1e-8:
+                        ax.quiver(
+                            base_point_vis[0], base_point_vis[1], base_point_vis[2],
+                            net_tau[0], net_tau[1], net_tau[2],
+                            length=0.03,
+                            normalize=True,
+                            color="orange",
+                        )
             
         center = cylinder.position_collection[:, 0]
         axis_dir = cylinder.director_collection[2, :, 0]

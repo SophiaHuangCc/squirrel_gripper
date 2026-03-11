@@ -1,0 +1,74 @@
+#!/bin/bash
+
+# Configuration for Squirrel Finger Simulation
+# Targeted at: Tension 5.0N, Manual Vertebrae (20,45,60), Approach 45 deg
+
+python ./finger.py \
+    --debug \
+    --sol "approach_angle" \
+    --approach_deg 45.0 \
+    --tension 5.0 \
+    --base_rad 0.005 \
+    --v_mode "uniform" \
+    --v_list "20,45,60" \
+    --joint_softness "0.001,0.0009,0.0008" \
+    --E 2e7 \
+    --damping 0.8 \
+    --n_elements 80 \
+    --final_time 2.0 \
+    --cyl_rad 0.015 \
+    --k_contact 1250.0 \
+    --auto_contact_stiffness \
+    --max_penetration_warn 0.002 \
+    --base_len 0.10 \
+    --nu_contact 5.0 \
+    --mu_contact 0.6 \
+    --vel_damp_contact 10 \
+    --poisson_nu 0.4 \
+    --v_mass 0.002 \
+    --num_v 3 \
+    --v_start 30 \
+    --v_end 62 \
+    --v_height 0.005 \
+    --body_mass 0.5 \
+    --suffix "poc_trial" \
+    --output_dir "squirrel_paw_results" \
+    --landing_motion \
+    --landing_mode "prescribed" \
+    --angle_force_mode constant \
+    --angle_gain 1.2 \
+    --angle_offset 0.0 \
+    --min_tension 0.1 \
+    --max_tension 20.0 \
+    --landing_speed 0.0 \
+    --initial_x_gap 0.06 \
+    --landing_height 0.04 \
+    --landing_approach_deg 30.0 \
+    --prescribed_stop_at_contact \
+    --prescribed_contact_margin 0.0 \
+    --base_force_mag 0.0 \
+    --base_force_dir "0,0,-1" \
+    --base_force_nodes 1 \
+    --force_driven_stabilize \
+    --force_driven_xy_k 120.0 \
+    --force_driven_xy_c 3.0 \
+    --force_driven_tendon_ramp 1.0 \
+    --force_driven_xy_fmax 5.0 \
+    --force_driven_lock_base_xy \
+    --force_driven_z_stabilize \
+    --force_driven_z_k 120.0 \
+    --force_driven_z_c 12.0 \
+    --force_driven_z_fmax 4.0 \
+    --force_driven_z_target "cylinder" \
+    --force_driven_z_target_offset -0.01 \
+    --force_driven_min_damping 5.0 \
+    --force_driven_node_drag 4.0 \
+    --force_driven_node_drag_axes "1,1,1" \
+    --force_driven_rot_stabilize \
+    --force_driven_rot_k 0.03 \
+    --force_driven_rot_c 0.02 \
+    --force_driven_rot_tmax 0.02 \
+    --disturbance_force_mag 1.0 \
+    --disturbance_base_nodes 5 \
+    --disturbance_steps 40 \
+    --disturbance_dt_scale 1.0
