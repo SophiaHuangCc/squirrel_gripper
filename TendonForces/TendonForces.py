@@ -142,7 +142,7 @@ class TendonForces(NoForces):
         self.stretch_prev = unit_norm_vector_array[:-1] * -current_tension
 
         # Computes the forces in each vertebra
-        self.force_data = self.compute_forces(self.tension, np.array(self.vertebra_nodes), unit_norm_vector_array)
+        self.force_data = self.compute_forces(current_tension, np.array(self.vertebra_nodes), unit_norm_vector_array)
 
         # Creating the force data set to apply to the rod
         apply_force = np.zeros((3,self.n_elements+1))

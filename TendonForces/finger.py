@@ -693,7 +693,7 @@ def main():
     parser.add_argument("--v_start", type=int, default=30, help="Node index of first vertebra")
     parser.add_argument("--v_end", type=int, default=62, help="Node index of final vertebra")
     parser.add_argument("--v_height", type=float, default=0.005, help="Tendon distance from center")
-    parser.add_argument("--joint_softness", type=str, default="0.001", help="Multiplier for bending stiffness at vertebrae (0.01 = 1% of original stiffness)")
+    parser.add_argument("--joint_softness", type=str, default="0.001,0.0009, 0.0008", help="Multiplier for bending stiffness at vertebrae (0.01 = 1% of original stiffness)")
     # vertebra selector: 'uniform' or 'manual'
     parser.add_argument("--v_mode", type=str, default="uniform", 
                         choices=["uniform", "manual"], 
