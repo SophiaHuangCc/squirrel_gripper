@@ -512,19 +512,14 @@ class BaseOrientationSpringDamper(NoForces):
 
 
 class BaseAngleMonitor(NoForces):
-    """
-    Reads the current base angle from the first rod element and stores it in landing_state.
-    No force or torque is applied.
-    """
 
-    def __init__(self, reference_tangent, landing_state):
-        self.reference_tangent = np.asarray(reference_tangent, dtype=float).reshape(3)
+    def __init__(self, landing_state):
         self.landing_state = landing_state
 
     def apply_forces(self, system, time=0.0):
         current_tangent = system.tangents[:, 0]
-        angle = signed_angle_xz(self.reference_tangent, current_tangent)
-        self.landing_state["ankle_angle"] = angle
+        angle_abs = absolute_angle_xz(current_tangent)
+        self.landing_state["ankle_angle"] = angle_abs # abs base angle relative to horizontal
 
 
 class NodalViscousDrag(NoForces):
@@ -641,6 +636,13 @@ def signed_angle_xz(v_ref, v_cur):
     dot = np.clip(np.dot(ref, cur), -1.0, 1.0)
     det = ref[0] * cur[1] - ref[1] * cur[0]
     return np.arctan2(det, dot)
+
+def absolute_angle_xz(v):
+    x = float(v[0])
+    z = float(v[2])
+    if np.hypot(x, z) < 1e-12:
+        return 0.0
+    return float(np.arctan2(z, x))
 
 ###################################################
 # MAIN SIMULATION FUNCTION
@@ -927,24 +929,18 @@ def main():
         help='Enable tendon force verification mode')
     
     parser.add_argument(
-        "--angle_force_mode",
-        type=str,
-        default="constant",
-        choices=["constant", "linear", "sin", "cos"],
-        help="How tendon tension varies with ankle angle.",
+        "--ankle_wrap_radius",
+        type=float,
+        default=0.005,
+        help="Effective tendon wrap radius around the ankle (m).",
     )
     parser.add_argument(
-        "--angle_gain",
+        "--ankle_stiffness",
         type=float,
-        default=0.0,
-        help="Gain for angle-dependent tendon tension.",
+        default=500.0,
+        help="Tendon stiffness relating wrap-induced tendon length change to tension (N/m).",
     )
-    parser.add_argument(
-        "--angle_offset",
-        type=float,
-        default=0.0,
-        help="Angle offset (rad) before tension modulation starts.",
-    )
+    
     parser.add_argument(
         "--min_tension",
         type=float,
@@ -1094,6 +1090,10 @@ def main():
         "current_tension": tension, # actual tendon tension used this step
     }
 
+    ankle_wrap_radius = max(0.0, float(args.ankle_wrap_radius))
+    ankle_stiffness = max(0.0, float(args.ankle_stiffness))
+    ankle_rest_angle = np.deg2rad(args.approach_deg)
+
     # Initialize simulator
     sim = SquirrelFingerSimulator()
 
@@ -1177,12 +1177,10 @@ def main():
     base_tangent_ref = finger.tangents[:, 0].copy()
     base_director_ref = finger.director_collection[:, :, 0].copy()
 
-    if landing_motion:
-        sim.add_forcing_to(finger).using(
-            BaseAngleMonitor,
-            reference_tangent=base_tangent_ref,
-            landing_state=landing_state,
-        )
+    sim.add_forcing_to(finger).using(
+        BaseAngleMonitor,
+        landing_state=landing_state,
+    )
 
     if landing_motion and landing_speed > 0.0:
         # Give whole finger an initial approach velocity along angled drop direction.
@@ -1202,8 +1200,12 @@ def main():
         idx = int(np.clip(j, 0, finger.bend_matrix.shape[2] - 1))
         joint_mult = joint_softness_list[i]
         # progressively softer joints toward tip
-        finger.bend_matrix[1, 1, idx] *= joint_mult
-        finger.bend_matrix[2, 2, idx] *= joint_mult
+        # finger.bend_matrix[1, 1, idx] *= joint_mult
+        # finger.bend_matrix[2, 2, idx] *= joint_mult
+        for k in range(idx - 2, idx + 3):
+            kk = int(np.clip(k, 0, finger.bend_matrix.shape[2] - 1))
+            finger.bend_matrix[1, 1, kk] *= joint_mult
+            finger.bend_matrix[2, 2, kk] *= joint_mult
         print(f"  node {idx}: softness multiplier = {joint_mult:.6f}")
 
     # Create cylinder (branch)
@@ -1335,9 +1337,9 @@ def main():
                 vertebra_nodes_list=vertebra_nodes,
                 debug_store=tendon_debug,
                 landing_state=landing_state,
-                angle_force_mode=args.angle_force_mode,
-                angle_gain=args.angle_gain,
-                angle_offset=args.angle_offset,
+                ankle_wrap_radius=ankle_wrap_radius,
+                ankle_stiffness=ankle_stiffness,
+                ankle_rest_angle=ankle_rest_angle,
                 min_tension=args.min_tension,
                 max_tension=args.max_tension,
             )
@@ -1674,6 +1676,7 @@ def main():
     SP_last = data["stretch_prev"][last_idx]
     SN_last = data["stretch_next"][last_idx]
     current_tension_last = data["current_tension"][last_idx]
+    current_tension_first = data["current_tension"][0]
 
     for i, v_idx in enumerate(vertebra_nodes):
         sp_vec = SP_last[i]
@@ -1688,6 +1691,7 @@ def main():
         print(f"  stretch_prev      = [{sp_vec[0]: .6f}, {sp_vec[1]: .6f}, {sp_vec[2]: .6f}] |mag|={sp_mag:.6f}")
         print(f"  stretch_next      = [{sn_vec[0]: .6f}, {sn_vec[1]: .6f}, {sn_vec[2]: .6f}] |mag|={sn_mag:.6f}")
         print(f"  tendon_resultant  = [{tendon_sum_vec[0]: .6f}, {tendon_sum_vec[1]: .6f}, {tendon_sum_vec[2]: .6f}] |mag|={sum_mag:.6f}")
+        print(f"  initial tension   = {current_tension_first:.6f}")
         print(f"  current tension   = {current_tension_last:.6f}")
     print("\n" + "="*60)
     

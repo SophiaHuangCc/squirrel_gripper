@@ -146,7 +146,7 @@ def main():
     parser.add_argument("--poisson_nu", type=float, default=0.4, help="Poisson's ratio")
     parser.add_argument("--density", type=float, default=1200.0, help="Material density (kg/m^3)")
     parser.add_argument("--damping", type=float, default=0.8, help="Internal damping constant")
-    parser.add_argument("--base_len_full", type=float, default=0.10, help="Full finger length (m)")
+    parser.add_argument("--base_len_full", type=float, default=0.05, help="Full finger length (m)")
     parser.add_argument("--base_rad", type=float, default=0.005, help="Finger radius (m)")
     parser.add_argument("--n_elements_full", type=int, default=80, help="Full finger element count")
 
@@ -171,7 +171,7 @@ def main():
     parser.add_argument(
         "--n_elements",
         type=int,
-        default=16,
+        default=40,
         help="Element count of the extracted specimen",
     )
 
@@ -242,7 +242,7 @@ def main():
         raise ValueError("--n_elements must be at least 4")
 
     # Put the extracted joint in the center of the reduced specimen
-    joint_element_idx = n_elements // 2
+    joint_element_idx = 30
 
     ###################################################
     # Loading

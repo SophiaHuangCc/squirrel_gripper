@@ -33,7 +33,7 @@ class TendonForces(NoForces):
     """
 
     def __init__(self, vertebra_height, num_vertebrae, first_vertebra_node, final_vertebra_node, vertebra_mass, tension, vertebra_height_orientation, n_elements, 
-                 vertebra_nodes_list=None, debug_store=None, landing_state=None, angle_force_mode=False, angle_gain=0.0, angle_offset=0.0, min_tension=0.0, max_tension=100.0):
+                 vertebra_nodes_list=None, debug_store=None, landing_state=None, ankle_wrap_radius=0.0, ankle_stiffness=0.0, ankle_rest_angle=0.0, min_tension=0.0, max_tension=100.0):
         """
 
         Parameters 
@@ -70,9 +70,9 @@ class TendonForces(NoForces):
         
         self.debug_store = debug_store
         self.landing_state = landing_state
-        self.angle_force_mode = angle_force_mode
-        self.angle_gain = float(angle_gain)
-        self.angle_offset = float(angle_offset)
+        self.ankle_wrap_radius = float(ankle_wrap_radius)
+        self.ankle_stiffness = float(ankle_stiffness)
+        self.ankle_rest_angle = float(ankle_rest_angle)
         self.min_tension = float(min_tension)
         self.max_tension = None if max_tension is None else float(max_tension)
         self.nominal_tension = float(tension)
@@ -99,32 +99,20 @@ class TendonForces(NoForces):
         ##### End of modified section #####
 
     def _get_current_tension(self):
-        current_tension = self.nominal_tension
+        angle_abs = float(self.landing_state.get("ankle_angle", 0.0))
+        delta_theta = angle_abs - self.ankle_rest_angle
+        delta_L = -self.ankle_wrap_radius * delta_theta
 
-        if self.landing_state is not None:
-            angle = float(self.landing_state.get("ankle_angle", 0.0))
+        current_tension = self.nominal_tension + self.ankle_stiffness * (-delta_L)
 
-            if self.angle_force_mode == "constant":
-                current_tension = self.nominal_tension
-
-            elif self.angle_force_mode == "linear":
-                current_tension = self.nominal_tension + self.angle_gain * max(0.0, angle - self.angle_offset)
-
-            elif self.angle_force_mode == "sin":
-                current_tension = self.nominal_tension + self.angle_gain * np.sin(max(0.0, angle - self.angle_offset))
-
-            elif self.angle_force_mode == "cos":
-                current_tension = self.nominal_tension + self.angle_gain * (1.0 - np.cos(max(0.0, angle - self.angle_offset)))
-
-            else:
-                raise ValueError(f"Unknown angle_force_mode: {self.angle_force_mode}")
-
-        current_tension = max(self.min_tension, current_tension)
+        if current_tension < self.min_tension:
+            current_tension = self.min_tension
         if self.max_tension is not None:
-            current_tension = min(self.max_tension, current_tension)
+            current_tension = min(current_tension, self.max_tension)
 
-        if self.landing_state is not None:
-            self.landing_state["tendon_tension"] = current_tension
+        self.landing_state["current_tension"] = current_tension
+        self.landing_state["delta_theta"] = delta_theta
+        self.landing_state["delta_L"] = delta_L
 
         return current_tension
 

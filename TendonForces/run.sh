@@ -35,9 +35,8 @@ python ./finger.py \
     --output_dir "squirrel_paw_results" \
     --landing_motion \
     --landing_mode "prescribed" \
-    --angle_force_mode constant \
-    --angle_gain 1.2 \
-    --angle_offset 0.0 \
+    --ankle_wrap_radius 0.01 \
+    --ankle_stiffness 500.0 \
     --min_tension 0.1 \
     --max_tension 20.0 \
     --landing_speed 0.0 \
