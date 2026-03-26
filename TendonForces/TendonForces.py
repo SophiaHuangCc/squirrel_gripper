@@ -103,7 +103,7 @@ class TendonForces(NoForces):
         delta_theta = angle_abs - self.ankle_rest_angle
         delta_L = -self.ankle_wrap_radius * delta_theta
 
-        current_tension = self.nominal_tension + self.ankle_stiffness * (-delta_L)
+        current_tension = self.nominal_tension + self.ankle_stiffness * delta_L
 
         if current_tension < self.min_tension:
             current_tension = self.min_tension

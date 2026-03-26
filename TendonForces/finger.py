@@ -2302,6 +2302,28 @@ def main():
     clip.write_videofile(video_path, codec="libx264", fps=rendering_fps, logger=None)
     plt.close(fig)
 
+    ###################################################
+    # Pulling force / tendon tension plot
+    ###################################################
+    if "time" in data and "current_tension" in data and len(data["current_tension"]) > 0:
+        tension_plot_path = os.path.join(base_outdir, f"tendon_tension_plot_{run_id}_{suffix}.png")
+
+        time_arr = np.array(data["time"], dtype=float)
+        tension_arr = np.array(data["current_tension"], dtype=float)
+
+        plt.figure(figsize=(8, 5))
+        plt.plot(time_arr, tension_arr, label="Current tendon tension")
+        plt.xlabel("Time (s)")
+        plt.ylabel("Tendon tension / pulling force (N)")
+        plt.title("Variation of tendon pulling force over time")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(tension_plot_path, dpi=180, bbox_inches="tight")
+        plt.close()
+
+        print(f"[OK] saved tendon tension plot: {tension_plot_path}")
+
     if args.debug:
         fig_live = plt.figure(figsize=(10, 8))
         ax_live = fig_live.add_subplot(111, projection="3d")

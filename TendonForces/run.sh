@@ -11,7 +11,7 @@ python ./finger.py \
     --base_rad 0.005 \
     --v_mode "uniform" \
     --v_list "20,45,60" \
-    --joint_softness "0.001,0.0009,0.0008" \
+    --joint_softness "0.01,0.009,0.008" \
     --E 2e7 \
     --damping 0.8 \
     --n_elements 80 \
