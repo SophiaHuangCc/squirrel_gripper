@@ -33,7 +33,8 @@ class TendonForces(NoForces):
     """
 
     def __init__(self, vertebra_height, num_vertebrae, first_vertebra_node, final_vertebra_node, vertebra_mass, tension, vertebra_height_orientation, n_elements, 
-                 vertebra_nodes_list=None, debug_store=None, landing_state=None, ankle_wrap_radius=0.0, ankle_stiffness=0.0, ankle_rest_angle=0.0, min_tension=0.0, max_tension=100.0):
+                 vertebra_nodes_list=None, debug_store=None, landing_state=None, ankle_wrap_radius=0.0, ankle_stiffness=0.0, ankle_rest_angle=0.0, min_tension=0.0, max_tension=100.0,
+                 ankle_contact_gated=False):
         """
 
         Parameters 
@@ -76,6 +77,7 @@ class TendonForces(NoForces):
         self.min_tension = float(min_tension)
         self.max_tension = None if max_tension is None else float(max_tension)
         self.nominal_tension = float(tension)
+        self.ankle_contact_gated = bool(ankle_contact_gated)
 
         # self.stretch_next = np.zeros((self.num_vertebrae, 3))
         # self.stretch_prev = np.zeros((self.num_vertebrae, 3))
@@ -99,20 +101,55 @@ class TendonForces(NoForces):
         ##### End of modified section #####
 
     def _get_current_tension(self):
-        angle_abs = float(self.landing_state.get("ankle_angle", 0.0))
-        delta_theta = angle_abs - self.ankle_rest_angle
-        delta_L = -self.ankle_wrap_radius * delta_theta
+        ls = self.landing_state
+        if ls is None:
+            current_tension = self.nominal_tension
+            if current_tension < self.min_tension:
+                current_tension = self.min_tension
+            if self.max_tension is not None:
+                current_tension = min(current_tension, self.max_tension)
+            return current_tension
 
-        current_tension = self.nominal_tension + self.ankle_stiffness * delta_L
+        angle_abs = float(ls.get("ankle_angle", 0.0))
+
+        # Pre-contact: no wrap stretch; T = T_0 (see ContactAnkleRestMonitor in finger.py).
+        if self.ankle_contact_gated and not ls.get("rod_cylinder_contact", False):
+            current_tension = self.nominal_tension
+            if current_tension < self.min_tension:
+                current_tension = self.min_tension
+            if self.max_tension is not None:
+                current_tension = min(current_tension, self.max_tension)
+            ls["current_tension"] = current_tension
+            ls["delta_theta"] = 0.0
+            ls["delta_L"] = 0.0
+            ls["minus_delta_L"] = 0.0
+            ls["theta_rest_used"] = angle_abs
+            return current_tension
+
+        if self.ankle_contact_gated:
+            theta_rest = ls.get("ankle_rest_angle_effective")
+            if theta_rest is None:
+                theta_rest = self.ankle_rest_angle
+        else:
+            theta_rest = self.ankle_rest_angle
+
+        delta_theta = angle_abs - theta_rest
+        # Wrap kinematics (straight segments fixed): delta_L = -r * delta_theta.
+        delta_L = -self.ankle_wrap_radius * delta_theta
+        # Elastic law: T = T_0 + k_ankle * (-delta_L).
+        minus_delta_L = -delta_L
+        current_tension = self.nominal_tension + self.ankle_stiffness * minus_delta_L
 
         if current_tension < self.min_tension:
             current_tension = self.min_tension
         if self.max_tension is not None:
             current_tension = min(current_tension, self.max_tension)
 
-        self.landing_state["current_tension"] = current_tension
-        self.landing_state["delta_theta"] = delta_theta
-        self.landing_state["delta_L"] = delta_L
+        ls["current_tension"] = current_tension
+        ls["delta_theta"] = delta_theta
+        ls["delta_L"] = delta_L
+        ls["minus_delta_L"] = minus_delta_L
+        ls["theta_rest_used"] = theta_rest
 
         return current_tension
 

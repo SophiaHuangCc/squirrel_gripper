@@ -522,6 +522,51 @@ class BaseAngleMonitor(NoForces):
         self.landing_state["ankle_angle"] = angle_abs # abs base angle relative to horizontal
 
 
+class ContactAnkleRestMonitor(NoForces):
+    """
+    Same XZ overlap test as compute_contact_metrics_frame. While not touching the rod,
+    continuously stores the current base angle as the pre-contact reference. On first
+    contact, latches that value as ankle_rest_angle_effective so wrap stretch is measured
+    from the last free-flight pose (not --approach_deg).
+    """
+
+    def __init__(self, landing_state, cyl_center, cyl_radius, base_radius):
+        self.landing_state = landing_state
+        self.cyl_center = np.asarray(cyl_center, dtype=float).reshape(3)
+        self.cyl_radius = float(cyl_radius)
+        self.base_radius = float(base_radius)
+        self._printed_latch = False
+
+    def apply_forces(self, system, time=0.0):
+        pos = system.position_collection
+        c = self.cyl_center
+        dx = pos[0, :] - c[0]
+        dz = pos[2, :] - c[2]
+        radial_dist = np.sqrt(dx**2 + dz**2)
+        overlaps = (self.cyl_radius + self.base_radius) - radial_dist
+        in_contact = bool(np.any(overlaps > 0.0))
+
+        angle = float(self.landing_state.get("ankle_angle", 0.0))
+
+        if not in_contact:
+            self.landing_state["ankle_pre_contact_angle"] = angle
+            self.landing_state["rod_cylinder_contact"] = False
+        else:
+            self.landing_state["rod_cylinder_contact"] = True
+            if not self.landing_state.get("ankle_contact_rest_latched", False):
+                pre = self.landing_state.get("ankle_pre_contact_angle")
+                if pre is None:
+                    pre = angle
+                self.landing_state["ankle_rest_angle_effective"] = float(pre)
+                self.landing_state["ankle_contact_rest_latched"] = True
+                if not self._printed_latch:
+                    print(
+                        ">>> ANKLE WRAP: rest angle (last pre-contact) = "
+                        f"{pre:.6f} rad ({np.degrees(pre):.3f} deg)"
+                    )
+                    self._printed_latch = True
+
+
 class NodalViscousDrag(NoForces):
     """
     Damps rigid-body motion by applying per-node drag force proportional to velocity.
@@ -938,7 +983,7 @@ def main():
         "--ankle_stiffness",
         type=float,
         default=500.0,
-        help="Tendon stiffness relating wrap-induced tendon length change to tension (N/m).",
+        help="k_ankle (N/m) in T = T_0 + k_ankle * (-delta_L), with delta_L = -r * (theta - theta_rest) from wrap.",
     )
     
     parser.add_argument(
@@ -1084,11 +1129,22 @@ def main():
     print(f"contact: k={k_contact} nu={nu_contact} mu={mu_contact} vel_damp={vel_damp_contact}")
     print(f"damping_constant={damping_constant}")
 
+    ankle_contact_gated = (
+        landing_motion
+        and landing_mode == "prescribed"
+        and args.sol not in ("nonuniform_tendon", "change_tendon_direction")
+    )
+
     landing_state = {
         "ankle_angle": 0.0,         # current ankle/base angle in radians
         "pull_scale": 1.0,          # optional debug
         "current_tension": tension, # actual tendon tension used this step
     }
+    if ankle_contact_gated:
+        landing_state["rod_cylinder_contact"] = False
+        landing_state["ankle_pre_contact_angle"] = None
+        landing_state["ankle_rest_angle_effective"] = None
+        landing_state["ankle_contact_rest_latched"] = False
 
     ankle_wrap_radius = max(0.0, float(args.ankle_wrap_radius))
     ankle_stiffness = max(0.0, float(args.ankle_stiffness))
@@ -1284,6 +1340,15 @@ def main():
         constrained_director_idx=(0,),
     )
 
+    if ankle_contact_gated:
+        sim.add_forcing_to(finger).using(
+            ContactAnkleRestMonitor,
+            landing_state=landing_state,
+            cyl_center=cylinder.position_collection[:, 0].copy(),
+            cyl_radius=cyl_radius,
+            base_radius=base_radius,
+        )
+
     if args.sol == "nonuniform_tendon" or args.sol == "change_tendon_direction":
         tendon_actuation = sim.add_forcing_to(finger).using(
             TendonForcesRamp,
@@ -1342,6 +1407,7 @@ def main():
                 ankle_rest_angle=ankle_rest_angle,
                 min_tension=args.min_tension,
                 max_tension=args.max_tension,
+                ankle_contact_gated=ankle_contact_gated,
             )
 
     # Gravity

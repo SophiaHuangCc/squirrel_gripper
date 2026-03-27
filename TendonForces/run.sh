@@ -7,7 +7,7 @@ python ./finger.py \
     --debug \
     --sol "approach_angle" \
     --approach_deg 45.0 \
-    --tension 5.0 \
+    --tension 1.0 \
     --base_rad 0.005 \
     --v_mode "uniform" \
     --v_list "20,45,60" \
@@ -35,7 +35,7 @@ python ./finger.py \
     --output_dir "squirrel_paw_results" \
     --landing_motion \
     --landing_mode "prescribed" \
-    --ankle_wrap_radius 0.01 \
+    --ankle_wrap_radius 0.02 \
     --ankle_stiffness 500.0 \
     --min_tension 0.1 \
     --max_tension 20.0 \
