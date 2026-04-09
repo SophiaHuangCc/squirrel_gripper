@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Union, List
 import matplotlib.pyplot as plt
 
-
 def read_contact_log(csv_path: Union[str, Path]) -> List[Dict]:
     """
     Read contact log CSV file.

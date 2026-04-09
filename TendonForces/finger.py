@@ -363,6 +363,192 @@ def evaluate_disturbance_contact_response(
         "contacts_history": np.array(contacts_hist, dtype=int),
     }
 
+def compute_time_series_contact_metrics(
+    pos_data,
+    vel_data,
+    cyl_center,
+    cyl_axis,
+    cyl_radius,
+    k_contact,
+    mu_contact,
+    base_radius,
+    cyl_length,
+):
+    """
+    Compute per-frame contact-related metrics for visualization.
+    """
+    n_frames = len(pos_data)
+
+    contact_count_series = np.zeros(n_frames, dtype=int)
+    total_normal_force_series = np.zeros(n_frames, dtype=float)
+    max_normal_force_series = np.zeros(n_frames, dtype=float)
+    total_friction_force_series = np.zeros(n_frames, dtype=float)
+    angular_span_series = np.zeros(n_frames, dtype=float)
+    contact_binary_series = np.zeros(n_frames, dtype=int)
+
+    for frame_idx, (P, V) in enumerate(zip(pos_data, vel_data)):
+        idx, nF, _, _, fF, _, _ = compute_contact_metrics_frame(
+            P, V, cyl_center, cyl_axis, cyl_radius, k_contact, mu_contact, base_radius, cyl_length
+        )
+
+        num_contacts = len(idx)
+        contact_count_series[frame_idx] = num_contacts
+        contact_binary_series[frame_idx] = 1 if num_contacts > 0 else 0
+
+        if num_contacts > 0:
+            total_normal_force_series[frame_idx] = float(np.sum(nF))
+            max_normal_force_series[frame_idx] = float(np.max(nF))
+            total_friction_force_series[frame_idx] = float(np.sum(fF))
+
+            # Angular span in XZ plane
+            contact_pts = P[:, idx]
+            dx = contact_pts[0, :] - cyl_center[0]
+            dz = contact_pts[2, :] - cyl_center[2]
+            angles = np.unwrap(np.arctan2(dz, dx))
+            angular_span_series[frame_idx] = float(np.degrees(np.max(angles) - np.min(angles)))
+        else:
+            total_normal_force_series[frame_idx] = 0.0
+            max_normal_force_series[frame_idx] = 0.0
+            total_friction_force_series[frame_idx] = 0.0
+            angular_span_series[frame_idx] = 0.0
+
+    return {
+        "contact_count": contact_count_series,
+        "contact_binary": contact_binary_series,
+        "total_normal_force": total_normal_force_series,
+        "max_normal_force": max_normal_force_series,
+        "total_friction_force": total_friction_force_series,
+        "angular_span_deg": angular_span_series,
+    }
+
+def plot_metric_verification(
+    time_arr,
+    metric_series,
+    body_weight_force_mag,
+    final_is_force_closure,
+    final_is_stable,
+    final_stability_margin,
+    final_vertical_support,
+    output_path,
+):
+    """
+    Plot the three main metrics and their supporting quantities.
+    """
+    fig = plt.figure(figsize=(12, 10))
+
+    # 1) Number of contacts over time
+    ax1 = fig.add_subplot(2, 2, 1)
+    ax1.plot(time_arr, metric_series["contact_count"])
+    ax1.set_title("Number of Contacts vs Time")
+    ax1.set_xlabel("Time (s)")
+    ax1.set_ylabel("Contact Count")
+    ax1.grid(True, alpha=0.3)
+
+    # 2) Force-closure supporting quantities
+    ax2 = fig.add_subplot(2, 2, 2)
+    ax2.plot(time_arr, metric_series["angular_span_deg"], label="Angular span (deg)")
+    ax2.plot(time_arr, metric_series["total_normal_force"], label="Total normal force (N)")
+    ax2.set_title(f"Force Closure Helpers | Final FC = {final_is_force_closure}")
+    ax2.set_xlabel("Time (s)")
+    ax2.set_ylabel("Value")
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+
+    # 3) Stability closure supporting quantities
+    ax3 = fig.add_subplot(2, 2, 3)
+    ax3.plot(time_arr, metric_series["total_friction_force"], label="Total friction force (N)")
+    ax3.plot(time_arr, metric_series["total_normal_force"], label="Total normal force (N)")
+    ax3.axhline(body_weight_force_mag, linestyle="--", label="Required load (body weight)")
+    ax3.set_title(
+        f"Stability Closure Helpers | Final Stable = {final_is_stable}\n"
+        f"Final support={final_vertical_support:.3f} N, margin={final_stability_margin:.3f}"
+    )
+    ax3.set_xlabel("Time (s)")
+    ax3.set_ylabel("Force (N)")
+    ax3.grid(True, alpha=0.3)
+    ax3.legend()
+
+    # 4) Binary contact timeline
+    ax4 = fig.add_subplot(2, 2, 4)
+    ax4.plot(time_arr, metric_series["contact_binary"])
+    ax4.set_title("Contact Exists vs Time")
+    ax4.set_xlabel("Time (s)")
+    ax4.set_ylabel("0 / 1")
+    ax4.set_ylim(-0.1, 1.1)
+    ax4.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+def plot_final_metric_geometry(
+    final_pos,
+    final_vel,
+    cyl_center,
+    cyl_axis,
+    cyl_radius,
+    cyl_length,
+    k_contact,
+    mu_contact,
+    base_radius,
+    final_is_force_closure,
+    final_is_stable,
+    output_path,
+):
+    """
+    Plot final geometry, contact points, and contact normals in XZ view.
+    This is very useful for checking whether the force/stability closure booleans look reasonable.
+    """
+    idx, nF, _, _, _, _, _ = compute_contact_metrics_frame(
+        final_pos, final_vel, cyl_center, cyl_axis, cyl_radius, k_contact, mu_contact, base_radius, cyl_length
+    )
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    # Rod centerline in XZ
+    ax.plot(final_pos[0, :], final_pos[2, :], "-o", markersize=2, label="Finger centerline")
+
+    # Cylinder cross-section in XZ
+    theta = np.linspace(0, 2 * np.pi, 200)
+    xc = cyl_center[0] + cyl_radius * np.cos(theta)
+    zc = cyl_center[2] + cyl_radius * np.sin(theta)
+    ax.plot(xc, zc, label="Branch cross-section")
+
+    # Contact points and normals
+    if len(idx) > 0:
+        cp = final_pos[:, idx]
+        ax.scatter(cp[0, :], cp[2, :], s=40, label="Contact points")
+
+        for j, node_idx in enumerate(idx):
+            dx = final_pos[0, node_idx] - cyl_center[0]
+            dz = final_pos[2, node_idx] - cyl_center[2]
+            nv = np.array([dx, dz], dtype=float)
+            nrm = np.linalg.norm(nv)
+            if nrm > 1e-12:
+                nv /= nrm
+                ax.arrow(
+                    final_pos[0, node_idx],
+                    final_pos[2, node_idx],
+                    0.004 * nv[0],
+                    0.004 * nv[1],
+                    head_width=0.0015,
+                    length_includes_head=True,
+                    alpha=0.8,
+                )
+
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Z (m)")
+    ax.set_title(
+        f"Final Metric Geometry Check\n"
+        f"Force Closure = {final_is_force_closure}, Stability Closure = {final_is_stable}"
+    )
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
 
 ###################################################
 # CUSTOM FORCING CLASS WITH RAMP-UP AND DIRECTIONAL CONTROL
@@ -1158,7 +1344,6 @@ def main():
     normal = np.array([0.0, 0.0, 1.0])
     start_pos = np.array([0.0, 0.0, 0.0])
     v_height_dir = np.array([0.0, 0.0, -1.0])
-    clearance = 0.02
 
     # 2 alternative solutions to improve curling around cylinder
     if args.sol == "approach_angle":
@@ -1892,8 +2077,6 @@ def main():
         print(f"  Max normal force: {metrics['max_normal_force']:.6f} N")
         print(f"  Total friction force: {metrics['total_friction_force']:.6f} N")
 
-
-
         # Automatically save a 2D projection plot for this specific run
         plot_path = os.path.join(base_outdir, f"contact_plot_{run_id}_{suffix}.png")
         plot_contacts_2d_from_log(csv_path, output_path=plot_path, show_plot=False)
@@ -1919,6 +2102,51 @@ def main():
         print(f"  Load: {stab_metrics['total_load_n']:.4f} N")
         print(f"  Vertical Support: {stab_metrics['total_support_n']:.4f} N")
         print(f"  Stable: {is_stable} (Margin: {stab_metrics['margin']:.2f}x)")
+
+        ###################################################
+        # METRIC VERIFICATION PLOTS
+        ###################################################
+        metric_series = compute_time_series_contact_metrics(
+            pos_data=pos_data,
+            vel_data=vel_data,
+            cyl_center=cyl_center,
+            cyl_axis=cyl_axis,
+            cyl_radius=cyl_radius,
+            k_contact=k_contact,
+            mu_contact=mu_contact,
+            base_radius=base_radius,
+            cyl_length=cyl_length,
+        )
+
+        metric_plot_path = os.path.join(base_outdir, f"metric_verification_{run_id}_{suffix}.png")
+        plot_metric_verification(
+            time_arr=np.array(data["time"], dtype=float),
+            metric_series=metric_series,
+            body_weight_force_mag=body_mass * gravity,
+            final_is_force_closure=is_fc,
+            final_is_stable=is_stable,
+            final_stability_margin=stab_metrics["margin"],
+            final_vertical_support=stab_metrics["total_support_n"],
+            output_path=metric_plot_path,
+        )
+        print(f"[METRICS] Verification plot saved to: {metric_plot_path}")
+
+        final_geometry_plot_path = os.path.join(base_outdir, f"metric_geometry_{run_id}_{suffix}.png")
+        plot_final_metric_geometry(
+            final_pos=final_pos,
+            final_vel=final_vel,
+            cyl_center=cyl_center,
+            cyl_axis=cyl_axis,
+            cyl_radius=cyl_radius,
+            cyl_length=cyl_length,
+            k_contact=k_contact,
+            mu_contact=mu_contact,
+            base_radius=base_radius,
+            final_is_force_closure=is_fc,
+            final_is_stable=is_stable,
+            output_path=final_geometry_plot_path,
+        )
+        print(f"[METRICS] Final geometry check plot saved to: {final_geometry_plot_path}")
 
         # Disturbance stability checks from final settled contact state.
         base_count = min(disturbance_base_nodes, final_pos.shape[1])
