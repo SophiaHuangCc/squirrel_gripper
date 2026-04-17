@@ -7,11 +7,11 @@ python ./finger.py \
     --debug \
     --sol "approach_angle" \
     --approach_deg 45.0 \
-    --tension 1.0 \
+    --tension 3.0 \
     --base_rad 0.005 \
     --v_mode "uniform" \
     --v_list "20,45,60" \
-    --joint_softness "0.01,0.009,0.008" \
+    --joint_softness "0.009,0.008,0.007" \
     --E 2e7 \
     --damping 0.8 \
     --n_elements 80 \
