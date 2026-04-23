@@ -42,13 +42,59 @@ class DynamicsDataset(Dataset):
     def _get_array(self, data, key, default=None, dtype=np.float32):
         """
         Safely read an array from npz and flatten it.
+
+        Supports:
+        - numeric arrays already stored in npz
+        - scalar values
+        - strings like "30,46,62"
+        - shape-(1,) object/string arrays containing comma-separated values
         """
         if key not in data:
             if default is None:
                 raise KeyError(f"Missing required key '{key}' in dataset sample.")
             return np.asarray(default, dtype=dtype).reshape(-1)
 
-        return np.asarray(data[key], dtype=dtype).reshape(-1)
+        value = data[key]
+
+        # Case 1: direct scalar string/object
+        if isinstance(value, (str, bytes)):
+            text = value.decode() if isinstance(value, bytes) else value
+            return np.asarray(
+                [x.strip() for x in text.split(",") if x.strip() != ""],
+                dtype=dtype
+            ).reshape(-1)
+
+        arr = np.asarray(value)
+
+        # Case 2: object/string array, often shape (1,)
+        if arr.dtype.kind in {"U", "S", "O"}:
+            flat = arr.reshape(-1)
+
+            # If it is a single comma-separated string, parse it
+            if flat.size == 1:
+                item = flat[0]
+                if isinstance(item, bytes):
+                    item = item.decode()
+                item = str(item)
+
+                return np.asarray(
+                    [x.strip() for x in item.split(",") if x.strip() != ""],
+                    dtype=dtype
+                ).reshape(-1)
+
+            # Otherwise treat each entry as one element
+            parsed = []
+            for item in flat:
+                if isinstance(item, bytes):
+                    item = item.decode()
+                item = str(item).strip()
+                if item != "":
+                    parsed.append(item)
+
+            return np.asarray(parsed, dtype=dtype).reshape(-1)
+
+        # Case 3: already numeric
+        return arr.astype(dtype).reshape(-1)
 
     def _compute_link_lengths_from_joint_positions(self, joint_positions, base_length, n_elements):
         """
@@ -93,7 +139,6 @@ class DynamicsDataset(Dataset):
             ####################################################################
             # [approach angle, cylinder radius]
             approach_angle = self._get_scalar(data, "arg_approach_deg", 0.0)
-            print(f"Approach angle (deg): {approach_angle}")
             cylinder_radius = self._get_scalar(data, "cyl_radius", 0.015)
 
             task_params = torch.tensor(
@@ -110,7 +155,6 @@ class DynamicsDataset(Dataset):
                 "joint_softness",
                 default=[0.001, 0.001, 0.001]
             )
-            print(f"Joint softness: {joint_softness}")
 
             # base geometry
             base_radius = self._get_scalar(data, "base_radius", 0.005)

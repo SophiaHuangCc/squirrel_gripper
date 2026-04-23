@@ -47,3 +47,12 @@ six>=1.16.0
 packaging>=23.0
 cffi>=1.15.0
 pycparser>=2.21
+
+torch==2.2.2
+torchvision==0.17.2
+torchaudio==2.2.2
+wandb==0.16.6
+diffusers==0.27.2
+transformers>=4.36
+accelerate>=0.25
+scipy>=1.10,<2.0

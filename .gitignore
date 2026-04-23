@@ -1,6 +1,7 @@
 # --- Python ---
 .DS_Store
 
+__pycache__/
 TendonForces/__pycache__/
 TendonForces/*.pyc
 TendonForces/*.nbc
@@ -11,6 +12,7 @@ dynamics/__pycache__/**
 
 # --- Virtual envs ---
 TendonForces/.venv/
+.venv/
 
 # --- OS / editor ---
 TendonForces/.DS_Store
