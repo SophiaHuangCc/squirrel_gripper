@@ -1786,15 +1786,21 @@ def main():
     data_to_save["vertebra_nodes"] = vertebra_nodes
     data_to_save["dt_critical"] = np.array([dt_critical])
     data_to_save["time_step"] = np.array([time_step])
+    data_to_save["arg_approach_deg"] = np.array([args.approach_deg])
+    data_to_save["joint_softness"] = np.array([args.joint_softness])
+    data_to_save["n_elements"] = np.array([n_elements])
+    data_to_save["arg_landing_height"] = np.array([float(landing_height)])
+    data_to_save["arg_landing_speed"] = np.array([float(landing_speed)])
+    data_to_save["arg_initial_x_gap"] = np.array([0.0 if initial_x_gap is None else float(initial_x_gap)])
 
-    data_to_save["bend_matrix"] = finger.bend_matrix
-    data_to_save["shear_matrix"] = finger.shear_matrix
-    data_to_save["mass"] = finger.mass
-    data_to_save["density"] = finger.density
-    data_to_save["rest_lengths"] = finger.rest_lengths
-    data_to_save["rest_kappa"] = finger.rest_kappa
-    data_to_save["rest_sigma"] = finger.rest_sigma
-    data_to_save["mass_second_moment_of_inertia"] = finger.mass_second_moment_of_inertia
+    # data_to_save["bend_matrix"] = finger.bend_matrix
+    # data_to_save["shear_matrix"] = finger.shear_matrix
+    # data_to_save["mass"] = finger.mass
+    # data_to_save["density"] = finger.density
+    # data_to_save["rest_lengths"] = finger.rest_lengths
+    # data_to_save["rest_kappa"] = finger.rest_kappa
+    # data_to_save["rest_sigma"] = finger.rest_sigma
+    # data_to_save["mass_second_moment_of_inertia"] = finger.mass_second_moment_of_inertia
 
     data_to_save["cyl_position"] = cylinder.position_collection.copy() # Center point
     data_to_save["cyl_directors"] = cylinder.director_collection.copy() # Orientation
@@ -2048,7 +2054,7 @@ def main():
                 )
         print(f"[CONTACT] Wrote {os.path.join(base_outdir, f'contact_log_{run_id}_{suffix}.csv')}")
 
-    data_to_save["metric_contact_max_overlap"] = np.array([max_overlap_overall])
+    # data_to_save["metric_contact_max_overlap"] = np.array([max_overlap_overall])
 
     print(f"\n[CONTACT] Starting geometric metrics check for: {csv_path}")
     is_fc = False
@@ -2065,7 +2071,7 @@ def main():
     disturbance_results = {}
     try:
         is_fc, metrics = analyze_grasp_from_log(csv_path)
-        data_to_save["geometric_success"] = np.array([is_fc])
+        # data_to_save["geometric_success"] = np.array([is_fc])
         data_to_save["num_contacts"] = np.array([metrics["num_contacts"]])
         data_to_save["angular_span"] = np.array([metrics["angular_span"]])
         data_to_save["total_normal_force"] = np.array([metrics["total_normal_force"]])
