@@ -93,6 +93,7 @@ class DynamicsDataset(Dataset):
             ####################################################################
             # [approach angle, cylinder radius]
             approach_angle = self._get_scalar(data, "arg_approach_deg", 0.0)
+            print(f"Approach angle (deg): {approach_angle}")
             cylinder_radius = self._get_scalar(data, "cyl_radius", 0.015)
 
             task_params = torch.tensor(
@@ -104,11 +105,12 @@ class DynamicsDataset(Dataset):
             # 2. DESIGN PARAMETERS
             ####################################################################
             # joint stiffness
-            joint_stiffness = self._get_array(
+            joint_softness = self._get_array(
                 data,
-                "joint_stiffness",
+                "joint_softness",
                 default=[0.001, 0.001, 0.001]
             )
+            print(f"Joint softness: {joint_softness}")
 
             # base geometry
             base_radius = self._get_scalar(data, "base_radius", 0.005)
@@ -120,12 +122,12 @@ class DynamicsDataset(Dataset):
             # link lengths from joint_positions
             joint_positions = self._get_array(
                 data,
-                "joint_positions",
-                default=[30, 45, 62]
+                "vertebra_nodes",
+                default=[30, 46, 62]
             )
 
             # need n_elements to convert index spacing -> physical spacing
-            n_elements = int(round(self._get_scalar(data, "arg_n_elements", 80.0)))
+            n_elements = int(round(self._get_scalar(data, "n_elements", 80.0)))
 
             link_lengths = self._compute_link_lengths_from_joint_positions(
                 joint_positions=joint_positions,
@@ -134,7 +136,7 @@ class DynamicsDataset(Dataset):
             )
 
             design_params_np = np.concatenate([
-                joint_stiffness.astype(np.float32),      # e.g. 3 values
+                joint_softness.astype(np.float32),      # e.g. 3 values
                 link_lengths.astype(np.float32),         # e.g. 4 values
                 np.asarray([
                     base_radius,

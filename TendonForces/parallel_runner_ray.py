@@ -257,7 +257,7 @@ def run_split(tasks_to_run, current_exp_dir, num_workers, split_label):
     print(f"Parallel Workers: {num_workers}")
     print(f"---------------------------------")
 
-    ray.init(num_cpus=num_workers, log_to_driver=False, include_dashboard=False)
+    ray.init(num_cpus=num_workers, log_to_driver=False, include_dashboard=False, ignore_reinit_error=True,)
 
     start_time = time.time()
     results = []
