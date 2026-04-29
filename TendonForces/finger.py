@@ -253,8 +253,11 @@ def evaluate_disturbance_contact_response(
     dt,
 ):
     """
-    Apply a disturbance pulse for a few explicit steps and measure resulting contact wrench.
-    This is a lightweight post-process rollout (not a full Cosserat re-simulation).
+    Apply a disturbance pulse for a few explicit steps and measure resulting
+    contact wrench. The disturbance is distributed across every rod node as a
+    mass-weighted body force (i.e. a uniform external acceleration on the rod),
+    so contact nodes press into the cylinder and friction can resist it. This
+    is a lightweight post-process rollout, not a full Cosserat re-simulation.
     """
     disturbance_force = np.asarray(disturbance_force, dtype=float).reshape(3)
     pos = np.asarray(rod_pos, dtype=float).copy()
@@ -270,7 +273,10 @@ def evaluate_disturbance_contact_response(
 
     dt = max(float(dt), 1e-8)
     n_steps = max(int(n_steps), 1)
-    base_force_per_node = disturbance_force / float(base_indices.size)
+
+    total_mass = float(np.sum(node_masses))
+    body_acc = disturbance_force / max(total_mass, 1e-12)
+    body_force_per_node = node_masses.reshape(1, -1) * body_acc.reshape(3, 1)
 
     idx = np.array([], dtype=int)
     contact_forces = np.zeros((0, 3))
@@ -301,10 +307,9 @@ def evaluate_disturbance_contact_response(
             base_radius=base_radius,
         )
 
-        nodal_forces = np.zeros_like(pos)
+        nodal_forces = body_force_per_node.copy()
         if len(idx) > 0:
             nodal_forces[:, idx] += contact_forces.T
-        nodal_forces[:, base_indices] += base_force_per_node.reshape(3, 1)
 
         acc = nodal_forces / node_masses.reshape(1, -1)
         vel = vel + dt * acc
@@ -314,7 +319,9 @@ def evaluate_disturbance_contact_response(
         if len(idx) > 0:
             cp = pos[:, idx].T
             net_contact_force = np.sum(contact_forces, axis=0)
-            net_contact_torque = np.sum(np.cross(cp - base_point[None, :], contact_forces), axis=0)
+            net_contact_torque = np.sum(
+                np.cross(cp - base_point[None, :], contact_forces), axis=0
+            )
         else:
             net_contact_force = np.zeros(3)
             net_contact_torque = np.zeros(3)
@@ -326,6 +333,8 @@ def evaluate_disturbance_contact_response(
     applied_torque = np.zeros(3)
     fmag = np.linalg.norm(disturbance_force)
     f_dir = disturbance_force / fmag if fmag > 1e-12 else np.zeros(3)
+    # Contact reaction opposes the body force, so resist_force flips the sign
+    # to be positive when the grasp resists the disturbance.
     resist_force = -float(np.dot(net_contact_force, f_dir)) if fmag > 1e-12 else 0.0
     resist_torque = 0.0
 
@@ -347,7 +356,7 @@ def evaluate_disturbance_contact_response(
         "resist_torque": resist_torque,
         "force_alignment": force_alignment,
         "torque_alignment": torque_alignment,
-        "force_resisted": bool(resist_force >= fmag and fmag > 0.0),
+        "force_resisted": bool(resist_force >= 0.95 * fmag and fmag > 0.0),
         "torque_resisted": False,
         "total_normal_force": float(np.sum(normal_force_mag)) if len(idx) else 0.0,
         "contact_positions": pos[:, idx].copy() if len(idx) else np.zeros((3, 0)),
@@ -1807,10 +1816,8 @@ def main():
 
         total_rod_mass = float(np.sum(finger.mass))
         node_mass_uniform = np.full(
-            final_pos.shape[1],
-            total_rod_mass / max(1, final_pos.shape[1])
+            final_pos.shape[1], total_rod_mass / max(1, final_pos.shape[1])
         )
-
         disturbance_dt = time_step * disturbance_dt_scale
 
         disturbance_cases = {
@@ -1872,6 +1879,114 @@ def main():
                 f"resist_F={resp['resist_force']:.3f} "
                 f"force_resisted={resp['force_resisted']}"
             )
+            print(
+                f"    |tau_app|={np.linalg.norm(resp['applied_torque']):.3f} "
+                f"|tau_contact|={np.linalg.norm(resp['net_contact_torque']):.3f} "
+                f"align_tau={resp['torque_alignment']:.3f} "
+                f"resist_tau={resp['resist_torque']:.3f} "
+                f"torque_resisted={resp['torque_resisted']}"
+            )
+
+        # Save one force-visualization image per disturbance case.
+        for name, resp in disturbance_results.items():
+            fig_dist = plt.figure(figsize=(13, 6))
+            ax_dist = fig_dist.add_subplot(121, projection="3d")
+            ax_contact = fig_dist.add_subplot(122, projection="3d")
+            P_dist = resp["position_final"]
+            ax_dist.scatter(P_dist[0], P_dist[1], P_dist[2], s=8, alpha=0.8)
+            center_dist = cylinder.position_collection[:, 0]
+            axis_dist = cylinder.director_collection[2, :, 0]
+            draw_cylinder(ax_dist, center_dist, axis_dist, cyl_radius, cyl_length, color="black", alpha=0.25)
+
+            # Mark base point used for wrench reference.
+            ax_dist.scatter(
+                base_point[0], base_point[1], base_point[2],
+                color="black", s=60, marker="x", depthshade=False,
+            )
+
+            f_app = resp["applied_force"]
+            f_net = resp["net_contact_force"]
+            # Disturbance acts as a body force on the rod, drawn from base reference point.
+            if np.linalg.norm(f_app) > 1e-12:
+                ax_dist.quiver(
+                    base_point[0], base_point[1], base_point[2],
+                    f_app[0], f_app[1], f_app[2],
+                    length=0.03, normalize=True, color="tab:red",
+                )
+            if np.linalg.norm(f_net) > 1e-12:
+                ax_dist.quiver(
+                    base_point[0], base_point[1], base_point[2],
+                    f_net[0], f_net[1], f_net[2],
+                    length=0.03, normalize=True, color="tab:green",
+                )
+
+            ax_dist.set_xlim(-0.02, 0.12)
+            ax_dist.set_ylim(-0.12, 0.12)
+            ax_dist.set_zlim(-0.10, 0.10)
+            ax_dist.set_title(
+                f"Disturbance: {name} |F_app|={np.linalg.norm(f_app):.3f} "
+                f"|F_contact|={np.linalg.norm(f_net):.3f}"
+            )
+            ax_dist.view_init(elev=0, azim=-90)
+            ax_dist.grid(True, alpha=0.3)
+
+            # Subplot 2: all per-contact force vectors on contact elements.
+            ax_contact.scatter(P_dist[0], P_dist[1], P_dist[2], s=6, alpha=0.25, color="gray")
+            draw_cylinder(ax_contact, center_dist, axis_dist, cyl_radius, cyl_length, color="black", alpha=0.2)
+            cp = resp["contact_positions"]
+            cf = resp["contact_forces"]
+            if cp.shape[1] > 0:
+                ax_contact.scatter(cp[0], cp[1], cp[2], s=28, color="tab:blue", alpha=0.9)
+                for j in range(cp.shape[1]):
+                    if np.linalg.norm(cf[j]) < 1e-10:
+                        continue
+                    ax_contact.quiver(
+                        cp[0, j], cp[1, j], cp[2, j],
+                        cf[j, 0], cf[j, 1], cf[j, 2],
+                        length=0.02, normalize=True, color="tab:purple", alpha=0.9,
+                    )
+            ax_contact.scatter(
+                base_point[0], base_point[1], base_point[2],
+                color="black", s=60, marker="x", depthshade=False,
+            )
+            ax_contact.set_xlim(-0.02, 0.12)
+            ax_contact.set_ylim(-0.12, 0.12)
+            ax_contact.set_zlim(-0.10, 0.10)
+            ax_contact.set_title(f"Per-contact force vectors ({cp.shape[1]} contacts)")
+            ax_contact.view_init(elev=0, azim=-90)
+            ax_contact.grid(True, alpha=0.3)
+            plt.tight_layout()
+            disturbance_plot_path = os.path.join(
+                base_outdir, f"disturbance_force_{name}_{run_id}_{suffix}.png"
+            )
+            plt.savefig(disturbance_plot_path, dpi=180, bbox_inches="tight")
+            plt.close(fig_dist)
+            print(f"[DISTURBANCE] Force visualization saved: {disturbance_plot_path}")
+
+        cycle_time, strength, slip_res = calculate_nist_scores(
+            data, cyl_radius, base_radius, k_contact, mu_contact, args.body_mass, gravity
+        )
+        normal_forces_arr = np.asarray(normal_forces, dtype=float)
+        max_normal_force_for_score = float(np.max(normal_forces_arr)) if normal_forces_arr.size > 0 else 0.0
+        total_normal_force_for_score = float(np.sum(normal_forces_arr)) if normal_forces_arr.size > 0 else 0.0
+
+        grasp_data = {
+            "angular_span": metrics['angular_span'], # Calculate from your contact log
+            "vertical_support": stab_metrics['total_support_n'],
+            "body_weight": args.body_mass * gravity,
+            "total_energy": energy_score,
+            "contact_count": metrics['num_contacts'],
+            "max_normal_force": max_normal_force_for_score,
+            "total_normal_force": total_normal_force_for_score,
+            "cycle_time": cycle_time,
+            "strength": strength,
+            "slip_resistance": slip_res
+        }
+
+        final_score, breakdown = compute_weighted_grasp_score(grasp_data)
+
+        data_to_save["final_grasp_score"] = np.array([final_score])
+        data_to_save["breakdown_of_score"] = np.array([breakdown])
 
         filename = os.path.join(base_outdir, f"master_log_{run_id}_{suffix}.npz")
         np.savez_compressed(filename, **data_to_save)

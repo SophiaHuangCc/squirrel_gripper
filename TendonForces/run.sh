@@ -65,7 +65,7 @@ python ./finger.py \
     --force_driven_rot_k 0.03 \
     --force_driven_rot_c 0.02 \
     --force_driven_rot_tmax 0.02 \
-    --disturbance_force_mag 1.0 \
+    --disturbance_force_mag 5.0 \
     --disturbance_base_nodes 5 \
-    --disturbance_steps 40 \
+    --disturbance_steps 100 \
     --disturbance_dt_scale 1.0
