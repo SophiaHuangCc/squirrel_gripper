@@ -75,7 +75,7 @@ class ProfileForward2DModel(nn.Module):
         task_ch=2,
         design_ch=12,
         init_ch=3,
-        output_ch=3,
+        output_ch=2,
     ):
         super().__init__()
 
@@ -154,8 +154,8 @@ class ProfileForward2DModel(nn.Module):
             timesteps    : (B,)
 
         Returns:
-            pred: (B, 3)
-                  [num_contacts, force_closure, stability_margin]
+            pred: (B, 2)
+                  [num_contacts, disturbance_resistance_score]
         """
         x_task = self.task_embed(task_params)
         x_init = self.init_embed(init_config)

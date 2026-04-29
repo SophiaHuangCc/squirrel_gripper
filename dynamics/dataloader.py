@@ -209,13 +209,14 @@ class DynamicsDataset(Dataset):
             ####################################################################
             # 4. TARGET METRICS
             ####################################################################
-            # [number of contacts, force closure, stability metric]
+            # [number of contacts, disturbance resistance score]
             num_contacts = self._get_scalar(data, "num_contacts", 0.0)
-            force_closure = self._get_scalar(data, "metric_is_force_closure", 0.0)
-            stability_margin = self._get_scalar(data, "stability_margin", 0.0)
+            disturbance_score = self._get_scalar(data, "disturbance_resistance_score", 0.0)
+
+            num_contacts_norm = np.clip(num_contacts / 20.0, 0.0, 1.0)
 
             target_metrics = torch.tensor(
-                [num_contacts, force_closure, stability_margin],
+                [num_contacts_norm, disturbance_score],
                 dtype=torch.float32
             )
 

@@ -31,7 +31,7 @@ def validate(args, val_loader, trainer):
 
             pred, loss = trainer.inference(task_params, design_params, init_config, target)
 
-            batch_mae = torch.abs(pred - target)   # shape [B, 3]
+            batch_mae = torch.abs(pred - target)   # shape [B, 2]
 
             total_val_loss += loss.item()
             total_mae += batch_mae.mean().item()
@@ -49,8 +49,7 @@ def validate(args, val_loader, trainer):
         f'Val Loss: {avg_loss:.4f} | '
         f'MAE total: {avg_mae:.4f} | '
         f'contacts: {avg_mae_per_dim[0].item():.4f}, '
-        f'force_closure: {avg_mae_per_dim[1].item():.4f}, '
-        f'stability: {avg_mae_per_dim[2].item():.4f}'
+        f'disturbance_score: {avg_mae_per_dim[1].item():.4f}'
     )
 
     return avg_loss, avg_mae, avg_mae_per_dim
@@ -65,6 +64,15 @@ def train(args):
 
     train_dataset = DynamicsDataset(dataset_dir=args.data_dir)
     val_dataset = DynamicsDataset(dataset_dir=args.test_data_dir)
+
+    sample = train_dataset[0]
+    print("\n[DATA CHECK]")
+    print("task_params:", sample["task_params"])
+    print("design_params:", sample["design_params"])
+    print("init_config:", sample["init_config"])
+    print("target_metrics:", sample["target_metrics"])
+    print("target shape:", sample["target_metrics"].shape)
+    print("=" * 50)
     
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
@@ -113,8 +121,7 @@ def train(args):
                     'val/loss': val_loss,
                     'val/avg_mae_total': avg_mae,
                     'val/mae_contacts': avg_mae_per_dim[0].item(),
-                    'val/mae_force_closure': avg_mae_per_dim[1].item(),
-                    'val/mae_stability': avg_mae_per_dim[2].item(),
+                    'val/mae_disturbance_score': avg_mae_per_dim[1].item(),
                 })
                 
                 if val_loss < best_val_loss:

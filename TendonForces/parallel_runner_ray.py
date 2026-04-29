@@ -34,7 +34,7 @@ def sample_link_lengths(rng, base_len):
     while True:
         raw = rng.dirichlet(alpha=[5.0, 5.0, 5.0, 5.0])
         lengths = raw * base_len
-        if np.min(lengths) >= 0.015:
+        if np.min(lengths) >= 0.02:
             return lengths
 
 
@@ -64,10 +64,9 @@ def build_design_only_sample(rng, split="train"):
     # Fixed parameters
     # -------------------------
     params = {
-        "sol": "approach_angle",
         "E": 2e7,
-        "damping": 0.8,
-        "n_elements": 80,
+        "damping": 0.1,
+        "n_elements": 100,
         "final_time": 2.0,
         "k_contact": 1250.0,
         "auto_contact_stiffness": True,
@@ -119,7 +118,7 @@ def build_design_only_sample(rng, split="train"):
         # Fixed task params
         # -------------------------
         "approach_deg": 45.0,
-        "cyl_rad": 0.015,
+        "cyl_rad": 0.03,
 
         # -------------------------
         # Fixed initial config
@@ -133,27 +132,29 @@ def build_design_only_sample(rng, split="train"):
     # Design-only sweep ranges
     # -------------------------
     if split == "train":
-        base_rad_choices = [0.0045, 0.0050, 0.0055, 0.0060]
-        base_len_choices = [0.09, 0.10, 0.11]
-        tension_choices = [2.5, 3.0, 4.0, 5.0, 6.0]
+        base_rad_choices = [0.01025, 0.011, 0.012, 0.013]
+        base_len_choices = [0.15, 0.20, 0.25]
+        tension_choices = [2.0, 3.0, 4.0, 5.0, 6.0]
         ankle_wrap_choices = [0.015, 0.020, 0.025]
         ankle_stiff_choices = [300.0, 500.0, 700.0]
         joint_soft_choices = [
-            [0.010, 0.009, 0.008],
-            [0.009, 0.008, 0.007],
-            [0.008, 0.007, 0.006],
-            [0.007, 0.006, 0.005],
+            [0.005, 0.004, 0.003],
+            [0.003, 0.002, 0.001],
+            [0.002, 0.001, 0.0009],
+            [0.001, 0.0009, 0.0008],
+            [0.0009, 0.0008, 0.0007],
         ]
     else:
         # Slightly shifted but still nearby
-        base_rad_choices = [0.0048, 0.0052, 0.0058]
+        base_rad_choices = [0.01025, 0.0052, 0.0058]
         base_len_choices = [0.095, 0.105]
         tension_choices = [3.5, 4.5, 5.5]
         ankle_wrap_choices = [0.0175, 0.0225]
         ankle_stiff_choices = [400.0, 600.0]
         joint_soft_choices = [
-            [0.0095, 0.0085, 0.0075],
-            [0.0085, 0.0075, 0.0065],
+            [0.0045, 0.0035, 0.0025],
+            [0.0035, 0.0025, 0.0015],
+            [0.0025, 0.0015, 0.0005],
         ]
 
     # -------------------------

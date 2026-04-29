@@ -4,31 +4,29 @@
 # Targeted at: Tension 5.0N, Manual Vertebrae (20,45,60), Approach 45 deg
 
 python ./finger.py \
-    --debug \
-    --sol "approach_angle" \
     --approach_deg 45.0 \
     --tension 3.0 \
-    --base_rad 0.005 \
+    --base_rad 0.01025 \
     --v_mode "uniform" \
-    --v_list "20,45,60" \
-    --joint_softness "0.009,0.008,0.007" \
+    --v_list "38,58,80" \
+    --joint_softness "0.003,0.002,0.001" \
     --E 2e7 \
-    --damping 0.8 \
-    --n_elements 80 \
+    --damping 0.1 \
+    --n_elements 100 \
     --final_time 2.0 \
-    --cyl_rad 0.015 \
+    --cyl_rad 0.03 \
     --k_contact 1250.0 \
     --auto_contact_stiffness \
     --max_penetration_warn 0.002 \
-    --base_len 0.10 \
-    --nu_contact 5.0 \
-    --mu_contact 0.6 \
-    --vel_damp_contact 10 \
+    --base_len 0.20 \
+    --nu_contact 2.0 \
+    --mu_contact 0.8 \
+    --vel_damp_contact 3 \
     --poisson_nu 0.4 \
     --v_mass 0.002 \
     --num_v 3 \
-    --v_start 30 \
-    --v_end 62 \
+    --v_start 38 \
+    --v_end 80 \
     --v_height 0.005 \
     --body_mass 0.5 \
     --suffix "poc_trial" \
