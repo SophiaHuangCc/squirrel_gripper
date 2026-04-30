@@ -273,7 +273,6 @@ def evaluate_disturbance_contact_response(
 
     dt = max(float(dt), 1e-8)
     n_steps = max(int(n_steps), 1)
-
     total_mass = float(np.sum(node_masses))
     body_acc = disturbance_force / max(total_mass, 1e-12)
     body_force_per_node = node_masses.reshape(1, -1) * body_acc.reshape(3, 1)
@@ -321,7 +320,7 @@ def evaluate_disturbance_contact_response(
             net_contact_force = np.sum(contact_forces, axis=0)
             net_contact_torque = np.sum(
                 np.cross(cp - base_point[None, :], contact_forces), axis=0
-            )
+            )        
         else:
             net_contact_force = np.zeros(3)
             net_contact_torque = np.zeros(3)
@@ -615,6 +614,26 @@ class BaseXYLockedBC(ConstraintBase):
         p_idx = int(self.constrained_position_idx[0])
         system.velocity_collection[0, p_idx] = 0.0
         system.velocity_collection[1, p_idx] = 0.0
+
+
+from elastica.contact_forces import RodCylinderContact
+
+class LoggingRodCylinderContact(RodCylinderContact):
+    def __init__(self, *args, log_dict=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.log_dict = log_dict if log_dict is not None else {}
+
+    def apply_contact(self, system_one, system_two, time=np.float64(0.0)):
+        before_rod = system_one.external_forces.copy()
+        before_cyl = system_two.external_forces.copy()
+
+        super().apply_contact(system_one, system_two, time)
+
+        rod_contact_force = system_one.external_forces - before_rod
+        cyl_contact_force = system_two.external_forces - before_cyl
+
+        self.log_dict["rod_contact_force"] = rod_contact_force.copy()
+        self.log_dict["cyl_contact_force"] = cyl_contact_force.copy()
 
 
 def parse_vec3_from_csv(text, arg_name):
@@ -970,6 +989,12 @@ def main():
         help="Maximum tendon tension.",
     )
 
+    parser.add_argument(
+        "--continuous_disturbance_metric",
+        action="store_true",
+        help="Use continuous disturbance score based on cosine similarity instead of binary resisted/not resisted.",
+    )
+
     args = parser.parse_args()
 
     # Parameters from args (key variables to tune)
@@ -985,7 +1010,7 @@ def main():
     landing_height = args.landing_height
     initial_x_gap = None if args.initial_x_gap is None else max(0.0, float(args.initial_x_gap))
     prescribed_stop_at_contact = bool(args.prescribed_stop_at_contact)
-    prescribed_contact_margin = max(0.0, float(args.prescribed_contact_margin))
+    prescribed_contact_margin = float(args.prescribed_contact_margin)
     force_driven_stabilize = bool(args.force_driven_stabilize)
     force_driven_lock_base_xy = bool(args.force_driven_lock_base_xy)
     force_driven_z_stabilize = bool(args.force_driven_z_stabilize)
@@ -1009,6 +1034,7 @@ def main():
     disturbance_base_nodes = max(1, int(args.disturbance_base_nodes))
     disturbance_steps = max(1, int(args.disturbance_steps))
     disturbance_dt_scale = max(0.01, float(args.disturbance_dt_scale))
+    continuous_disturbance_metric = bool(args.continuous_disturbance_metric)
     k_contact = args.k_contact
     auto_contact_stiffness = bool(args.auto_contact_stiffness)
     max_penetration_warn = max(0.0, float(args.max_penetration_warn))
@@ -1263,7 +1289,7 @@ def main():
                 if d_norm > 1e-12:
                     d_xz /= d_norm
                     # Stop when base-center distance to cylinder center reaches cylinder radius.
-                    r_guard = cyl_radius + base_radius + prescribed_contact_margin
+                    r_guard = cyl_radius + prescribed_contact_margin
                     rel = p0_xz - c_xz
                     a = np.dot(d_xz, d_xz)
                     b = 2.0 * np.dot(rel, d_xz)
@@ -1444,12 +1470,22 @@ def main():
         )
 
     # Contact between finger and cylinder
+    # sim.detect_contact_between(finger, cylinder).using(
+    #     RodCylinderContact,
+    #     k=k_contact, 
+    #     nu=nu_contact,
+    #     velocity_damping_coefficient=vel_damp_contact,
+    #     friction_coefficient=mu_contact,
+    # )
+    contact_log = {}
+
     sim.detect_contact_between(finger, cylinder).using(
-        RodCylinderContact,
-        k=k_contact, 
+        LoggingRodCylinderContact,
+        k=k_contact,
         nu=nu_contact,
         velocity_damping_coefficient=vel_damp_contact,
         friction_coefficient=mu_contact,
+        log_dict=contact_log,
     )
 
     # Callbacks for data collection
@@ -1541,6 +1577,38 @@ def main():
     data_to_save["cyl_directors"] = cylinder.director_collection.copy() # Orientation
     data_to_save["cyl_radius"] = np.array([cylinder.radius])
     data_to_save["cyl_length"] = np.array([cylinder.length])
+
+    if "rod_contact_force" in contact_log and len(contact_log["rod_contact_force"]) > 0:
+        final_contact_force = np.asarray(contact_log["rod_contact_force"][-1])
+
+        data_to_save["final_contact_force_only"] = final_contact_force
+        print("final_contact_force shape:", final_contact_force.shape)
+
+        if final_contact_force.ndim == 1:
+            # already net force, shape (3,)
+            data_to_save["final_contact_force_only_net"] = final_contact_force
+            data_to_save["final_contact_force_only_total_mag_sum"] = np.array([
+                np.linalg.norm(final_contact_force)
+            ])
+
+            print("\n[PYELASTICA FINAL CONTACT FORCE ONLY]")
+            print(f"  net contact force: {final_contact_force} N")
+            print(f"  |net contact force|: {np.linalg.norm(final_contact_force):.6f} N")
+
+        elif final_contact_force.ndim == 2:
+            # per-node force, expected shape (3, n_nodes)
+            per_node_mag = np.linalg.norm(final_contact_force, axis=0)
+
+            data_to_save["final_contact_force_only_per_node_mag"] = per_node_mag
+            data_to_save["final_contact_force_only_total_mag_sum"] = np.array([
+                np.sum(per_node_mag)
+            ])
+            data_to_save["final_contact_force_only_net"] = np.sum(final_contact_force, axis=1)
+
+            print("\n[PYELASTICA FINAL CONTACT FORCE ONLY]")
+            print(f"  contact nodes: {np.sum(per_node_mag > 1e-9)}")
+            print(f"  sum |F_contact_node|: {np.sum(per_node_mag):.6f} N")
+            print(f"  net contact force: {np.sum(final_contact_force, axis=1)} N")
 
     # --- Automated Metric Calculation at T=Final ---
     # Use geometry-based contact to keep this consistent with contact logging.
@@ -1723,6 +1791,11 @@ def main():
             # print("overlap average value:", np.mean(overlap_all))
 
             if len(idx) > 0:
+                print(f"max_overlap = {np.max(overlap_all[idx]):.8f} m")
+                print(f"mean_overlap = {np.mean(overlap_all[idx]):.8f} m")
+                print(f"total_normal_force = {np.sum(nF):.6f} N")
+                print(f"max_normal_force = {np.max(nF):.6f} N")
+                print(f"total_friction_force_limit = {np.sum(fF):.6f} N")
                 frame_max = float(np.max(nF))
                 max_normal_force_overall = max(max_normal_force_overall, frame_max)
                 frame_overlap_max = float(np.max(overlap_all[idx]))
@@ -1818,6 +1891,7 @@ def main():
         node_mass_uniform = np.full(
             final_pos.shape[1], total_rod_mass / max(1, final_pos.shape[1])
         )
+
         disturbance_dt = time_step * disturbance_dt_scale
 
         disturbance_cases = {
@@ -1827,6 +1901,7 @@ def main():
         }
 
         resistance_count = 0
+        continuous_scores = []
         total_cases = len(disturbance_cases)
 
         for name, dvec in disturbance_cases.items():
@@ -1853,6 +1928,21 @@ def main():
             if resp["force_resisted"]:
                 resistance_count += 1
 
+            fmag = np.linalg.norm(resp["applied_force"])
+            direction_score = 0.5 * (1.0 - resp["force_alignment"])  # [0,1]
+            if fmag > 1e-8:
+                magnitude_score = resp["resist_force"] / fmag
+            else:
+                magnitude_score = 0.0
+            magnitude_score = float(np.clip(magnitude_score, 0.0, 1.0))
+            continuous_score = 0.5 * direction_score + 0.5 * magnitude_score
+            continuous_score = float(np.clip(continuous_score, 0.0, 1.0))
+            continuous_scores.append(continuous_score)
+
+            data_to_save[f"disturbance_{name}_continuous_score"] = np.array([continuous_score])
+            data_to_save[f"disturbance_{name}_direction_score"] = np.array([direction_score])
+            data_to_save[f"disturbance_{name}_magnitude_score"] = np.array([magnitude_score])
+
             data_to_save[f"disturbance_{name}_applied_force"] = resp["applied_force"]
             data_to_save[f"disturbance_{name}_net_contact_force"] = resp["net_contact_force"]
             data_to_save[f"disturbance_{name}_resist_force"] = np.array([resp["resist_force"]])
@@ -1861,25 +1951,42 @@ def main():
             data_to_save[f"disturbance_{name}_contacts_history"] = resp["contacts_history"]
             data_to_save[f"disturbance_{name}_force_history"] = resp["force_history"]
 
-        disturbance_resistance_score = resistance_count / total_cases
+        binary_resistance_score = resistance_count / total_cases
+        continuous_resistance_score = float(np.mean(continuous_scores)) if continuous_scores else 0.0
+
+        if continuous_disturbance_metric:
+            disturbance_resistance_score = continuous_resistance_score
+        else:
+            disturbance_resistance_score = binary_resistance_score
 
         data_to_save["disturbance_base_point"] = base_point
         data_to_save["disturbance_force_application_point"] = base_point
+        data_to_save["disturbance_binary_resistance_score"] = np.array([binary_resistance_score])
+        data_to_save["disturbance_continuous_resistance_score"] = np.array([continuous_resistance_score])
         data_to_save["disturbance_resistance_score"] = np.array([disturbance_resistance_score])
+        data_to_save["arg_continuous_disturbance_metric"] = np.array([continuous_disturbance_metric])
 
         print("\n[DISTURBANCE STABILITY CHECK]")
-        print(f"  Resistance score: {disturbance_resistance_score:.3f}")
+        print(f"  Binary resistance score: {binary_resistance_score:.3f}")
+        print(f"  Continuous resistance score: {continuous_resistance_score:.3f}")
+        print(f"  Saved resistance score: {disturbance_resistance_score:.3f}")
 
         for name, resp in disturbance_results.items():
+            case_score = data_to_save[f"disturbance_{name}_continuous_score"][0]
             print(
                 f"  {name}: contacts={resp['num_contacts']} "
                 f"|F_app|={np.linalg.norm(resp['applied_force']):.3f} "
                 f"|F_contact|={np.linalg.norm(resp['net_contact_force']):.3f} "
                 f"align_F={resp['force_alignment']:.3f} "
+                f"continuous_score={case_score:.3f} "
                 f"resist_F={resp['resist_force']:.3f} "
                 f"force_resisted={resp['force_resisted']}"
+                f"dir_score={direction_score:.3f} "
+                f"mag_score={magnitude_score:.3f} "
+                f"combined={continuous_score:.3f} "
             )
-            print(
+
+        print(
                 f"    |tau_app|={np.linalg.norm(resp['applied_torque']):.3f} "
                 f"|tau_contact|={np.linalg.norm(resp['net_contact_torque']):.3f} "
                 f"align_tau={resp['torque_alignment']:.3f} "
@@ -1962,31 +2069,6 @@ def main():
             plt.savefig(disturbance_plot_path, dpi=180, bbox_inches="tight")
             plt.close(fig_dist)
             print(f"[DISTURBANCE] Force visualization saved: {disturbance_plot_path}")
-
-        cycle_time, strength, slip_res = calculate_nist_scores(
-            data, cyl_radius, base_radius, k_contact, mu_contact, args.body_mass, gravity
-        )
-        normal_forces_arr = np.asarray(normal_forces, dtype=float)
-        max_normal_force_for_score = float(np.max(normal_forces_arr)) if normal_forces_arr.size > 0 else 0.0
-        total_normal_force_for_score = float(np.sum(normal_forces_arr)) if normal_forces_arr.size > 0 else 0.0
-
-        grasp_data = {
-            "angular_span": metrics['angular_span'], # Calculate from your contact log
-            "vertical_support": stab_metrics['total_support_n'],
-            "body_weight": args.body_mass * gravity,
-            "total_energy": energy_score,
-            "contact_count": metrics['num_contacts'],
-            "max_normal_force": max_normal_force_for_score,
-            "total_normal_force": total_normal_force_for_score,
-            "cycle_time": cycle_time,
-            "strength": strength,
-            "slip_resistance": slip_res
-        }
-
-        final_score, breakdown = compute_weighted_grasp_score(grasp_data)
-
-        data_to_save["final_grasp_score"] = np.array([final_score])
-        data_to_save["breakdown_of_score"] = np.array([breakdown])
 
         filename = os.path.join(base_outdir, f"master_log_{run_id}_{suffix}.npz")
         np.savez_compressed(filename, **data_to_save)

@@ -16,12 +16,11 @@ python ./finger.py \
     --final_time 2.0 \
     --cyl_rad 0.03 \
     --k_contact 1250.0 \
-    --auto_contact_stiffness \
     --max_penetration_warn 0.002 \
     --base_len 0.20 \
-    --nu_contact 2.0 \
+    --nu_contact 20.0 \
     --mu_contact 0.8 \
-    --vel_damp_contact 3 \
+    --vel_damp_contact 30 \
     --poisson_nu 0.4 \
     --v_mass 0.002 \
     --num_v 3 \
@@ -42,7 +41,7 @@ python ./finger.py \
     --landing_height 0.04 \
     --landing_approach_deg 30.0 \
     --prescribed_stop_at_contact \
-    --prescribed_contact_margin 0.0 \
+    --prescribed_contact_margin -0.005 \
     --base_force_mag 0.0 \
     --base_force_dir "0,0,-1" \
     --base_force_nodes 1 \
@@ -68,4 +67,5 @@ python ./finger.py \
     --disturbance_force_mag 5.0 \
     --disturbance_base_nodes 5 \
     --disturbance_steps 100 \
-    --disturbance_dt_scale 1.0
+    --disturbance_dt_scale 1.0 \
+    --continuous_disturbance_metric

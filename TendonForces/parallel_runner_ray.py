@@ -26,16 +26,30 @@ def sample_from_list(rng, values):
     return values[rng.integers(0, len(values))]
 
 
-def sample_link_lengths(rng, base_len):
+def sample_joint_positions(rng, n_elements, min_first=40, max_last=90, min_gap=10):
     """
-    Sample 4 link lengths that sum to base_len.
-    Keep them in a reasonable range to avoid degenerate designs.
+    Sample 3 vertebra/joint positions:
+      min_first <= j1 < j2 < j3 <= max_last
+      adjacent spacing >= min_gap
     """
-    while True:
-        raw = rng.dirichlet(alpha=[5.0, 5.0, 5.0, 5.0])
-        lengths = raw * base_len
-        if np.min(lengths) >= 0.02:
-            return lengths
+    max_last = min(max_last, n_elements - 1)
+
+    # Need room for j1, j2, j3 with two gaps
+    max_j1 = max_last - 2 * min_gap
+    if max_j1 < min_first:
+        raise ValueError(
+            f"No valid joint positions: min_first={min_first}, "
+            f"max_last={max_last}, min_gap={min_gap}"
+        )
+
+    j1 = int(rng.integers(min_first, max_j1 + 1))
+
+    max_j2 = max_last - min_gap
+    j2 = int(rng.integers(j1 + min_gap, max_j2 + 1))
+
+    j3 = int(rng.integers(j2 + min_gap, max_last + 1))
+
+    return [j1, j2, j3]
 
 
 def generate_joint_positions_from_links(base_len, link_lengths, n_elements):
@@ -147,8 +161,8 @@ def build_design_only_sample(rng, split="train"):
     else:
         # Slightly shifted but still nearby
         base_rad_choices = [0.01025, 0.0052, 0.0058]
-        base_len_choices = [0.095, 0.105]
-        tension_choices = [3.5, 4.5, 5.5]
+        base_len_choices = [0.2, 0.3]
+        tension_choices = [1.0, 2.5, 4.5]
         ankle_wrap_choices = [0.0175, 0.0225]
         ankle_stiff_choices = [400.0, 600.0]
         joint_soft_choices = [
@@ -169,12 +183,14 @@ def build_design_only_sample(rng, split="train"):
     js = sample_from_list(rng, joint_soft_choices)
     params["joint_softness"] = ",".join([f"{x:.6f}" for x in js])
 
-    link_lengths = sample_link_lengths(rng, params["base_len"])
-    joint_positions = generate_joint_positions_from_links(
-        base_len=params["base_len"],
-        link_lengths=link_lengths,
+    joint_positions = sample_joint_positions(
+        rng,
         n_elements=params["n_elements"],
+        min_first=40,
+        max_last=90,
+        min_gap=10,
     )
+
     params["v_list"] = ",".join([str(x) for x in joint_positions])
 
     return params

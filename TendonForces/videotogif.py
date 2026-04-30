@@ -33,8 +33,8 @@ def center_crop_clip(clip, crop_w, crop_h):
 
 
 def main():
-    input_dir = "TendonForces/runs/exp15"
-    output_path = os.path.join(input_dir, "combined_8.gif")
+    input_dir = "TendonForces/runs/exp21"
+    output_path = os.path.join(input_dir, "combined_21.gif")
 
     videos = find_videos(input_dir)
 
