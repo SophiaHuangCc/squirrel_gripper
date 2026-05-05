@@ -4,7 +4,7 @@
 # Targeted at: Tension 5.0N, Manual Vertebrae (20,45,60), Approach 45 deg
 
 python ./finger.py \
-    --approach_deg 45.0 \
+    --approach_deg 70.0 \
     --tension 3.0 \
     --base_rad 0.01025 \
     --v_mode "uniform" \

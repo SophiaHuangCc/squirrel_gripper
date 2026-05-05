@@ -92,6 +92,48 @@ def print_dataset_summary(dataset_dir):
     # -------------------------
     print(f"\nTotal samples: {len(files)}")
 
+    return contact_arr, score_arr
+
+
+import matplotlib.pyplot as plt
+
+# -------------------------
+# Plot distributions
+# -------------------------
+def plot_distributions(contact_arr, score_arr, dataset_dir):
+    os.makedirs(os.path.join(dataset_dir, "plots"), exist_ok=True)
+
+    # ---- Contact histogram ----
+    plt.figure()
+    plt.hist(contact_arr, bins=20)
+    plt.xlabel("Number of Contacts")
+    plt.ylabel("Frequency")
+    plt.title("Contact Count Distribution")
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(dataset_dir, "plots/contact_distribution.png"))
+    plt.close()
+
+    # ---- Score histogram ----
+    plt.figure()
+    plt.hist(score_arr, bins=[0, 1/3, 2/3, 1.0, 1.01])  # discrete bins
+    plt.xlabel("Disturbance Resistance Score")
+    plt.ylabel("Frequency")
+    plt.title("Disturbance Score Distribution")
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(dataset_dir, "plots/score_distribution.png"))
+    plt.close()
+
+    # ---- Scatter (important insight) ----
+    plt.figure()
+    plt.scatter(contact_arr, score_arr, alpha=0.6)
+    plt.xlabel("Number of Contacts")
+    plt.ylabel("Disturbance Score")
+    plt.title("Contacts vs Stability")
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(dataset_dir, "plots/contact_vs_score.png"))
+    plt.close()
+
 
 if __name__ == "__main__":
-    print_dataset_summary(dataset_dir)
+    contact_arr, score_arr = print_dataset_summary(dataset_dir)    
+    plot_distributions(contact_arr, score_arr, dataset_dir)

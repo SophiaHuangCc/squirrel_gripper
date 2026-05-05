@@ -1104,12 +1104,12 @@ def main():
     # area_per_element = np.pi * base_radius**2   # cross-sectional area
     # k_contact_physical = E * area_per_element / dx
     k_contact_physical = np.clip(k_contact_physical, 1.25e3, 2e5)  # clamp to reasonable range
-    if auto_contact_stiffness and k_contact < k_contact_physical:
-        print(
-            f"[CONTACT] Auto-raising and clipping k_contact from {k_contact:.2e} to physical estimate "
-            f"{k_contact_physical:.2e} N/m"
-        )
-        k_contact = float(k_contact_physical)
+    # if auto_contact_stiffness and k_contact < k_contact_physical:
+    #     print(
+    #         f"[CONTACT] Auto-raising and clipping k_contact from {k_contact:.2e} to physical estimate "
+    #         f"{k_contact_physical:.2e} N/m"
+    #     )
+    #     k_contact = float(k_contact_physical)
 
     dt_critical = dx / wave_speed
     final_time = float(args.final_time)
@@ -1591,9 +1591,9 @@ def main():
                 np.linalg.norm(final_contact_force)
             ])
 
-            print("\n[PYELASTICA FINAL CONTACT FORCE ONLY]")
-            print(f"  net contact force: {final_contact_force} N")
-            print(f"  |net contact force|: {np.linalg.norm(final_contact_force):.6f} N")
+            # print("\n[PYELASTICA FINAL CONTACT FORCE ONLY]")
+            # print(f"  net contact force: {final_contact_force} N")
+            # print(f"  |net contact force|: {np.linalg.norm(final_contact_force):.6f} N")
 
         elif final_contact_force.ndim == 2:
             # per-node force, expected shape (3, n_nodes)
@@ -1791,11 +1791,11 @@ def main():
             # print("overlap average value:", np.mean(overlap_all))
 
             if len(idx) > 0:
-                print(f"max_overlap = {np.max(overlap_all[idx]):.8f} m")
-                print(f"mean_overlap = {np.mean(overlap_all[idx]):.8f} m")
-                print(f"total_normal_force = {np.sum(nF):.6f} N")
-                print(f"max_normal_force = {np.max(nF):.6f} N")
-                print(f"total_friction_force_limit = {np.sum(fF):.6f} N")
+                # print(f"max_overlap = {np.max(overlap_all[idx]):.8f} m")
+                # print(f"mean_overlap = {np.mean(overlap_all[idx]):.8f} m")
+                # print(f"total_normal_force = {np.sum(nF):.6f} N")
+                # print(f"max_normal_force = {np.max(nF):.6f} N")
+                # print(f"total_friction_force_limit = {np.sum(fF):.6f} N")
                 frame_max = float(np.max(nF))
                 max_normal_force_overall = max(max_normal_force_overall, frame_max)
                 frame_overlap_max = float(np.max(overlap_all[idx]))
@@ -1903,6 +1903,7 @@ def main():
         resistance_count = 0
         continuous_scores = []
         total_cases = len(disturbance_cases)
+        direction_scores = []
 
         for name, dvec in disturbance_cases.items():
             applied_force = disturbance_force_mag * dvec
@@ -1928,71 +1929,76 @@ def main():
             if resp["force_resisted"]:
                 resistance_count += 1
 
-            fmag = np.linalg.norm(resp["applied_force"])
+            # fmag = np.linalg.norm(resp["applied_force"])
+            
             direction_score = 0.5 * (1.0 - resp["force_alignment"])  # [0,1]
-            if fmag > 1e-8:
-                magnitude_score = resp["resist_force"] / fmag
-            else:
-                magnitude_score = 0.0
-            magnitude_score = float(np.clip(magnitude_score, 0.0, 1.0))
-            continuous_score = 0.5 * direction_score + 0.5 * magnitude_score
-            continuous_score = float(np.clip(continuous_score, 0.0, 1.0))
-            continuous_scores.append(continuous_score)
+            direction_score = float(np.clip(direction_score, 0.0, 1.0))
+            direction_scores.append(direction_score)
+            # if fmag > 1e-8:
+            #     magnitude_score = resp["resist_force"] / fmag
+            # else:
+            #     magnitude_score = 0.0
+            # magnitude_score = float(np.clip(magnitude_score, 0.0, 1.0))
+            # continuous_score = 0.5 * direction_score + 0.5 * magnitude_score
+            # continuous_score = float(np.clip(continuous_score, 0.0, 1.0))
+            # continuous_scores.append(continuous_score)
 
-            data_to_save[f"disturbance_{name}_continuous_score"] = np.array([continuous_score])
+            # data_to_save[f"disturbance_{name}_continuous_score"] = np.array([continuous_score])
             data_to_save[f"disturbance_{name}_direction_score"] = np.array([direction_score])
-            data_to_save[f"disturbance_{name}_magnitude_score"] = np.array([magnitude_score])
+            # data_to_save[f"disturbance_{name}_magnitude_score"] = np.array([magnitude_score])
 
-            data_to_save[f"disturbance_{name}_applied_force"] = resp["applied_force"]
-            data_to_save[f"disturbance_{name}_net_contact_force"] = resp["net_contact_force"]
-            data_to_save[f"disturbance_{name}_resist_force"] = np.array([resp["resist_force"]])
-            data_to_save[f"disturbance_{name}_force_alignment"] = np.array([resp["force_alignment"]])
-            data_to_save[f"disturbance_{name}_force_resisted"] = np.array([resp["force_resisted"]])
+            # data_to_save[f"disturbance_{name}_applied_force"] = resp["applied_force"]
+            # data_to_save[f"disturbance_{name}_net_contact_force"] = resp["net_contact_force"]
+            # data_to_save[f"disturbance_{name}_resist_force"] = np.array([resp["resist_force"]])
+            # data_to_save[f"disturbance_{name}_force_alignment"] = np.array([resp["force_alignment"]])
+            # data_to_save[f"disturbance_{name}_force_resisted"] = np.array([resp["force_resisted"]])
             data_to_save[f"disturbance_{name}_contacts_history"] = resp["contacts_history"]
             data_to_save[f"disturbance_{name}_force_history"] = resp["force_history"]
 
-        binary_resistance_score = resistance_count / total_cases
-        continuous_resistance_score = float(np.mean(continuous_scores)) if continuous_scores else 0.0
+        # binary_resistance_score = resistance_count / total_cases
+        # continuous_resistance_score = float(np.mean(continuous_scores)) if continuous_scores else 0.0
 
-        if continuous_disturbance_metric:
-            disturbance_resistance_score = continuous_resistance_score
-        else:
-            disturbance_resistance_score = binary_resistance_score
+        # if continuous_disturbance_metric:
+        #     disturbance_resistance_score = continuous_resistance_score
+        # else:
+        #     disturbance_resistance_score = binary_resistance_score
+
+        direction_resistance_score = float(np.mean(direction_scores)) if direction_scores else 0.0
+        disturbance_resistance_score = direction_resistance_score
 
         data_to_save["disturbance_base_point"] = base_point
         data_to_save["disturbance_force_application_point"] = base_point
-        data_to_save["disturbance_binary_resistance_score"] = np.array([binary_resistance_score])
-        data_to_save["disturbance_continuous_resistance_score"] = np.array([continuous_resistance_score])
+        # data_to_save["disturbance_binary_resistance_score"] = np.array([binary_resistance_score])
+        # data_to_save["disturbance_continuous_resistance_score"] = np.array([continuous_resistance_score])
         data_to_save["disturbance_resistance_score"] = np.array([disturbance_resistance_score])
-        data_to_save["arg_continuous_disturbance_metric"] = np.array([continuous_disturbance_metric])
+        # data_to_save["arg_continuous_disturbance_metric"] = np.array([continuous_disturbance_metric])
 
         print("\n[DISTURBANCE STABILITY CHECK]")
-        print(f"  Binary resistance score: {binary_resistance_score:.3f}")
-        print(f"  Continuous resistance score: {continuous_resistance_score:.3f}")
-        print(f"  Saved resistance score: {disturbance_resistance_score:.3f}")
+        # print(f"  Binary resistance score: {binary_resistance_score:.3f}")
+        print(f"  Disturbance resistance score (directional): {disturbance_resistance_score:.3f}")
 
-        for name, resp in disturbance_results.items():
-            case_score = data_to_save[f"disturbance_{name}_continuous_score"][0]
-            print(
-                f"  {name}: contacts={resp['num_contacts']} "
-                f"|F_app|={np.linalg.norm(resp['applied_force']):.3f} "
-                f"|F_contact|={np.linalg.norm(resp['net_contact_force']):.3f} "
-                f"align_F={resp['force_alignment']:.3f} "
-                f"continuous_score={case_score:.3f} "
-                f"resist_F={resp['resist_force']:.3f} "
-                f"force_resisted={resp['force_resisted']}"
-                f"dir_score={direction_score:.3f} "
-                f"mag_score={magnitude_score:.3f} "
-                f"combined={continuous_score:.3f} "
-            )
+        # for name, resp in disturbance_results.items():
+        #     case_score = data_to_save[f"disturbance_{name}_continuous_score"][0]
+        #     print(
+        #         f"  {name}: contacts={resp['num_contacts']} "
+        #         f"|F_app|={np.linalg.norm(resp['applied_force']):.3f} "
+        #         f"|F_contact|={np.linalg.norm(resp['net_contact_force']):.3f} "
+        #         f"align_F={resp['force_alignment']:.3f} "
+        #         f"continuous_score={case_score:.3f} "
+        #         f"resist_F={resp['resist_force']:.3f} "
+        #         f"force_resisted={resp['force_resisted']} "
+        #         f"dir_score={direction_score:.3f} "
+        #         f"mag_score={magnitude_score:.3f} "
+        #         f"combined={continuous_score:.3f} "
+        #     )
 
-        print(
-                f"    |tau_app|={np.linalg.norm(resp['applied_torque']):.3f} "
-                f"|tau_contact|={np.linalg.norm(resp['net_contact_torque']):.3f} "
-                f"align_tau={resp['torque_alignment']:.3f} "
-                f"resist_tau={resp['resist_torque']:.3f} "
-                f"torque_resisted={resp['torque_resisted']}"
-            )
+        # print(
+        #         f"    |tau_app|={np.linalg.norm(resp['applied_torque']):.3f} "
+        #         f"|tau_contact|={np.linalg.norm(resp['net_contact_torque']):.3f} "
+        #         f"align_tau={resp['torque_alignment']:.3f} "
+        #         f"resist_tau={resp['resist_torque']:.3f} "
+        #         f"torque_resisted={resp['torque_resisted']}"
+        #     )
 
         # Save one force-visualization image per disturbance case.
         for name, resp in disturbance_results.items():

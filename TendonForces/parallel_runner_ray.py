@@ -83,7 +83,7 @@ def build_design_only_sample(rng, split="train"):
         "n_elements": 100,
         "final_time": 2.0,
         "k_contact": 1250.0,
-        "auto_contact_stiffness": True,
+        # "auto_contact_stiffness": True,
         "max_penetration_warn": 0.002,
         "nu_contact": 5.0,
         "mu_contact": 0.6,
@@ -131,7 +131,7 @@ def build_design_only_sample(rng, split="train"):
         # -------------------------
         # Fixed task params
         # -------------------------
-        "approach_deg": 45.0,
+        # "approach_deg": 45.0,
         "cyl_rad": 0.03,
 
         # -------------------------
@@ -158,9 +158,11 @@ def build_design_only_sample(rng, split="train"):
             [0.001, 0.0009, 0.0008],
             [0.0009, 0.0008, 0.0007],
         ]
+        # Added new choice of approach angle
+        approach_angle_choices = [45.0, 60.0, 75.0]
     else:
         # Slightly shifted but still nearby
-        base_rad_choices = [0.01025, 0.0052, 0.0058]
+        base_rad_choices = [0.01025, 0.0115, 0.0125]
         base_len_choices = [0.2, 0.3]
         tension_choices = [1.0, 2.5, 4.5]
         ankle_wrap_choices = [0.0175, 0.0225]
@@ -170,6 +172,8 @@ def build_design_only_sample(rng, split="train"):
             [0.0035, 0.0025, 0.0015],
             [0.0025, 0.0015, 0.0005],
         ]
+        # Added new choice of approach angle
+        approach_angle_choices = [50.0, 65.0, 70.0]
 
     # -------------------------
     # Sample design params
@@ -179,6 +183,7 @@ def build_design_only_sample(rng, split="train"):
     params["tension"] = maybe_round(sample_from_list(rng, tension_choices), 4)
     params["ankle_wrap_radius"] = maybe_round(sample_from_list(rng, ankle_wrap_choices), 4)
     params["ankle_stiffness"] = maybe_round(sample_from_list(rng, ankle_stiff_choices), 4)
+    params["approach_deg"] = maybe_round(sample_from_list(rng, approach_angle_choices), 4)
 
     js = sample_from_list(rng, joint_soft_choices)
     params["joint_softness"] = ",".join([f"{x:.6f}" for x in js])
@@ -186,9 +191,9 @@ def build_design_only_sample(rng, split="train"):
     joint_positions = sample_joint_positions(
         rng,
         n_elements=params["n_elements"],
-        min_first=40,
-        max_last=90,
-        min_gap=10,
+        min_first=30,
+        max_last=95,
+        min_gap=20,
     )
 
     params["v_list"] = ",".join([str(x) for x in joint_positions])
