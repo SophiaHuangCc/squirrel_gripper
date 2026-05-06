@@ -11,11 +11,22 @@ from datetime import datetime
 
 def get_next_exp_folder(base_dir="runs"):
     os.makedirs(base_dir, exist_ok=True)
-    existing = [d for d in os.listdir(base_dir) if d.startswith("exp") and d[3:].isdigit()]
+
+    existing = [
+        d for d in os.listdir(base_dir)
+        if d.startswith("exp") and d[3:].isdigit()
+    ]
+
     next_num = max([int(d[3:]) for d in existing]) + 1 if existing else 1
-    new_folder = os.path.join(base_dir, f"exp{next_num}")
-    os.makedirs(new_folder, exist_ok=True)
-    return new_folder
+    exp_dir = os.path.join(base_dir, f"exp{next_num}")
+
+    train_dir = os.path.join(exp_dir, "train")
+    test_dir = os.path.join(exp_dir, "test")
+
+    os.makedirs(train_dir, exist_ok=True)
+    os.makedirs(test_dir, exist_ok=True)
+
+    return exp_dir, train_dir, test_dir
 
 
 def maybe_round(x, ndigits=4):
@@ -344,8 +355,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_cpus", type=int, default=None, help="Override Ray CPU count")
     args = parser.parse_args()
 
-    train_dir = get_next_exp_folder("runs")
-    test_dir = get_next_exp_folder("runs")
+    exp_dir, train_dir, test_dir = get_next_exp_folder("runs")
 
     train_tasks = generate_dataset_tasks(
         n_samples=args.num_train,
@@ -363,6 +373,19 @@ if __name__ == "__main__":
     num_workers = max(1, os.cpu_count() - 2)
     if args.num_cpus is not None:
         num_workers = max(1, args.num_cpus)
+
+    metadata = {
+        "exp_dir": exp_dir,
+        "num_train": args.num_train,
+        "num_test": args.num_test,
+        "train_seed": args.train_seed,
+        "test_seed": args.test_seed,
+        "num_workers": num_workers,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    with open(os.path.join(exp_dir, "metadata.json"), "w") as f:
+        json.dump(metadata, f, indent=2)
 
     with open(os.path.join(train_dir, "split_info.json"), "w") as f:
         json.dump({"split": "train", "n_samples": len(train_tasks), "seed": args.train_seed}, f, indent=2)
