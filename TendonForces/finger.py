@@ -1867,6 +1867,12 @@ def main():
 
         contact_match = int(metrics["num_contacts"] == len(contact_idx))
         data_to_save["contact_count_match"] = np.array([contact_match])
+        if metrics["angular_span"] > 180.0:
+            data_to_save["form_closure_achieved"] = True
+            print("[CONTACT METRIC] Form closure condition met (angular span > 180°)")
+        else:
+            data_to_save["form_closure_achieved"] = False
+            print("[CONTACT METRIC] Form closure condition NOT met (angular span <= 180°)")
 
         print("\n[CONTACT METRICS]")
         print(f"  Contacts: {metrics['num_contacts']}")
