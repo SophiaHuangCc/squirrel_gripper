@@ -28,13 +28,13 @@ class Trainer:
           - init_config   : [drop_height, landing_speed, initial_x_gap]
 
         Output:
-          - [num_contacts, force_closure, stability_margin]
+          - [num_contacts, disturbance_resistance_score, angular_span]
         """
 
         self.task_dim = getattr(self.args, "task_dim", 2)
         self.design_dim = getattr(self.args, "design_dim", 12)
         self.init_dim = getattr(self.args, "init_dim", 3)
-        self.output_dim = getattr(self.args, "output_dim", 2)
+        self.output_dim = getattr(self.args, "output_dim", 3)
         self.hidden_dim = getattr(self.args, "hidden_dim", 256)
 
         # diffusion-style settings

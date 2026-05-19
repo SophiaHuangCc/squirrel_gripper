@@ -212,11 +212,12 @@ class DynamicsDataset(Dataset):
             # [number of contacts, disturbance resistance score]
             num_contacts = self._get_scalar(data, "num_contacts", 0.0)
             disturbance_score = self._get_scalar(data, "disturbance_resistance_score", 0.0)
+            angular_span = self._get_scalar(data, "angular_span", 0.0)
 
             num_contacts_norm = np.clip(num_contacts / 20.0, 0.0, 1.0)
 
             target_metrics = torch.tensor(
-                [num_contacts_norm, disturbance_score],
+                [num_contacts_norm, disturbance_score, angular_span],
                 dtype=torch.float32
             )
 
