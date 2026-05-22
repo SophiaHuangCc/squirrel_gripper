@@ -7,11 +7,10 @@ import subprocess
 import numpy as np
 import ray
 
-from optimization.profile_optimizer import design_to_dict
-
+from dynamics.utils import design_to_dict
 
 def read_latest_npz(run_dir):
-    files = glob.glob(os.path.join(run_dir, "**", "*.npz"), recursive=True)
+    files = glob.glob(os.path.join(run_dir, "**", "master_log_*.npz"), recursive=True)
     if len(files) == 0:
         raise FileNotFoundError(f"No npz files found in {run_dir}")
     return max(files, key=os.path.getmtime)
@@ -20,16 +19,23 @@ def read_latest_npz(run_dir):
 def read_metric_from_npz(npz_path):
     with np.load(npz_path, allow_pickle=True) as data:
         metric = {
-            "num_contacts": float(np.asarray(data.get("num_contacts", [0.0])).reshape(-1)[0]),
+            "num_contacts": float(
+                np.asarray(data.get("num_contacts", [0.0])).reshape(-1)[0]
+            ),
             "disturbance_resistance_score": float(
                 np.asarray(data.get("disturbance_resistance_score", [0.0])).reshape(-1)[0]
+            ),
+            "angular_span": float(
+                np.asarray(data.get("angular_span", [0.0])).reshape(-1)[0]
             ),
         }
 
     metric["combined_score"] = (
         metric["disturbance_resistance_score"]
         + 0.1 * metric["num_contacts"]
+        + 0.5 * metric["angular_span"]
     )
+
     return metric
 
 
@@ -41,7 +47,9 @@ def sim_test(
     save_dir="sim",
     render=False,
 ):
-    run_dir = os.path.join(save_dir, f"finger_{finger_idx}")
+    run_dir = os.path.abspath(
+        os.path.join(save_dir, f"finger_{finger_idx}")
+    )
     os.makedirs(run_dir, exist_ok=True)
 
     design = design_to_dict(design_params, n_elements=100)
@@ -80,10 +88,11 @@ def sim_test(
         "--suffix", f"opt_{finger_idx}",
         "--landing_motion",
         "--landing_mode", "prescribed",
+        # "--disable_video_plots",
     ]
 
-    if not render:
-        cmd.append("--no_render_video")  # only if you added this flag in finger.py
+    # if not render:
+    #     cmd.append("--no_render_video")  # only if you added this flag in finger.py
 
     result = subprocess.run(
         cmd,
@@ -97,6 +106,17 @@ def sim_test(
 
     npz_path = read_latest_npz(run_dir)
     metric = read_metric_from_npz(npz_path)
+    summary_npz_path = os.path.join(run_dir, f"finger_{finger_idx}.npz")
+
+    np.savez_compressed(
+        summary_npz_path,
+        design_params=np.asarray(design_params),
+        task_params=np.asarray([]) if task_params is None else np.asarray(task_params),
+        metric=metric,
+        master_log_path=np.asarray([npz_path]),
+    )
+
+    print(f"[sim_test] saved summary npz: {summary_npz_path}")
 
     return metric, run_dir
 
@@ -108,6 +128,7 @@ def sim_test_batch(
     render=False,
     task_params=None,
 ):
+    save_dir = os.path.abspath(save_dir)
     os.makedirs(save_dir, exist_ok=True)
 
     design_params = np.asarray(design_params)

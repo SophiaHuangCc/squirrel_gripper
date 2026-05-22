@@ -11,7 +11,6 @@ class DynamicsDataset(Dataset):
         self.dataset_dir = os.path.abspath(dataset_dir)
         # self.files = glob.glob(os.path.join(self.dataset_dir, "*.npz"), recursive=True)
         self.files = sorted(
-            glob.glob(os.path.join(self.dataset_dir, "*.npz")) +
             glob.glob(os.path.join(self.dataset_dir, "**", "*.npz"), recursive=True)
         )
 
@@ -142,7 +141,7 @@ class DynamicsDataset(Dataset):
             cylinder_radius = self._get_scalar(data, "cyl_radius", 0.015)
 
             task_params = torch.tensor(
-                [approach_angle, cylinder_radius],
+                [approach_angle / 90.0, cylinder_radius / 0.05],
                 dtype=torch.float32
             )
 
@@ -171,7 +170,7 @@ class DynamicsDataset(Dataset):
             )
 
             # need n_elements to convert index spacing -> physical spacing
-            n_elements = int(round(self._get_scalar(data, "n_elements", 80.0)))
+            n_elements = int(round(self._get_scalar(data, "n_elements", 100.0)))
 
             link_lengths = self._compute_link_lengths_from_joint_positions(
                 joint_positions=joint_positions,
@@ -180,14 +179,14 @@ class DynamicsDataset(Dataset):
             )
 
             design_params_np = np.concatenate([
-                joint_softness.astype(np.float32),      # e.g. 3 values
-                link_lengths.astype(np.float32),         # e.g. 4 values
+                joint_softness.astype(np.float32) / 0.001,      # e.g. 3 values
+                link_lengths.astype(np.float32) / 0.3,         # e.g. 4 values
                 np.asarray([
-                    base_radius,
-                    base_length,
-                    tension,
-                    ankle_wrap_radius,
-                    ankle_stiffness,
+                    base_radius / 0.02,
+                    base_length / 0.2,
+                    tension / 10.0,
+                    ankle_wrap_radius / 0.025,
+                    ankle_stiffness / 1000.0,
                 ], dtype=np.float32)
             ])
 
@@ -202,7 +201,7 @@ class DynamicsDataset(Dataset):
             initial_x_gap = self._get_scalar(data, "arg_initial_x_gap", 0.0)
 
             init_config = torch.tensor(
-                [drop_height, landing_speed, initial_x_gap],
+                [drop_height / 0.10, landing_speed / 1.0, initial_x_gap / 0.1],
                 dtype=torch.float32
             )
 
@@ -214,10 +213,16 @@ class DynamicsDataset(Dataset):
             disturbance_score = self._get_scalar(data, "disturbance_resistance_score", 0.0)
             angular_span = self._get_scalar(data, "angular_span", 0.0)
 
-            num_contacts_norm = np.clip(num_contacts / 20.0, 0.0, 1.0)
+            num_contacts_norm = np.log1p(num_contacts) / np.log1p(n_elements)
+            angular_span_norm = np.clip(angular_span / 180.0, 0.0, 1.0)
+            # angular_span_norm = np.where(
+            #     angular_span <= 180.0,
+            #     0.8 * angular_span / 180.0,
+            #     0.8 + 0.2 * np.clip((angular_span - 180.0) / 180.0, 0.0, 1.0)
+            # )
 
             target_metrics = torch.tensor(
-                [num_contacts_norm, disturbance_score, angular_span],
+                [num_contacts_norm, disturbance_score, angular_span_norm],
                 dtype=torch.float32
             )
 

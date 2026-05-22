@@ -701,7 +701,7 @@ def main():
     parser.add_argument("--tension", type=float, default=0.4, help="Tendon tension (N)")
     parser.add_argument("--damping", type=float, default=0.8, help="Internal damping constant")
     parser.add_argument("--n_elements", type=int, default=100, help="Number of rod elements")
-    parser.add_argument("--final_time", type=float, default=2.0, help="Total simulation time in seconds")
+    parser.add_argument("--final_time", type=float, default=4.0, help="Total simulation time in seconds")
     # cylinder and contact params
     parser.add_argument("--cyl_rad", type=float, default=0.015, help="Cylinder radius (m)")
     parser.add_argument("--k_contact", type=float, default=1.25e3, help="Contact stiffness")
@@ -993,6 +993,12 @@ def main():
         "--continuous_disturbance_metric",
         action="store_true",
         help="Use continuous disturbance score based on cosine similarity instead of binary resisted/not resisted.",
+    )
+
+    parser.add_argument(
+        "--disable_video_plots",
+        action="store_true",
+        help="Disable generation of videos and plots.",
     )
 
     args = parser.parse_args()
@@ -1882,9 +1888,10 @@ def main():
         print(f"  Total friction force: {metrics['total_friction_force']:.6f} N")
         print(f"  Contact count match with geometry-based metric: {'Yes' if contact_match else 'No'}")
 
-        plot_path = os.path.join(base_outdir, f"contact_plot_{run_id}_{suffix}.png")
-        plot_contacts_2d_from_log(csv_path, output_path=plot_path, show_plot=False)
-        print(f"[CONTACT] 2D contact plot saved to: {plot_path}")
+        if not args.disable_video_plots:
+            plot_path = os.path.join(base_outdir, f"contact_plot_{run_id}_{suffix}.png")
+            plot_contacts_2d_from_log(csv_path, output_path=plot_path, show_plot=False)
+            print(f"[CONTACT] 2D contact plot saved to: {plot_path}")
 
         # --------------------------------------------------
         # 2. Disturbance stability check
@@ -2007,80 +2014,81 @@ def main():
         #     )
 
         # Save one force-visualization image per disturbance case.
-        for name, resp in disturbance_results.items():
-            fig_dist = plt.figure(figsize=(13, 6))
-            ax_dist = fig_dist.add_subplot(121, projection="3d")
-            ax_contact = fig_dist.add_subplot(122, projection="3d")
-            P_dist = resp["position_final"]
-            ax_dist.scatter(P_dist[0], P_dist[1], P_dist[2], s=8, alpha=0.8)
-            center_dist = cylinder.position_collection[:, 0]
-            axis_dist = cylinder.director_collection[2, :, 0]
-            draw_cylinder(ax_dist, center_dist, axis_dist, cyl_radius, cyl_length, color="black", alpha=0.25)
+        if not args.disable_video_plots:
+            for name, resp in disturbance_results.items():
+                fig_dist = plt.figure(figsize=(13, 6))
+                ax_dist = fig_dist.add_subplot(121, projection="3d")
+                ax_contact = fig_dist.add_subplot(122, projection="3d")
+                P_dist = resp["position_final"]
+                ax_dist.scatter(P_dist[0], P_dist[1], P_dist[2], s=8, alpha=0.8)
+                center_dist = cylinder.position_collection[:, 0]
+                axis_dist = cylinder.director_collection[2, :, 0]
+                draw_cylinder(ax_dist, center_dist, axis_dist, cyl_radius, cyl_length, color="black", alpha=0.25)
 
-            # Mark base point used for wrench reference.
-            ax_dist.scatter(
-                base_point[0], base_point[1], base_point[2],
-                color="black", s=60, marker="x", depthshade=False,
-            )
-
-            f_app = resp["applied_force"]
-            f_net = resp["net_contact_force"]
-            # Disturbance acts as a body force on the rod, drawn from base reference point.
-            if np.linalg.norm(f_app) > 1e-12:
-                ax_dist.quiver(
+                # Mark base point used for wrench reference.
+                ax_dist.scatter(
                     base_point[0], base_point[1], base_point[2],
-                    f_app[0], f_app[1], f_app[2],
-                    length=0.03, normalize=True, color="tab:red",
-                )
-            if np.linalg.norm(f_net) > 1e-12:
-                ax_dist.quiver(
-                    base_point[0], base_point[1], base_point[2],
-                    f_net[0], f_net[1], f_net[2],
-                    length=0.03, normalize=True, color="tab:green",
+                    color="black", s=60, marker="x", depthshade=False,
                 )
 
-            ax_dist.set_xlim(-0.02, 0.12)
-            ax_dist.set_ylim(-0.12, 0.12)
-            ax_dist.set_zlim(-0.10, 0.10)
-            ax_dist.set_title(
-                f"Disturbance: {name} |F_app|={np.linalg.norm(f_app):.3f} "
-                f"|F_contact|={np.linalg.norm(f_net):.3f}"
-            )
-            ax_dist.view_init(elev=0, azim=-90)
-            ax_dist.grid(True, alpha=0.3)
-
-            # Subplot 2: all per-contact force vectors on contact elements.
-            ax_contact.scatter(P_dist[0], P_dist[1], P_dist[2], s=6, alpha=0.25, color="gray")
-            draw_cylinder(ax_contact, center_dist, axis_dist, cyl_radius, cyl_length, color="black", alpha=0.2)
-            cp = resp["contact_positions"]
-            cf = resp["contact_forces"]
-            if cp.shape[1] > 0:
-                ax_contact.scatter(cp[0], cp[1], cp[2], s=28, color="tab:blue", alpha=0.9)
-                for j in range(cp.shape[1]):
-                    if np.linalg.norm(cf[j]) < 1e-10:
-                        continue
-                    ax_contact.quiver(
-                        cp[0, j], cp[1, j], cp[2, j],
-                        cf[j, 0], cf[j, 1], cf[j, 2],
-                        length=0.02, normalize=True, color="tab:purple", alpha=0.9,
+                f_app = resp["applied_force"]
+                f_net = resp["net_contact_force"]
+                # Disturbance acts as a body force on the rod, drawn from base reference point.
+                if np.linalg.norm(f_app) > 1e-12:
+                    ax_dist.quiver(
+                        base_point[0], base_point[1], base_point[2],
+                        f_app[0], f_app[1], f_app[2],
+                        length=0.03, normalize=True, color="tab:red",
                     )
-            ax_contact.scatter(
-                base_point[0], base_point[1], base_point[2],
-                color="black", s=60, marker="x", depthshade=False,
-            )
-            ax_contact.set_xlim(-0.02, 0.12)
-            ax_contact.set_ylim(-0.12, 0.12)
-            ax_contact.set_zlim(-0.10, 0.10)
-            ax_contact.set_title(f"Per-contact force vectors ({cp.shape[1]} contacts)")
-            ax_contact.view_init(elev=0, azim=-90)
-            ax_contact.grid(True, alpha=0.3)
-            plt.tight_layout()
-            disturbance_plot_path = os.path.join(
-                base_outdir, f"disturbance_force_{name}_{run_id}_{suffix}.png"
-            )
-            plt.savefig(disturbance_plot_path, dpi=180, bbox_inches="tight")
-            plt.close(fig_dist)
-            print(f"[DISTURBANCE] Force visualization saved: {disturbance_plot_path}")
+                if np.linalg.norm(f_net) > 1e-12:
+                    ax_dist.quiver(
+                        base_point[0], base_point[1], base_point[2],
+                        f_net[0], f_net[1], f_net[2],
+                        length=0.03, normalize=True, color="tab:green",
+                    )
+
+                ax_dist.set_xlim(-0.02, 0.12)
+                ax_dist.set_ylim(-0.12, 0.12)
+                ax_dist.set_zlim(-0.10, 0.10)
+                ax_dist.set_title(
+                    f"Disturbance: {name} |F_app|={np.linalg.norm(f_app):.3f} "
+                    f"|F_contact|={np.linalg.norm(f_net):.3f}"
+                )
+                ax_dist.view_init(elev=0, azim=-90)
+                ax_dist.grid(True, alpha=0.3)
+
+                # Subplot 2: all per-contact force vectors on contact elements.
+                ax_contact.scatter(P_dist[0], P_dist[1], P_dist[2], s=6, alpha=0.25, color="gray")
+                draw_cylinder(ax_contact, center_dist, axis_dist, cyl_radius, cyl_length, color="black", alpha=0.2)
+                cp = resp["contact_positions"]
+                cf = resp["contact_forces"]
+                if cp.shape[1] > 0:
+                    ax_contact.scatter(cp[0], cp[1], cp[2], s=28, color="tab:blue", alpha=0.9)
+                    for j in range(cp.shape[1]):
+                        if np.linalg.norm(cf[j]) < 1e-10:
+                            continue
+                        ax_contact.quiver(
+                            cp[0, j], cp[1, j], cp[2, j],
+                            cf[j, 0], cf[j, 1], cf[j, 2],
+                            length=0.02, normalize=True, color="tab:purple", alpha=0.9,
+                        )
+                ax_contact.scatter(
+                    base_point[0], base_point[1], base_point[2],
+                    color="black", s=60, marker="x", depthshade=False,
+                )
+                ax_contact.set_xlim(-0.02, 0.12)
+                ax_contact.set_ylim(-0.12, 0.12)
+                ax_contact.set_zlim(-0.10, 0.10)
+                ax_contact.set_title(f"Per-contact force vectors ({cp.shape[1]} contacts)")
+                ax_contact.view_init(elev=0, azim=-90)
+                ax_contact.grid(True, alpha=0.3)
+                plt.tight_layout()
+                disturbance_plot_path = os.path.join(
+                    base_outdir, f"disturbance_force_{name}_{run_id}_{suffix}.png"
+                )
+                plt.savefig(disturbance_plot_path, dpi=180, bbox_inches="tight")
+                plt.close(fig_dist)
+                print(f"[DISTURBANCE] Force visualization saved: {disturbance_plot_path}")
 
         filename = os.path.join(base_outdir, f"master_log_{run_id}_{suffix}.npz")
         np.savez_compressed(filename, **data_to_save)
@@ -2331,14 +2339,16 @@ def main():
 
         return mplfig_to_npimage(fig)
 
-    clip = VideoClip(make_frame, duration=final_time)
-    clip.write_videofile(video_path, codec="libx264", fps=rendering_fps, logger=None)
-    plt.close(fig)
+    if not args.disable_video_plots:
+        clip = VideoClip(make_frame, duration=final_time)
+        clip.write_videofile(video_path, codec="libx264", fps=rendering_fps, logger=None)
+        plt.close(fig)
+        print(f"[OK] saved {video_path}")
 
     ###################################################
     # Pulling force / tendon tension plot
     ###################################################
-    if args.confirm_tendon and "time" in data and "current_tension" in data and len(data["current_tension"]) > 0:
+    if (not args.disable_video_plots) and args.confirm_tendon and "time" in data and "current_tension" in data and len(data["current_tension"]) > 0:
         tension_plot_path = os.path.join(base_outdir, f"tendon_tension_plot_{run_id}_{suffix}.png")
 
         time_arr = np.array(data["time"], dtype=float)
@@ -2419,8 +2429,6 @@ def main():
         plt.show()
     else:
         plt.close(fig)
-
-    print(f"[OK] saved {video_path}")
 
 
 if __name__ == "__main__":

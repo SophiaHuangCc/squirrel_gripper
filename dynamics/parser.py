@@ -27,5 +27,6 @@ def parse():
     parser.add_argument("--val_step", type=int, default=5, help="Validate every N epochs")
     parser.add_argument("--save_ckpt_step", type=int, default=500, help="Save every N batches")
     parser.add_argument("--wandb_id", type=str, default="squirrel_dynamics_01")
+    parser.add_argument("--use_design_noise", action="store_true")
 
     return parser.parse_args()

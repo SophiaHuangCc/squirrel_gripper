@@ -1,139 +1,179 @@
 import os
 import numpy as np
 from glob import glob
-from collections import Counter
+import matplotlib.pyplot as plt
 
-dataset_dir = "runs/exp21"
+dataset_dir = "runs/exp3/train"
 
 
-def print_dataset_summary(dataset_dir):
+def normalize_contacts(num_contacts, n_elements=100):
+    return np.clip(np.log1p(num_contacts) / np.log1p(n_elements), 0.0, 1.0)
+
+
+def normalize_angular_span(angular_span):
+    return np.where(
+        angular_span <= 180.0,
+        0.8 * angular_span / 180.0,
+        0.8 + 0.2 * np.clip((angular_span - 180.0) / 180.0, 0.0, 1.0),
+    )
+
+
+def load_dataset_metrics(dataset_dir):
     files = glob(os.path.join(dataset_dir, "**/*.npz"), recursive=True)
 
     print(f"Looking in: {os.path.abspath(dataset_dir)}")
     print(f"Found {len(files)} npz files")
 
     if len(files) == 0:
-        print("No .npz files found. Check dataset_dir path.")
-        return
-
-    # -------------------------
-    # Storage
-    # -------------------------
-    score_counts = {0.0: 0, 1/3: 0, 2/3: 0, 1.0: 0}
-    success_all_3 = 0
-    success_at_least_1 = 0
+        raise FileNotFoundError(f"No .npz files found in {dataset_dir}")
 
     contact_list = []
     score_list = []
+    angular_span_list = []
 
-    # -------------------------
-    # Loop over dataset
-    # -------------------------
     for f in files:
         with np.load(f, allow_pickle=True) as data:
-            # ---- disturbance score ----
-            score = float(np.asarray(data.get("disturbance_resistance_score", [0.0])).reshape(-1)[0])
-            score_list.append(score)
-
-            score_rounded = round(score * 3) / 3
-            score_counts[score_rounded] = score_counts.get(score_rounded, 0) + 1
-
-            if score_rounded >= 1.0:
-                success_all_3 += 1
-            if score_rounded > 0.0:
-                success_at_least_1 += 1
-
-            # ---- contacts ----
             num_contacts = float(np.asarray(data.get("num_contacts", [0.0])).reshape(-1)[0])
+            disturbance_score = float(np.asarray(data.get("disturbance_resistance_score", [0.0])).reshape(-1)[0])
+            angular_span = float(np.asarray(data.get("angular_span", [0.0])).reshape(-1)[0])
+
             contact_list.append(num_contacts)
-            if num_contacts > 20:
-                print(f"High contact count ({num_contacts}) in file: {f}")
+            score_list.append(disturbance_score)
+            angular_span_list.append(angular_span)
 
     contact_arr = np.array(contact_list)
     score_arr = np.array(score_list)
+    angular_span_arr = np.array(angular_span_list)
 
-    # -------------------------
-    # Print disturbance summary
-    # -------------------------
-    print("\n=== DISTURBANCE RESISTANCE SUMMARY ===")
-    print(f"0 / 3 resisted: {score_counts.get(0.0, 0)}")
-    print(f"1 / 3 resisted: {score_counts.get(1/3, 0)}")
-    print(f"2 / 3 resisted: {score_counts.get(2/3, 0)}")
-    print(f"3 / 3 resisted: {score_counts.get(1.0, 0)}")
+    contact_norm_arr = normalize_contacts(contact_arr, n_elements=100)
+    score_norm_arr = np.clip(score_arr, 0.0, 1.0)
+    angular_span_norm_arr = normalize_angular_span(angular_span_arr)
 
-    print(f"\nAt least 1 direction resisted: {success_at_least_1}")
-    print(f"All 3 directions resisted: {success_all_3}")
-
-    # -------------------------
-    # Print contact stats
-    # -------------------------
-    print("\n=== CONTACT COUNT SUMMARY ===")
-    print(f"min: {contact_arr.min():.2f}")
-    print(f"max: {contact_arr.max():.2f}")
-    print(f"mean: {contact_arr.mean():.2f}")
-    print(f"std: {contact_arr.std():.2f}")
-
-    contact_counter = Counter(contact_arr.astype(int))
-    print("\nContact distribution:")
-    for k in sorted(contact_counter.keys()):
-        print(f"{k}: {contact_counter[k]}")
-
-    # -------------------------
-    # Score stats
-    # -------------------------
-    print("\n=== DISTURBANCE SCORE STATS ===")
-    print(f"min: {score_arr.min():.3f}")
-    print(f"max: {score_arr.max():.3f}")
-    print(f"mean: {score_arr.mean():.3f}")
-    print(f"std: {score_arr.std():.3f}")
-
-    # -------------------------
-    # Dataset size
-    # -------------------------
-    print(f"\nTotal samples: {len(files)}")
-
-    return contact_arr, score_arr
+    return (
+        contact_arr,
+        score_arr,
+        angular_span_arr,
+        contact_norm_arr,
+        score_norm_arr,
+        angular_span_norm_arr,
+    )
 
 
-import matplotlib.pyplot as plt
+def print_one_summary(name, arr):
+    print(f"\n=== {name} SUMMARY ===")
+    print(f"min:  {arr.min():.3f}")
+    print(f"max:  {arr.max():.3f}")
+    print(f"mean: {arr.mean():.3f}")
+    print(f"std:  {arr.std():.3f}")
 
-# -------------------------
-# Plot distributions
-# -------------------------
-def plot_distributions(contact_arr, score_arr, dataset_dir):
-    os.makedirs(os.path.join(dataset_dir, "plots"), exist_ok=True)
 
-    # ---- Contact histogram ----
+def print_summary(contact_arr, score_arr, angular_span_arr,
+                  contact_norm_arr, score_norm_arr, angular_span_norm_arr):
+    print_one_summary("RAW CONTACT COUNT", contact_arr)
+    print_one_summary("RAW DISTURBANCE SCORE", score_arr)
+    print_one_summary("RAW ANGULAR SPAN", angular_span_arr)
+
+    print_one_summary("NORMALIZED CONTACT COUNT", contact_norm_arr)
+    print_one_summary("NORMALIZED DISTURBANCE SCORE", score_norm_arr)
+    print_one_summary("NORMALIZED ANGULAR SPAN", angular_span_norm_arr)
+
+    print(f"\nTotal samples: {len(score_arr)}")
+
+
+def save_hist(arr, xlabel, title, save_path, bins=20):
     plt.figure()
-    plt.hist(contact_arr, bins=20)
-    plt.xlabel("Number of Contacts")
+    plt.hist(arr, bins=bins)
+    plt.xlabel(xlabel)
     plt.ylabel("Frequency")
-    plt.title("Contact Count Distribution")
+    plt.title(title)
     plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(dataset_dir, "plots/contact_distribution.png"))
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=180)
     plt.close()
 
-    # ---- Score histogram ----
-    plt.figure()
-    plt.hist(score_arr, bins=[0, 1/3, 2/3, 1.0, 1.01])  # discrete bins
-    plt.xlabel("Disturbance Resistance Score")
-    plt.ylabel("Frequency")
-    plt.title("Disturbance Score Distribution")
-    plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(dataset_dir, "plots/score_distribution.png"))
-    plt.close()
 
-    # ---- Scatter (important insight) ----
-    plt.figure()
-    plt.scatter(contact_arr, score_arr, alpha=0.6)
-    plt.xlabel("Number of Contacts")
-    plt.ylabel("Disturbance Score")
-    plt.title("Contacts vs Stability")
-    plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(dataset_dir, "plots/contact_vs_score.png"))
-    plt.close()
+def plot_distributions(contact_arr, score_arr, angular_span_arr,
+                       contact_norm_arr, score_norm_arr, angular_span_norm_arr,
+                       dataset_dir):
+    plot_dir = os.path.join(dataset_dir, "plots")
+    os.makedirs(plot_dir, exist_ok=True)
+
+    # -------------------------
+    # Raw values
+    # -------------------------
+    save_hist(
+        contact_arr,
+        "Number of Contacts",
+        "Raw Contact Count Distribution",
+        os.path.join(plot_dir, "raw_contact_distribution.png"),
+    )
+
+    save_hist(
+        score_arr,
+        "Disturbance Resistance Score",
+        "Raw Disturbance Score Distribution",
+        os.path.join(plot_dir, "raw_disturbance_score_distribution.png"),
+    )
+
+    save_hist(
+        angular_span_arr,
+        "Angular Span (deg)",
+        "Raw Angular Span Distribution",
+        os.path.join(plot_dir, "raw_angular_span_distribution.png"),
+    )
+
+    # -------------------------
+    # Normalized values
+    # -------------------------
+    save_hist(
+        contact_norm_arr,
+        "Normalized Contact Count",
+        "Normalized Contact Count Distribution",
+        os.path.join(plot_dir, "norm_contact_distribution.png"),
+    )
+
+    save_hist(
+        score_norm_arr,
+        "Normalized Disturbance Score",
+        "Normalized Disturbance Score Distribution",
+        os.path.join(plot_dir, "norm_disturbance_score_distribution.png"),
+    )
+
+    save_hist(
+        angular_span_norm_arr,
+        "Normalized Angular Span",
+        "Normalized Angular Span Distribution",
+        os.path.join(plot_dir, "norm_angular_span_distribution.png"),
+    )
+
+    print(f"\nSaved plots to: {plot_dir}")
 
 
 if __name__ == "__main__":
-    contact_arr, score_arr = print_dataset_summary(dataset_dir)    
-    plot_distributions(contact_arr, score_arr, dataset_dir)
+    (
+        contact_arr,
+        score_arr,
+        angular_span_arr,
+        contact_norm_arr,
+        score_norm_arr,
+        angular_span_norm_arr,
+    ) = load_dataset_metrics(dataset_dir)
+
+    print_summary(
+        contact_arr,
+        score_arr,
+        angular_span_arr,
+        contact_norm_arr,
+        score_norm_arr,
+        angular_span_norm_arr,
+    )
+
+    plot_distributions(
+        contact_arr,
+        score_arr,
+        angular_span_arr,
+        contact_norm_arr,
+        score_norm_arr,
+        angular_span_norm_arr,
+        dataset_dir,
+    )

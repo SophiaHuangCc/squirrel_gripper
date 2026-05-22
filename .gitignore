@@ -34,3 +34,11 @@ TendonForces/outdated_files/
 TendonForces/outdated_files/**
 
 **/wandb/**
+
+optmizer_test_run/
+optmizer_test_run/**
+
+optimization/__pycache__/
+optimization/__pycache__/**
+optimization/runs/
+optimization/runs/**

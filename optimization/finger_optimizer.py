@@ -103,13 +103,33 @@ def optimize_fingers(args, model, random_idx=80000):
 
         pred_contacts = pred[0, 0]
         pred_disturbance = pred[0, 1]
+        pred_angular_span = pred[0, 2]
 
         if args.optimization_loss == 'disturbance':
             loss = -pred_disturbance
+
         elif args.optimization_loss == 'disturbance_contact':
             loss = -(pred_disturbance + args.contact_weight * pred_contacts)
+
         elif args.optimization_loss == 'contact':
             loss = -pred_contacts
+
+        elif args.optimization_loss == 'angular_span':
+            loss = -args.angular_span_weight * pred_angular_span
+
+        elif args.optimization_loss == 'disturbance_span':
+            loss = -(
+                args.disturbance_weight * pred_disturbance
+                + args.angular_span_weight * pred_angular_span
+            )
+
+        elif args.optimization_loss == 'disturbance_contact_span':
+            loss = -(
+                args.disturbance_weight * pred_disturbance
+                + args.contact_weight * pred_contacts
+                + args.angular_span_weight * pred_angular_span
+            )
+
         else:
             raise ValueError('optimization loss not supported')
 
@@ -120,7 +140,8 @@ def optimize_fingers(args, model, random_idx=80000):
             'optimization loss': loss.item(),
             'pred_contacts': pred_contacts.detach().cpu().item(),
             'pred_disturbance': pred_disturbance.detach().cpu().item(),
-            'pred_approach_deg': task_params[0, 0].detach().cpu().item(),
+            'pred_angular_span': pred_angular_span.detach().cpu().item(),
+            'opt_approach_deg': task_params[0, 0].detach().cpu().item(),
         })
 
         optimizer.zero_grad()
@@ -148,7 +169,8 @@ def optimize_fingers(args, model, random_idx=80000):
             'Loss:', loss.item(),
             'Pred contacts:', pred_contacts.detach().cpu().item(),
             'Pred disturbance:', pred_disturbance.detach().cpu().item(),
-            'Pred approach_deg:', task_params[0, 0].detach().cpu().item(),
+            'Pred angular span:', pred_angular_span.detach().cpu().item(),
+            'Optimized approach_deg:', task_params[0, 0].detach().cpu().item(),
         )
 
     print('Optimized raw params:', params)
@@ -197,8 +219,14 @@ def optimize_fingers(args, model, random_idx=80000):
     if args.render_video and video_path_init is not None:
         wandb.log({'initial_video': wandb.Video(video_path_init)})
 
-    init_score = metric_init.get('disturbance_resistance_score', 0.0)
-    sim_score = metric.get('disturbance_resistance_score', 0.0)
+    # init_score = metric_init.get('disturbance_resistance_score', 0.0)
+    # sim_score = metric.get('disturbance_resistance_score', 0.0)
+
+    init_obj = metric2objective(metric_init, args.optimization_loss)
+    sim_obj = metric2objective(metric, args.optimization_loss)
+
+    init_score = init_obj.get("combined_score", list(init_obj.values())[0])
+    sim_score = sim_obj.get("combined_score", list(sim_obj.values())[0])
 
     results = {
         'initial_metric': metric_init,
@@ -248,7 +276,7 @@ if __name__ == '__main__':
     if not hasattr(args, 'init_dim'):
         args.init_dim = 3
     if not hasattr(args, 'output_dim'):
-        args.output_dim = 2
+        args.output_dim = 3
     if not hasattr(args, 'hidden_dim'):
         args.hidden_dim = 256
     if not hasattr(args, 'design_dim'):
@@ -274,8 +302,12 @@ if __name__ == '__main__':
         args.optimization_loss = 'disturbance_contact'
     if not hasattr(args, 'contact_weight'):
         args.contact_weight = 0.1
+    if not hasattr(args, 'disturbance_weight'):
+        args.disturbance_weight = 1.0
     if not hasattr(args, 'reg_weight'):
         args.reg_weight = 0.0
+    if not hasattr(args, 'angular_span_weight'):
+        args.angular_span_weight = 0.5
 
     if not hasattr(args, 'approach_deg'):
         args.approach_deg = 45.0

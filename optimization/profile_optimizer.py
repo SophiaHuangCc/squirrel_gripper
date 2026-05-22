@@ -79,7 +79,7 @@ def make_initial_state(
     raw = np.asarray(raw, dtype=np.float32)
 
     rs = np.random.RandomState(seed)
-    noise = 0.01 * rs.randn(batch_size, raw.shape[0]).astype(np.float32)
+    noise = 1.0 * rs.randn(batch_size, raw.shape[0]).astype(np.float32)
     init_state = raw.reshape(1, -1).repeat(batch_size, axis=0) + noise
 
     return torch.from_numpy(init_state).float().to(device)
@@ -149,6 +149,7 @@ class ProfileOptimizerModel(nn.Module):
         contact_weight: float = 0.1,
         disturbance_weight: float = 1.0,
         reg_weight: float = 0.0,
+        angular_span_weight: float = 0.0,
         # physical bounds
         joint_soft_min: float = 0.0005,
         joint_soft_max: float = 0.005,
@@ -172,6 +173,7 @@ class ProfileOptimizerModel(nn.Module):
         init_tension: float = 3.0,
         init_ankle_wrap_radius: float = 0.02,
         init_ankle_stiffness: float = 500.0,
+        init_approach_deg: float = 45.0,
         approach_deg_min: float = 0.0,
         approach_deg_max: float = 90.0,
     ):
@@ -191,6 +193,7 @@ class ProfileOptimizerModel(nn.Module):
         self.contact_weight = contact_weight
         self.disturbance_weight = disturbance_weight
         self.reg_weight = reg_weight
+        self.angular_span_weight = angular_span_weight
 
         self.joint_soft_min = joint_soft_min
         self.joint_soft_max = joint_soft_max
@@ -206,6 +209,7 @@ class ProfileOptimizerModel(nn.Module):
         self.ankle_wrap_max = ankle_wrap_max
         self.ankle_stiff_min = ankle_stiff_min
         self.ankle_stiff_max = ankle_stiff_max
+        self.init_approach_deg = init_approach_deg
         self.approach_deg_min = approach_deg_min
         self.approach_deg_max = approach_deg_max
 
@@ -247,6 +251,7 @@ class ProfileOptimizerModel(nn.Module):
             ankle_wrap_max=ankle_wrap_max,
             ankle_stiff_min=ankle_stiff_min,
             ankle_stiff_max=ankle_stiff_max,
+            init_approach_deg=init_approach_deg,
             approach_deg_min=approach_deg_min,
             approach_deg_max=approach_deg_max
         )
@@ -289,15 +294,62 @@ class ProfileOptimizerModel(nn.Module):
 
         return design_params, task_params
 
+    def normalize_for_model(self, design_params, task_params, init_config):
+        task_norm = torch.cat([
+            task_params[:, 0:1] / 90.0,      # approach_deg
+            task_params[:, 1:2] / 0.05,      # cyl_radius
+        ], dim=-1)
+
+        design_norm = torch.cat([
+            design_params[:, 0:3] / 0.001,   # joint_softness
+            design_params[:, 3:7] / 0.3,    # link_lengths
+            design_params[:, 7:8] / 0.02,   # base_radius
+            design_params[:, 8:9] / 0.2,    # base_length
+            design_params[:, 9:10] / 10.0,    # tension
+            design_params[:, 10:11] / 0.025, # ankle_wrap_radius
+            design_params[:, 11:12] / 1000.0, # ankle_stiffness
+        ], dim=-1)
+
+        init_norm = torch.cat([
+            init_config[:, 0:1] / 0.10,
+            init_config[:, 1:2] / 1.0,
+            init_config[:, 2:3] / 0.10,
+        ], dim=-1)
+
+        return design_norm, task_norm, init_norm
+
+    def predict_current(self):
+        self.eval()
+        with torch.no_grad():
+            design_params, task_params = self.state_to_design()
+            batch_size = design_params.shape[0]
+            init_config = self.init_config.repeat(batch_size, 1)
+            timesteps = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+
+            design_norm, task_norm, init_norm = self.normalize_for_model(
+                design_params, task_params, init_config
+            )
+
+            pred = self.profile_model(
+                task_params=task_norm,
+                design_params=design_norm,
+                init_config=init_norm,
+                timesteps=timesteps,
+            )
+
+        return pred.detach().cpu().numpy()
+
     def logits2loss(self, logits):
         """
         Same method name as reference, but logits are model predictions here.
 
         logits[:, 0] = normalized contacts
         logits[:, 1] = disturbance resistance score
+        logits[:, 2] = normalized angular span
         """
         pred_contacts = logits[:, 0]
         pred_disturbance = logits[:, 1]
+        pred_angular_span = logits[:, 2]
 
         if self.opt_obj == "disturbance":
             objective = self.disturbance_weight * pred_disturbance
@@ -308,6 +360,21 @@ class ProfileOptimizerModel(nn.Module):
             )
         elif self.opt_obj == "contact":
             objective = pred_contacts
+        elif self.opt_obj == "angular_span":
+            objective = self.angular_span_weight * pred_angular_span
+
+        elif self.opt_obj == "disturbance_span":
+            objective = (
+                self.disturbance_weight * pred_disturbance
+                + self.angular_span_weight * pred_angular_span
+            )
+
+        elif self.opt_obj == "disturbance_contact_span":
+            objective = (
+                self.disturbance_weight * pred_disturbance
+                + self.contact_weight * pred_contacts
+                + self.angular_span_weight * pred_angular_span
+            )
         else:
             raise ValueError("opt obj not supported")
 
@@ -329,10 +396,14 @@ class ProfileOptimizerModel(nn.Module):
         init_config = self.init_config.repeat(batch_size, 1)
         timesteps = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
 
+        design_norm, task_norm, init_norm = self.normalize_for_model(
+            design_params, task_params, init_config
+        )
+
         logits = self.profile_model(
-            task_params=task_params,
-            design_params=design_params,
-            init_config=init_config,
+            task_params=task_norm,
+            design_params=design_norm,
+            init_config=init_norm,
             timesteps=timesteps,
         )
 
@@ -378,14 +449,67 @@ class ProfileOptimizer():
         self.object_vertices = object_vertices
         self.opt_obj = opt_obj
 
+
+    # def solve(self):
+    #     for _ in tqdm(range(self.model.num_epochs)):
+    #         self.optimizer.zero_grad()
+    #         loss = self.model(object_vertices=self.object_vertices)
+    #         loss.backward()
+    #         self.optimizer.step()
+
+    #     design_params, task_params = self.model.state_to_design()
+    #     pred_metrics = self.model.predict_current()
+
+    #     return (
+    #         design_params.detach().cpu().numpy(),
+    #         task_params.detach().cpu().numpy(),
+    #         pred_metrics,
+    #     )
     def solve(self):
-        for _ in tqdm(range(self.model.num_epochs)):
+        state0 = self.model.state.detach().clone()
+
+        design0, task0 = self.model.state_to_design()
+        design0 = design0.detach().cpu().numpy()
+        task0 = task0.detach().cpu().numpy()
+
+        pred0 = self.model.predict_current()
+
+        for i in tqdm(range(self.model.num_epochs)):
             self.optimizer.zero_grad()
             loss = self.model(object_vertices=self.object_vertices)
             loss.backward()
+
+            if i % 10 == 0:
+                grad_norm = self.model.state.grad.norm().item()
+                raw_delta = (self.model.state.detach() - state0).abs().max().item()
+                print(
+                    f"[OPT DEBUG] iter={i} "
+                    f"loss={loss.item():.6f} "
+                    f"grad_norm={grad_norm:.6e} "
+                    f"raw_delta={raw_delta:.6e}"
+                )
+
             self.optimizer.step()
-        design_params, task_params = self.model.state_to_design()
-        return design_params.detach().cpu().numpy(), task_params.detach().cpu().numpy()
+
+        design1, task1 = self.model.state_to_design()
+        design1 = design1.detach().cpu().numpy()
+        task1 = task1.detach().cpu().numpy()
+        pred1 = self.model.predict_current()
+
+        print("[OPT DEBUG] max raw state change:", (self.model.state.detach() - state0).abs().max().item())
+        print("[OPT DEBUG] max design change:", np.max(np.abs(design1 - design0)))
+        print("[OPT DEBUG] max task change:", np.max(np.abs(task1 - task0)))
+
+        print("[OPT DEBUG] init pred[0]:", pred0[0])
+        print("[OPT DEBUG] final pred[0]:", pred1[0])
+
+        print("[OPT DEBUG] init design[0]:", design0[0])
+        print("[OPT DEBUG] final design[0]:", design1[0])
+
+        print("[OPT DEBUG] init task[0]:", task0[0])
+        print("[OPT DEBUG] final task[0]:", task1[0])
+
+        return design1, task1, pred1
 
 
 # -----------------------------------------------------------------------------

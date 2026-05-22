@@ -41,6 +41,7 @@ class Trainer:
         self.num_timesteps_per_batch = getattr(self.args, "num_timesteps_per_batch", 4)
         self.num_train_timesteps = getattr(self.args, "num_train_timesteps", 100)
         self.num_inference_steps = getattr(self.args, "num_inference_steps", 20)
+        self.use_design_noise = getattr(self.args, "use_design_noise", False)
 
         self.model = ProfileForward2DModel(
             W=self.hidden_dim,
@@ -73,7 +74,15 @@ class Trainer:
         """
         Repeat the batch several times, sample timestep/noise, and add noise ONLY to design params.
         """
+        # B = design_tensor.shape[0]
+        # timesteps = torch.zeros(B, dtype=torch.float32, device=self.device)
+        # return task_tensor, design_tensor, init_tensor, timesteps, target
         B = design_tensor.shape[0]
+
+        if not self.use_design_noise:
+            timesteps = torch.zeros(B, dtype=torch.long, device=self.device)
+            return task_tensor, design_tensor, init_tensor, timesteps.float(), target
+
         K = self.num_timesteps_per_batch
 
         task_all = task_tensor.repeat(K, 1)
@@ -127,49 +136,87 @@ class Trainer:
 
         loss = self.criterion(pred, target_all)
         loss.backward()
+
+        # total_grad = 0.0
+        # for p in self.model.parameters():
+        #     if p.grad is not None:
+        #         total_grad += p.grad.abs().sum().item()
+
+        # print("loss:", loss.item(), "total_grad:", total_grad)
+        # print("pred[0]:", pred[0].detach().cpu().numpy())
+        # print("target[0]:", target_all[0].detach().cpu().numpy())
+
         self.optimizer.step()
 
         return loss.item(), pred
 
+    # def inference(self, task_params, design_params, init_config, target=None):
+    #     self.model.eval()
+    #     with torch.no_grad():
+    #         prepared_inputs = self._prepare_tensors(task_params, design_params, init_config)
+    #         task_tensor, design_tensor, init_tensor = prepared_inputs
+
+    #         if getattr(self, "num_timesteps_per_batch", 1) > 1:
+    #             B = task_tensor.shape[0]
+    #             K = self.num_timesteps_per_batch
+
+    #             task_all = task_tensor.repeat(K, 1)
+    #             design_all = design_tensor.repeat(K, 1)
+    #             init_all = init_tensor.repeat(K, 1)
+
+    #             # however you currently add noise / timesteps:
+    #             noise = torch.randn_like(design_all)
+    #             timesteps = torch.randint(
+    #                 0,
+    #                 self.noise_scheduler.config.num_train_timesteps,
+    #                 (design_all.shape[0],),
+    #                 device=self.device,
+    #             ).long()
+
+    #             noisy_design_all = self.noise_scheduler.add_noise(
+    #                 original_samples=design_all,
+    #                 noise=noise,
+    #                 timesteps=timesteps,
+    #             )
+    #             timesteps = timesteps.float() / self.noise_scheduler.config.num_train_timesteps
+
+    #             pred_all = self.model(task_all, noisy_design_all, init_all, timesteps)
+
+    #             # reshape back to [K, B, output_dim], then average over K
+    #             pred = pred_all.view(K, B, -1).mean(dim=0)
+
+    #         else:
+    #             pred = self.model(*prepared_inputs)
+
+    #         if target is None:
+    #             loss = torch.tensor(0.0, device=self.device)
+    #         else:
+    #             loss = self.criterion(pred, target)
+
+    #         return pred, loss
     def inference(self, task_params, design_params, init_config, target=None):
         self.model.eval()
         with torch.no_grad():
-            prepared_inputs = self._prepare_tensors(task_params, design_params, init_config)
+            task_tensor, design_tensor, init_tensor = self._prepare_tensors(
+                task_params, design_params, init_config
+            )
 
-            # If you are repeating samples internally for diffusion/noise:
-            task_tensor, design_tensor, init_tensor = prepared_inputs
+            task_tensor = task_tensor.to(self.device).float()
+            design_tensor = design_tensor.to(self.device).float()
+            init_tensor = init_tensor.to(self.device).float()
 
-            if getattr(self, "num_timesteps_per_batch", 1) > 1:
-                B = task_tensor.shape[0]
-                K = self.num_timesteps_per_batch
+            if target is not None:
+                target = target.to(self.device).float()
 
-                task_all = task_tensor.repeat(K, 1)
-                design_all = design_tensor.repeat(K, 1)
-                init_all = init_tensor.repeat(K, 1)
+            B = design_tensor.shape[0]
+            timesteps = torch.zeros(B, dtype=torch.float32, device=self.device)
 
-                # however you currently add noise / timesteps:
-                noise = torch.randn_like(design_all)
-                timesteps = torch.randint(
-                    0,
-                    self.noise_scheduler.config.num_train_timesteps,
-                    (design_all.shape[0],),
-                    device=self.device,
-                ).long()
-
-                noisy_design_all = self.noise_scheduler.add_noise(
-                    original_samples=design_all,
-                    noise=noise,
-                    timesteps=timesteps,
-                )
-                timesteps = timesteps.float() / self.noise_scheduler.config.num_train_timesteps
-
-                pred_all = self.model(task_all, noisy_design_all, init_all, timesteps)
-
-                # reshape back to [K, B, output_dim], then average over K
-                pred = pred_all.view(K, B, -1).mean(dim=0)
-
-            else:
-                pred = self.model(*prepared_inputs)
+            pred = self.model(
+                task_params=task_tensor,
+                design_params=design_tensor,
+                init_config=init_tensor,
+                timesteps=timesteps,
+            )
 
             if target is None:
                 loss = torch.tensor(0.0, device=self.device)

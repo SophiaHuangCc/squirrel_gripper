@@ -47,11 +47,64 @@ def get_best_ids_all_metrics(objectives, opt_obj="disturbance"):
                 [objective["num_contacts"] for objective in objectives]
             ),
         }
+    elif opt_obj == "angular_span":
+        best_ids = {
+            "angular_span": np.argmax(
+                [objective["angular_span"] for objective in objectives]
+            ),
+        }
+
+    elif opt_obj == "disturbance_span":
+        best_ids = {
+            "disturbance_resistance_score": np.argmax(
+                [objective["disturbance_resistance_score"] for objective in objectives]
+            ),
+            "angular_span": np.argmax(
+                [objective["angular_span"] for objective in objectives]
+            ),
+            "combined_score": np.argmax(
+                [objective["combined_score"] for objective in objectives]
+            ),
+        }
+
+    elif opt_obj == "disturbance_contact_span":
+        best_ids = {
+            "disturbance_resistance_score": np.argmax(
+                [objective["disturbance_resistance_score"] for objective in objectives]
+            ),
+            "num_contacts": np.argmax(
+                [objective["num_contacts"] for objective in objectives]
+            ),
+            "angular_span": np.argmax(
+                [objective["angular_span"] for objective in objectives]
+            ),
+            "combined_score": np.argmax(
+                [objective["combined_score"] for objective in objectives]
+            ),
+        }
     else:
         raise ValueError("opt obj not supported")
 
     return best_ids
 
+
+import re
+import datetime
+
+def make_exp_dir(base_dir):
+    os.makedirs(base_dir, exist_ok=True)
+
+    exp_nums = []
+    for name in os.listdir(base_dir):
+        m = re.match(r"exp(\d+)$", name)
+        if m:
+            exp_nums.append(int(m.group(1)))
+
+    next_id = max(exp_nums, default=0) + 1
+    run_dir = os.path.join(base_dir, f"exp{next_id}")
+    os.makedirs(run_dir, exist_ok=False)
+    return run_dir
+    
 
 def optimization(args):
     input_spline_dim = 13   # 12 design params + 1 optimizable approach_deg
@@ -72,7 +125,8 @@ def optimization(args):
         param.requires_grad = False
     profile_model.eval()
 
-    for opt_obj in ["disturbance", "disturbance_contact", "contact"]:
+    for opt_obj in ["disturbance", "disturbance_contact", "contact", 
+                    "angular_span", "disturbance_span", "disturbance_contact_span"]:
         if args.init_only:
             raise NotImplementedError(
                 "init_only needs physical design params, not raw [-1, 1] params."
@@ -105,6 +159,7 @@ def optimization(args):
             contact_weight=args.contact_weight,
             disturbance_weight=args.disturbance_weight,
             reg_weight=args.reg_weight,
+            angular_span_weight=args.angular_span_weight,
 
             joint_soft_min=args.joint_soft_min,
             joint_soft_max=args.joint_soft_max,
@@ -134,7 +189,23 @@ def optimization(args):
             approach_deg_max=args.approach_deg_max,
         )
 
-        task_result, design_result = optimizer.solve()
+        # design_result, task_result = optimizer.solve()
+        design_result, task_result, pred_metrics = optimizer.solve()
+
+        opt_save_dir = os.path.join(args.save_dir, f"{opt_obj}_surrogate_only")
+        os.makedirs(opt_save_dir, exist_ok=True)
+
+        np.savez_compressed(
+            os.path.join(opt_save_dir, "optimized_candidates.npz"),
+            design_params=design_result,
+            task_params=task_result,
+            pred_metrics=pred_metrics,
+        )
+
+        print(f"[SAVED] surrogate optimized candidates: {opt_save_dir}")
+
+        if args.skip_sim:
+            continue
 
         metrics, save_design_dirs = sim_test_batch(
             design_result,
@@ -192,7 +263,7 @@ if __name__ == "__main__":
     if not hasattr(args, "init_dim"):
         args.init_dim = 3
     if not hasattr(args, "output_dim"):
-        args.output_dim = 2
+        args.output_dim = 3
 
     if not hasattr(args, "batch_size"):
         args.batch_size = 16
@@ -230,6 +301,8 @@ if __name__ == "__main__":
         args.disturbance_weight = 1.0
     if not hasattr(args, "reg_weight"):
         args.reg_weight = 0.0
+    if not hasattr(args, "angular_span_weight"):
+        args.angular_span_weight = 0.5
 
     if not hasattr(args, "joint_soft_min"):
         args.joint_soft_min = 0.0005
@@ -281,9 +354,29 @@ if __name__ == "__main__":
     if not hasattr(args, "approach_deg_max"):
         args.approach_deg_max = 90.0
 
+    if not hasattr(args, "skip_sim"):
+        args.skip_sim = True
+
     if args.checkpoint_path is None:
         raise ValueError("Please provide --checkpoint_path or --ckpt_path")
 
-    os.makedirs(args.save_dir, exist_ok=True)
-    wandb.init(project="finger_profile_optimization", config=args)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Put each optimization run into runs/exp1, runs/exp2, ...
+    base_runs_dir = os.path.join("optimization", "runs")
+    args.save_dir = make_exp_dir(base_runs_dir)
+
+    run_name = f"finger_opt_{os.path.basename(args.save_dir)}_{timestamp}"
+
+    print("[OPT RUN DIR]", os.path.abspath(args.save_dir))
+    print("[WANDB RUN NAME]", run_name)
+
+    wandb.init(
+        project="finger_profile_optimization",
+        name=run_name,
+        config=vars(args),
+        dir=args.save_dir,
+    )
+
     optimization(args)
+    wandb.finish()
