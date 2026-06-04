@@ -450,21 +450,6 @@ class ProfileOptimizer():
         self.opt_obj = opt_obj
 
 
-    # def solve(self):
-    #     for _ in tqdm(range(self.model.num_epochs)):
-    #         self.optimizer.zero_grad()
-    #         loss = self.model(object_vertices=self.object_vertices)
-    #         loss.backward()
-    #         self.optimizer.step()
-
-    #     design_params, task_params = self.model.state_to_design()
-    #     pred_metrics = self.model.predict_current()
-
-    #     return (
-    #         design_params.detach().cpu().numpy(),
-    #         task_params.detach().cpu().numpy(),
-    #         pred_metrics,
-    #     )
     def solve(self):
         state0 = self.model.state.detach().clone()
 
@@ -553,9 +538,10 @@ class ProfileOptimizerES():
 
         self.optimizer = cma.CMAEvolutionStrategy(
             x0=self.model.state.detach().view(-1).cpu().numpy(),
-            sigma0=0.2,
+            sigma0=1.0,
             inopts={
-                "popsize": 16,
+                "popsize": 32,
+                # "bounds": [-8.0, 8.0],
             },
         )
         self.object_vertices = object_vertices
@@ -563,24 +549,93 @@ class ProfileOptimizerES():
         self.batch_size = batch_size
         self.input_dim = input_dim
 
+    # def solve(self):
+    #     with torch.no_grad():
+    #         for _ in tqdm(range(self.model.num_epochs)):
+    #             solutions = self.optimizer.ask()
+    #             losses = []
+    #             for solution in solutions:
+    #                 self.model.state = nn.Parameter(
+    #                     torch.from_numpy(solution.reshape(self.batch_size, self.input_dim))
+    #                     .float()
+    #                     .to(self.model.device)
+    #                 )
+    #                 loss = self.model(object_vertices=self.object_vertices)
+    #                 losses.append(loss.item())
+    #             losses = np.asarray(losses)
+    #             self.optimizer.tell(solutions, losses)
+    #             print("loss", losses.mean())
+
+    #     soln = np.asarray(self.optimizer.best.x).reshape(self.batch_size, self.input_dim)
+    #     self.model.state = nn.Parameter(torch.from_numpy(soln).float().to(self.model.device))
+    #     design_params, task_params = self.model.state_to_design()
+    #     return design_params.detach().cpu().numpy(), task_params.detach().cpu().numpy()
+
+
     def solve(self):
+        state0 = self.model.state.detach().clone()
+
+        design0, task0 = self.model.state_to_design()
+        design0_np = design0.detach().cpu().numpy()
+        task0_np = task0.detach().cpu().numpy()
+        pred0 = self.model.predict_current()
+
         with torch.no_grad():
-            for _ in tqdm(range(self.model.num_epochs)):
+            for i in tqdm(range(self.model.num_epochs)):
                 solutions = self.optimizer.ask()
                 losses = []
+
                 for solution in solutions:
                     self.model.state = nn.Parameter(
-                        torch.from_numpy(solution.reshape(self.batch_size, self.input_dim))
+                        torch.from_numpy(
+                            np.asarray(solution).reshape(self.batch_size, self.input_dim)
+                        )
                         .float()
                         .to(self.model.device)
                     )
+
                     loss = self.model(object_vertices=self.object_vertices)
                     losses.append(loss.item())
+
                 losses = np.asarray(losses)
                 self.optimizer.tell(solutions, losses)
-                print("loss", losses.mean())
 
-        soln = np.asarray(self.optimizer.best.x).reshape(self.batch_size, self.input_dim)
-        self.model.state = nn.Parameter(torch.from_numpy(soln).float().to(self.model.device))
-        design_params, task_params = self.model.state_to_design()
-        return design_params.detach().cpu().numpy(), task_params.detach().cpu().numpy()
+                if i % 10 == 0:
+                    print(
+                        f"[ES DEBUG] iter={i} "
+                        f"mean_loss={losses.mean():.6f} "
+                        f"best_loss={losses.min():.6f}"
+                    )
+
+        best_solution = np.asarray(self.optimizer.best.x).reshape(
+            self.batch_size, self.input_dim
+        )
+
+        self.model.state = nn.Parameter(
+            torch.from_numpy(best_solution)
+            .float()
+            .to(self.model.device)
+        )
+
+        design1, task1 = self.model.state_to_design()
+        design1_np = design1.detach().cpu().numpy()
+        task1_np = task1.detach().cpu().numpy()
+        pred1 = self.model.predict_current()
+
+        print("[ES DEBUG] max raw state change:",
+            (self.model.state.detach() - state0).abs().max().item())
+        print("[ES DEBUG] max design change:",
+            np.max(np.abs(design1_np - design0_np)))
+        print("[ES DEBUG] max task change:",
+            np.max(np.abs(task1_np - task0_np)))
+
+        print("[ES DEBUG] init pred[0]:", pred0[0])
+        print("[ES DEBUG] final pred[0]:", pred1[0])
+
+        print("[ES DEBUG] init design[0]:", design0_np[0])
+        print("[ES DEBUG] final design[0]:", design1_np[0])
+
+        print("[ES DEBUG] init task[0]:", task0_np[0])
+        print("[ES DEBUG] final task[0]:", task1_np[0])
+
+        return design1_np, task1_np, pred1

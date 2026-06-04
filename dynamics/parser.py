@@ -28,5 +28,6 @@ def parse():
     parser.add_argument("--save_ckpt_step", type=int, default=500, help="Save every N batches")
     parser.add_argument("--wandb_id", type=str, default="squirrel_dynamics_01")
     parser.add_argument("--use_design_noise", action="store_true")
+    parser.add_argument("--use_es", action="store_true", help="Use evolutionary strategy for training")
 
     return parser.parse_args()
