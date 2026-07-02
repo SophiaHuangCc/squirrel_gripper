@@ -388,9 +388,11 @@ if __name__ == "__main__":
     if not hasattr(args, "init_approach_deg"):
         args.init_approach_deg = args.approach_deg
     if not hasattr(args, "approach_deg_min"):
-        args.approach_deg_min = 0.0
+        # exp3 only contains approach angles in this interval. Keeping Adam
+        # inside it prevents unsupported surrogate extrapolation.
+        args.approach_deg_min = 45.0
     if not hasattr(args, "approach_deg_max"):
-        args.approach_deg_max = 90.0
+        args.approach_deg_max = 75.0
 
     if not hasattr(args, "skip_sim"):
         args.skip_sim = True
