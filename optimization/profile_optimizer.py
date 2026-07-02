@@ -317,9 +317,25 @@ class ProfileOptimizerModel(nn.Module):
 
         joint_softness = sigmoid_to_range(x[:, 0:3], self.joint_soft_min, self.joint_soft_max)
 
-        raw_links = sigmoid_to_range(x[:, 3:7], self.link_min, self.link_max)
         base_length = sigmoid_to_range(x[:, 8:9], self.base_length_min, self.base_length_max)
-        link_lengths = raw_links / torch.sum(raw_links, dim=-1, keepdim=True) * base_length
+
+        # Match the vertebra-layout support used to generate exp3:
+        #   first joint >= node 30,
+        #   consecutive joints >= 20 nodes apart,
+        #   final joint <= node 95.
+        #
+        # The old implementation bounded each raw link and then renormalized all
+        # four links to base_length. Renormalization invalidated the lower bound,
+        # allowing links of only a few nodes. The eight-node soft-joint regions
+        # could then overlap and multiply their stiffness reductions, producing
+        # designs that are both out of distribution and numerically unstable.
+        min_link_fractions = x.new_tensor([0.30, 0.20, 0.20, 0.05]).view(1, 4)
+        free_fraction = 1.0 - torch.sum(min_link_fractions)
+        link_fractions = (
+            min_link_fractions
+            + free_fraction * torch.softmax(x[:, 3:7], dim=-1)
+        )
+        link_lengths = link_fractions * base_length
 
         base_radius = sigmoid_to_range(x[:, 7:8], self.base_radius_min, self.base_radius_max)
         tension = sigmoid_to_range(x[:, 9:10], self.tension_min, self.tension_max)
