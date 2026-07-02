@@ -702,6 +702,18 @@ def main():
     parser.add_argument("--damping", type=float, default=0.8, help="Internal damping constant")
     parser.add_argument("--n_elements", type=int, default=100, help="Number of rod elements")
     parser.add_argument("--final_time", type=float, default=4.0, help="Total simulation time in seconds")
+    parser.add_argument(
+        "--curl_contact_ratio", type=float, default=0.8,
+        help="Fraction of the trajectory's peak contact count required for curl completion.",
+    )
+    parser.add_argument(
+        "--curl_hold_time", type=float, default=0.2,
+        help="Seconds that the curl contact threshold must remain satisfied.",
+    )
+    parser.add_argument(
+        "--curl_min_contacts", type=int, default=3,
+        help="Minimum useful contacts required before curl completion can be declared.",
+    )
     # cylinder and contact params
     parser.add_argument("--cyl_rad", type=float, default=0.015, help="Cylinder radius (m)")
     parser.add_argument("--k_contact", type=float, default=1.25e3, help="Contact stiffness")
@@ -730,7 +742,25 @@ def main():
     parser.add_argument("--v_start", type=int, default=38, help="Node index of first vertebra")
     parser.add_argument("--v_end", type=int, default=80, help="Node index of final vertebra")
     parser.add_argument("--v_height", type=float, default=0.005, help="Tendon distance from center")
-    parser.add_argument("--joint_softness", type=str, default="0.001,0.0009, 0.0008", help="Multiplier for bending stiffness at vertebrae (0.01 = 1% of original stiffness)")
+    parser.add_argument(
+        "--joint_softness",
+        type=str,
+        default="0.001,0.0009, 0.0008",
+        help=(
+            "Comma-separated joint/link modulus ratios. Their application is "
+            "controlled by --joint_stiffness_mode."
+        ),
+    )
+    parser.add_argument(
+        "--joint_stiffness_mode",
+        choices=["full_material", "bending_only"],
+        default="full_material",
+        help=(
+            "full_material scales bending, twist, shear, and axial stiffness "
+            "in each joint region; bending_only reproduces the legacy dataset "
+            "by scaling only bend_matrix[1,1] and [2,2]."
+        ),
+    )
     # vertebra selector: 'uniform' or 'manual'
     parser.add_argument("--v_mode", type=str, default="uniform", 
                         choices=["uniform", "manual"], 
@@ -1000,8 +1030,21 @@ def main():
         action="store_true",
         help="Disable generation of videos and plots.",
     )
+    parser.add_argument(
+        "--data_only",
+        action="store_true",
+        help=(
+            "Dataset-generation mode: retain numeric NPZ/CSV logs and metrics "
+            "but disable all videos, image plots, and interactive debug views."
+        ),
+    )
 
     args = parser.parse_args()
+    if args.data_only:
+        args.disable_video_plots = True
+        args.debug = False
+        args.full_visualization = False
+        args.confirm_tendon = False
 
     # Parameters from args (key variables to tune)
     E = args.E
@@ -1249,21 +1292,34 @@ def main():
             f"(angle={args.landing_approach_deg:.1f} deg from horizontal)"
         )
 
-    # Apply soft joints at vertebrae locations
+    # Apply the joint/link modulus ratio over an eight-element joint region.
+    # For an isotropic joint material with the same Poisson ratio as the links,
+    # scaling E by joint_mult also scales G by joint_mult.
     print(f"[SOFT JOINTS] using mode '{args.v_mode}' at nodes: {vertebra_nodes}")
-    print(f"[SOFT JOINTS] multipliers: {joint_softness_list}")  
+    print(f"[SOFT JOINTS] multipliers: {joint_softness_list}")
+    print(f"[SOFT JOINTS] stiffness mode: {args.joint_stiffness_mode}")
 
     for i, j in enumerate(vertebra_nodes):
-
         idx = int(np.clip(j, 0, finger.bend_matrix.shape[2] - 1))
         joint_mult = joint_softness_list[i]
-        # progressively softer joints toward tip
-        # finger.bend_matrix[1, 1, idx] *= joint_mult
-        # finger.bend_matrix[2, 2, idx] *= joint_mult
         for k in range(idx - 4, idx + 4):
-            kk = int(np.clip(k, 0, finger.bend_matrix.shape[2] - 1))
-            finger.bend_matrix[1, 1, kk] *= joint_mult
-            finger.bend_matrix[2, 2, kk] *= joint_mult
+            bend_idx = int(np.clip(k, 0, finger.bend_matrix.shape[2] - 1))
+
+            if args.joint_stiffness_mode == "full_material":
+                # Rotational constitutive response: two bending axes and twist.
+                for axis in range(3):
+                    finger.bend_matrix[axis, axis, bend_idx] *= joint_mult
+
+                # Translational constitutive response: two shear axes and axial
+                # stretch/compression. shear_matrix is stored on rod elements,
+                # while bend_matrix is stored on the Voronoi domain.
+                shear_idx = int(np.clip(k, 0, finger.shear_matrix.shape[2] - 1))
+                for axis in range(3):
+                    finger.shear_matrix[axis, axis, shear_idx] *= joint_mult
+            else:
+                # Legacy behavior used to generate the previous datasets.
+                finger.bend_matrix[1, 1, bend_idx] *= joint_mult
+                finger.bend_matrix[2, 2, bend_idx] *= joint_mult
 
     # Create cylinder (branch)
     cylinder = Cylinder(
@@ -1776,6 +1832,7 @@ def main():
     max_normal_force_overall = 0.0
     max_overlap_overall = 0.0
     contact_data = []
+    contact_counts = []
 
     with open(os.path.join(base_outdir, f"contact_log_{run_id}_{suffix}.csv"), "w", newline="") as f:
         writer = csv.writer(f)
@@ -1794,6 +1851,7 @@ def main():
             (idx, nF, nV, tS, fF, radial_dist_all, overlap_all) = compute_contact_metrics_frame(
                 P, V, cyl_center, cyl_axis, cyl_radius, k_contact, mu_contact, base_radius, cyl_length
             )
+            contact_counts.append(len(idx))
             # print("overlap average value:", np.mean(overlap_all))
 
             if len(idx) > 0:
@@ -1824,6 +1882,38 @@ def main():
                     float(cylinder.director_collection[2, 0, 0]), float(cylinder.director_collection[2, 1, 0]), float(cylinder.director_collection[2, 2, 0]),
                     float(cyl_radius),
                 ])
+
+    # Curl completion is the first time a useful fraction of peak contact is
+    # sustained, rather than a one-frame contact spike.
+    contact_counts = np.asarray(contact_counts, dtype=np.int32)
+    peak_contacts = int(contact_counts.max()) if contact_counts.size else 0
+    curl_contact_threshold = max(
+        int(args.curl_min_contacts),
+        int(np.ceil(float(args.curl_contact_ratio) * peak_contacts)),
+    )
+    hold_frames = max(1, int(np.ceil(float(args.curl_hold_time) / dt_saved)))
+    curl_frame = None
+    if peak_contacts >= curl_contact_threshold:
+        meets_threshold = contact_counts >= curl_contact_threshold
+        for frame_idx in range(0, len(meets_threshold) - hold_frames + 1):
+            if np.all(meets_threshold[frame_idx:frame_idx + hold_frames]):
+                curl_frame = frame_idx
+                break
+
+    curl_time = final_time if curl_frame is None else float(curl_frame * dt_saved)
+    curl_time_norm = float(np.clip(curl_time / final_time, 0.0, 1.0))
+    curl_speed_score = 1.0 - curl_time_norm
+    data_to_save["contact_counts"] = contact_counts
+    data_to_save["curl_time"] = np.array([curl_time])
+    data_to_save["curl_time_norm"] = np.array([curl_time_norm])
+    data_to_save["curl_speed_score"] = np.array([curl_speed_score])
+    data_to_save["curl_peak_contacts"] = np.array([peak_contacts])
+    data_to_save["curl_contact_threshold"] = np.array([curl_contact_threshold])
+    data_to_save["curl_hold_frames"] = np.array([hold_frames])
+    print(
+        f"[CURL] time={curl_time:.4f}s speed_score={curl_speed_score:.4f} "
+        f"threshold={curl_contact_threshold} peak={peak_contacts} hold_frames={hold_frames}"
+    )
 
     if first_contact_frame is None:
         print("[CONTACT] No contact in any saved frame. (Likely cylinder too far, too small, or axis mismatch.)")
@@ -2127,6 +2217,10 @@ def main():
 
         if args.debug:
             print("[DEBUG] Plotting total force magnitudes and directions.")
+
+    if args.disable_video_plots:
+        print("[DATA ONLY] Numeric logs saved; skipped all video and image generation.")
+        return
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")

@@ -14,6 +14,7 @@ def objective_score(pred_metrics, objective):
     contacts = pred_metrics[:, 0]
     disturbance = pred_metrics[:, 1]
     angular_span = pred_metrics[:, 2]
+    curl_speed = pred_metrics[:, 3]
 
     if objective == "disturbance":
         return disturbance
@@ -27,6 +28,11 @@ def objective_score(pred_metrics, objective):
         return disturbance + 0.5 * angular_span
     elif objective == "disturbance_contact_span":
         return disturbance + 0.1 * contacts + 0.5 * angular_span
+    elif objective == "curl_speed":
+        return curl_speed
+    elif objective == "disturbance_contact_span_speed":
+        gate = 1.0 / (1.0 + np.exp(-(contacts - 0.3) / 0.05))
+        return disturbance + 0.1 * contacts + 0.5 * angular_span + 0.1 * curl_speed * gate
     else:
         raise ValueError(f"Unknown objective: {objective}")
 
@@ -106,7 +112,7 @@ def main():
     parser.add_argument(
         "--objectives",
         type=str,
-        default="disturbance,disturbance_contact,contact,angular_span,disturbance_span,disturbance_contact_span",
+        default="disturbance,disturbance_contact,contact,angular_span,disturbance_span,disturbance_contact_span,curl_speed,disturbance_contact_span_speed",
     )
 
     args = parser.parse_args()

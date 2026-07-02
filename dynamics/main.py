@@ -43,6 +43,7 @@ def evaluate_prediction_quality(trainer, dataloader, args, epoch, split_name="va
         "contact_norm",
         "disturbance_score",
         "angular_span_norm",
+        "curl_speed_score",
     ]
 
     log_dict = {}
@@ -106,8 +107,8 @@ def evaluate_prediction_quality(trainer, dataloader, args, epoch, split_name="va
     # Top-K ranking validation for combined objective
     # --------------------------------------------------
     # Same objective as optimization: disturbance + contact + angular span
-    pred_score = pred[:, 1] + 0.1 * pred[:, 0] + 0.5 * pred[:, 2]
-    true_score = true[:, 1] + 0.1 * true[:, 0] + 0.5 * true[:, 2]
+    pred_score = pred[:, 1] + 0.1 * pred[:, 0] + 0.5 * pred[:, 2] + 0.1 * pred[:, 3]
+    true_score = true[:, 1] + 0.1 * true[:, 0] + 0.5 * true[:, 2] + 0.1 * true[:, 3]
 
     for k in [5, 10, 20]:
         k = min(k, len(pred_score))
@@ -143,7 +144,7 @@ def validate(args, val_loader, trainer):
 
             pred, loss = trainer.inference(task_params, design_params, init_config, target)
 
-            batch_mae = torch.abs(pred - target)   # shape [B, 3]
+            batch_mae = torch.abs(pred - target)   # shape [B, 4]
 
             total_val_loss += loss.item()
             total_mae += batch_mae.mean().item()
@@ -161,7 +162,9 @@ def validate(args, val_loader, trainer):
         f'Val Loss: {avg_loss:.4f} | '
         f'MAE total: {avg_mae:.4f} | '
         f'contacts: {avg_mae_per_dim[0].item():.4f}, '
-        f'disturbance_score: {avg_mae_per_dim[1].item():.4f}'
+        f'disturbance_score: {avg_mae_per_dim[1].item():.4f}, '
+        f'angular_span: {avg_mae_per_dim[2].item():.4f}, '
+        f'curl_speed: {avg_mae_per_dim[3].item():.4f}'
     )
 
     return avg_loss, avg_mae, avg_mae_per_dim
@@ -179,8 +182,13 @@ def train(args):
     )
     from torch.utils.data import Subset
 
-    train_dataset = DynamicsDataset(dataset_dir=args.data_dir)
-    val_dataset = DynamicsDataset(dataset_dir=args.test_data_dir)
+    dataset_kwargs = {
+        "curl_contact_ratio": args.curl_contact_ratio,
+        "curl_hold_time": args.curl_hold_time,
+        "curl_min_contacts": args.curl_min_contacts,
+    }
+    train_dataset = DynamicsDataset(dataset_dir=args.data_dir, **dataset_kwargs)
+    val_dataset = DynamicsDataset(dataset_dir=args.test_data_dir, **dataset_kwargs)
 
     # full_dataset = DynamicsDataset(dataset_dir=args.data_dir)
     # np.random.seed(0)
@@ -245,6 +253,8 @@ def train(args):
                     'val/avg_mae_total': avg_mae,
                     'val/mae_contacts': avg_mae_per_dim[0].item(),
                     'val/mae_disturbance_score': avg_mae_per_dim[1].item(),
+                    'val/mae_angular_span': avg_mae_per_dim[2].item(),
+                    'val/mae_curl_speed': avg_mae_per_dim[3].item(),
                 })
 
                 evaluate_prediction_quality(

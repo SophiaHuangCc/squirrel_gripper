@@ -135,7 +135,7 @@ def mp4_to_cropped_gif(video_path, output_path=None, crop_w=320, crop_h=240, fps
 
 
 if __name__ == "__main__":
-    video_path = "/home/real/Desktop/SquirrelGripper/ws/squirrel_gripper/optimization/runs/exp1/sim_verification/disturbance_contact_span_verified_top3/finger_2/output_20260522_113742_opt_2.mp4"
+    video_path = "/home/real/Desktop/SquirrelGripper/ws/squirrel_gripper/optimization/runs/exp5/sim_verification/contact_verified_top1/finger_0/output_20260604_004648_opt_0.mp4"
 
     mp4_to_cropped_gif(
         video_path,

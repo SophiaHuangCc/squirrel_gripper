@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from tqdm import tqdm
+import wandb
 
 # -----------------------------------------------------------------------------
 # Helper functions
@@ -122,6 +123,49 @@ def design_to_dict(design_params, n_elements=100):
     }
 
 
+def pred_to_objective_np(
+    pred,
+    opt_obj,
+    contact_weight=0.1,
+    disturbance_weight=1.0,
+    angular_span_weight=0.5,
+    curl_speed_weight=0.1,
+    curl_contact_gate=0.3,
+    curl_gate_temperature=0.05,
+):
+    contacts = pred[:, 0]
+    disturbance = pred[:, 1]
+    span = pred[:, 2]
+    curl_speed = pred[:, 3]
+    quality_gate = 1.0 / (
+        1.0 + np.exp(-(contacts - curl_contact_gate) / curl_gate_temperature)
+    )
+
+    if opt_obj == "disturbance":
+        return disturbance_weight * disturbance
+    if opt_obj == "contact":
+        return contacts
+    if opt_obj == "angular_span":
+        return angular_span_weight * span
+    if opt_obj == "disturbance_contact":
+        return disturbance_weight * disturbance + contact_weight * contacts
+    if opt_obj == "disturbance_span":
+        return disturbance_weight * disturbance + angular_span_weight * span
+    if opt_obj == "disturbance_contact_span":
+        return disturbance_weight * disturbance + contact_weight * contacts + angular_span_weight * span
+    if opt_obj == "curl_speed":
+        return curl_speed
+    if opt_obj == "disturbance_contact_span_speed":
+        quality = (
+            disturbance_weight * disturbance
+            + contact_weight * contacts
+            + angular_span_weight * span
+        )
+        return quality + curl_speed_weight * curl_speed * quality_gate
+
+    raise ValueError(f"Unknown opt_obj: {opt_obj}")
+
+
 # -----------------------------------------------------------------------------
 # Main model wrapper: minimal analog of ProfileOptimizerModel
 # -----------------------------------------------------------------------------
@@ -150,6 +194,9 @@ class ProfileOptimizerModel(nn.Module):
         disturbance_weight: float = 1.0,
         reg_weight: float = 0.0,
         angular_span_weight: float = 0.0,
+        curl_speed_weight: float = 0.1,
+        curl_contact_gate: float = 0.3,
+        curl_gate_temperature: float = 0.05,
         # physical bounds
         joint_soft_min: float = 0.0005,
         joint_soft_max: float = 0.005,
@@ -194,6 +241,9 @@ class ProfileOptimizerModel(nn.Module):
         self.disturbance_weight = disturbance_weight
         self.reg_weight = reg_weight
         self.angular_span_weight = angular_span_weight
+        self.curl_speed_weight = curl_speed_weight
+        self.curl_contact_gate = curl_contact_gate
+        self.curl_gate_temperature = curl_gate_temperature
 
         self.joint_soft_min = joint_soft_min
         self.joint_soft_max = joint_soft_max
@@ -346,10 +396,15 @@ class ProfileOptimizerModel(nn.Module):
         logits[:, 0] = normalized contacts
         logits[:, 1] = disturbance resistance score
         logits[:, 2] = normalized angular span
+        logits[:, 3] = curl speed score (1 - normalized curl time)
         """
         pred_contacts = logits[:, 0]
         pred_disturbance = logits[:, 1]
         pred_angular_span = logits[:, 2]
+        pred_curl_speed = logits[:, 3]
+        quality_gate = torch.sigmoid(
+            (pred_contacts - self.curl_contact_gate) / self.curl_gate_temperature
+        )
 
         if self.opt_obj == "disturbance":
             objective = self.disturbance_weight * pred_disturbance
@@ -374,6 +429,18 @@ class ProfileOptimizerModel(nn.Module):
                 self.disturbance_weight * pred_disturbance
                 + self.contact_weight * pred_contacts
                 + self.angular_span_weight * pred_angular_span
+            )
+        elif self.opt_obj == "curl_speed":
+            objective = pred_curl_speed
+        elif self.opt_obj == "disturbance_contact_span_speed":
+            quality = (
+                self.disturbance_weight * pred_disturbance
+                + self.contact_weight * pred_contacts
+                + self.angular_span_weight * pred_angular_span
+            )
+            objective = (
+                quality
+                + self.curl_speed_weight * pred_curl_speed * quality_gate
             )
         else:
             raise ValueError("opt obj not supported")
@@ -428,6 +495,7 @@ class ProfileOptimizer():
         grid_size: int = 1,
         object_vertices: Optional[torch.Tensor] = None,
         seed: int = 0,
+        wandb_step_offset: int = 0,
         device: torch.device = torch.device("cuda:0"),
         **kwargs,
     ):
@@ -448,6 +516,7 @@ class ProfileOptimizer():
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.model.learning_rate)
         self.object_vertices = object_vertices
         self.opt_obj = opt_obj
+        self.wandb_step_offset = wandb_step_offset
 
 
     def solve(self):
@@ -474,12 +543,64 @@ class ProfileOptimizer():
                     f"raw_delta={raw_delta:.6e}"
                 )
 
+            pred_now = self.model.predict_current()
+            score_now = pred_to_objective_np(
+                pred_now,
+                self.opt_obj,
+                contact_weight=self.model.contact_weight,
+                disturbance_weight=self.model.disturbance_weight,
+                angular_span_weight=self.model.angular_span_weight,
+                curl_speed_weight=self.model.curl_speed_weight,
+                curl_contact_gate=self.model.curl_contact_gate,
+                curl_gate_temperature=self.model.curl_gate_temperature,
+            )
+
+            wandb.log({
+                f"{self.opt_obj}/opt_loss": loss.item(),
+                f"{self.opt_obj}/pred_score_mean": float(np.mean(score_now)),
+                f"{self.opt_obj}/pred_score_best": float(np.max(score_now)),
+                f"{self.opt_obj}/pred_contacts_mean": float(np.mean(pred_now[:, 0])),
+                f"{self.opt_obj}/pred_disturbance_mean": float(np.mean(pred_now[:, 1])),
+                f"{self.opt_obj}/pred_angular_span_mean": float(np.mean(pred_now[:, 2])),
+                f"{self.opt_obj}/pred_curl_speed_mean": float(np.mean(pred_now[:, 3])),
+                f"{self.opt_obj}/raw_delta": float((self.model.state.detach() - state0).abs().max().item()),
+            }, step=self.wandb_step_offset + i)
+
             self.optimizer.step()
 
         design1, task1 = self.model.state_to_design()
         design1 = design1.detach().cpu().numpy()
         task1 = task1.detach().cpu().numpy()
         pred1 = self.model.predict_current()
+
+        score0 = pred_to_objective_np(
+            pred0,
+            self.opt_obj,
+            self.model.contact_weight,
+            self.model.disturbance_weight,
+            self.model.angular_span_weight,
+            self.model.curl_speed_weight,
+            self.model.curl_contact_gate,
+            self.model.curl_gate_temperature,
+        )
+
+        score1 = pred_to_objective_np(
+            pred1,
+            self.opt_obj,
+            self.model.contact_weight,
+            self.model.disturbance_weight,
+            self.model.angular_span_weight,
+            self.model.curl_speed_weight,
+            self.model.curl_contact_gate,
+            self.model.curl_gate_temperature,
+        )
+
+        wandb.log({
+            f"{self.opt_obj}/final_pred_score_init_mean": float(np.mean(score0)),
+            f"{self.opt_obj}/final_pred_score_final_mean": float(np.mean(score1)),
+            f"{self.opt_obj}/final_pred_score_improvement_mean": float(np.mean(score1) - np.mean(score0)),
+            f"{self.opt_obj}/final_pred_score_improvement_best": float(np.max(score1) - np.max(score0)),
+        }, step=self.wandb_step_offset + self.model.num_epochs)
 
         print("[OPT DEBUG] max raw state change:", (self.model.state.detach() - state0).abs().max().item())
         print("[OPT DEBUG] max design change:", np.max(np.abs(design1 - design0)))
@@ -515,12 +636,15 @@ class ProfileOptimizerES():
         grid_size: int = 1,
         object_vertices: Optional[torch.Tensor] = None,
         seed: int = 0,
+        wandb_step_offset: int = 0,
         device: torch.device = torch.device("cuda:0"),
         **kwargs,
     ):
         super(ProfileOptimizerES, self).__init__()
         if cma is None:
             raise ImportError("cma is not installed. Install cma or use ProfileOptimizer instead.")
+
+        self.wandb_step_offset = wandb_step_offset
 
         self.model = ProfileOptimizerModel(
             profile_model=profile_model,
@@ -538,7 +662,7 @@ class ProfileOptimizerES():
 
         self.optimizer = cma.CMAEvolutionStrategy(
             x0=self.model.state.detach().view(-1).cpu().numpy(),
-            sigma0=1.0,
+            sigma0=0.25,
             inopts={
                 "popsize": 32,
                 # "bounds": [-8.0, 8.0],
@@ -548,29 +672,6 @@ class ProfileOptimizerES():
         self.opt_obj = opt_obj
         self.batch_size = batch_size
         self.input_dim = input_dim
-
-    # def solve(self):
-    #     with torch.no_grad():
-    #         for _ in tqdm(range(self.model.num_epochs)):
-    #             solutions = self.optimizer.ask()
-    #             losses = []
-    #             for solution in solutions:
-    #                 self.model.state = nn.Parameter(
-    #                     torch.from_numpy(solution.reshape(self.batch_size, self.input_dim))
-    #                     .float()
-    #                     .to(self.model.device)
-    #                 )
-    #                 loss = self.model(object_vertices=self.object_vertices)
-    #                 losses.append(loss.item())
-    #             losses = np.asarray(losses)
-    #             self.optimizer.tell(solutions, losses)
-    #             print("loss", losses.mean())
-
-    #     soln = np.asarray(self.optimizer.best.x).reshape(self.batch_size, self.input_dim)
-    #     self.model.state = nn.Parameter(torch.from_numpy(soln).float().to(self.model.device))
-    #     design_params, task_params = self.model.state_to_design()
-    #     return design_params.detach().cpu().numpy(), task_params.detach().cpu().numpy()
-
 
     def solve(self):
         state0 = self.model.state.detach().clone()
@@ -600,6 +701,36 @@ class ProfileOptimizerES():
                 losses = np.asarray(losses)
                 self.optimizer.tell(solutions, losses)
 
+                best_idx = int(np.argmin(losses))
+                best_solution = np.asarray(solutions[best_idx]).reshape(self.batch_size, self.input_dim)
+
+                self.model.state = nn.Parameter(
+                    torch.from_numpy(best_solution).float().to(self.model.device)
+                )
+
+                pred_now = self.model.predict_current()
+                score_now = pred_to_objective_np(
+                    pred_now,
+                    self.opt_obj,
+                    contact_weight=self.model.contact_weight,
+                    disturbance_weight=self.model.disturbance_weight,
+                    angular_span_weight=self.model.angular_span_weight,
+                    curl_speed_weight=self.model.curl_speed_weight,
+                    curl_contact_gate=self.model.curl_contact_gate,
+                    curl_gate_temperature=self.model.curl_gate_temperature,
+                )
+
+                wandb.log({
+                    f"{self.opt_obj}/es_mean_loss": float(np.mean(losses)),
+                    f"{self.opt_obj}/es_best_loss": float(np.min(losses)),
+                    f"{self.opt_obj}/es_pred_score_mean": float(np.mean(score_now)),
+                    f"{self.opt_obj}/es_pred_score_best": float(np.max(score_now)),
+                    f"{self.opt_obj}/es_pred_contacts_mean": float(np.mean(pred_now[:, 0])),
+                    f"{self.opt_obj}/es_pred_disturbance_mean": float(np.mean(pred_now[:, 1])),
+                    f"{self.opt_obj}/es_pred_angular_span_mean": float(np.mean(pred_now[:, 2])),
+                    f"{self.opt_obj}/es_pred_curl_speed_mean": float(np.mean(pred_now[:, 3])),
+                }, step=self.wandb_step_offset + i)
+
                 if i % 10 == 0:
                     print(
                         f"[ES DEBUG] iter={i} "
@@ -621,6 +752,35 @@ class ProfileOptimizerES():
         design1_np = design1.detach().cpu().numpy()
         task1_np = task1.detach().cpu().numpy()
         pred1 = self.model.predict_current()
+
+        score0 = pred_to_objective_np(
+            pred0,
+            self.opt_obj,
+            self.model.contact_weight,
+            self.model.disturbance_weight,
+            self.model.angular_span_weight,
+            self.model.curl_speed_weight,
+            self.model.curl_contact_gate,
+            self.model.curl_gate_temperature,
+        )
+
+        score1 = pred_to_objective_np(
+            pred1,
+            self.opt_obj,
+            self.model.contact_weight,
+            self.model.disturbance_weight,
+            self.model.angular_span_weight,
+            self.model.curl_speed_weight,
+            self.model.curl_contact_gate,
+            self.model.curl_gate_temperature,
+        )
+
+        wandb.log({
+            f"{self.opt_obj}/final_pred_score_init_mean": float(np.mean(score0)),
+            f"{self.opt_obj}/final_pred_score_final_mean": float(np.mean(score1)),
+            f"{self.opt_obj}/final_pred_score_improvement_mean": float(np.mean(score1) - np.mean(score0)),
+            f"{self.opt_obj}/final_pred_score_improvement_best": float(np.max(score1) - np.max(score0)),
+        }, step=self.wandb_step_offset + self.model.num_epochs)
 
         print("[ES DEBUG] max raw state change:",
             (self.model.state.detach() - state0).abs().max().item())

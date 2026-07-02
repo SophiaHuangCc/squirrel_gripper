@@ -105,6 +105,8 @@ def build_design_only_sample(rng):
         "min_tension": 0.1,
         "max_tension": 20.0,
         "v_mode": "manual",
+        "joint_stiffness_mode": "full_material",
+        "data_only": True,
         "cyl_rad": 0.03,
         "landing_height": 0.04,
         "landing_speed": 0.0,

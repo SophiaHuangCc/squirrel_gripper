@@ -28,6 +28,15 @@ def read_metric_from_npz(npz_path):
             "angular_span": float(
                 np.asarray(data.get("angular_span", [0.0])).reshape(-1)[0]
             ),
+            "curl_time": float(
+                np.asarray(data.get("curl_time", [np.inf])).reshape(-1)[0]
+            ),
+            "curl_speed_score": float(
+                np.asarray(data.get("curl_speed_score", [0.0])).reshape(-1)[0]
+            ),
+            "n_elements": float(
+                np.asarray(data.get("n_elements", [100.0])).reshape(-1)[0]
+            ),
         }
 
     metric["combined_score"] = (

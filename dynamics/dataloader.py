@@ -7,8 +7,18 @@ from pathlib import Path
 
 
 class DynamicsDataset(Dataset):
-    def __init__(self, dataset_dir, **kwargs):
+    def __init__(
+        self,
+        dataset_dir,
+        curl_contact_ratio=0.8,
+        curl_hold_time=0.2,
+        curl_min_contacts=3,
+        **kwargs,
+    ):
         self.dataset_dir = os.path.abspath(dataset_dir)
+        self.curl_contact_ratio = float(curl_contact_ratio)
+        self.curl_hold_time = float(curl_hold_time)
+        self.curl_min_contacts = int(curl_min_contacts)
         # self.files = glob.glob(os.path.join(self.dataset_dir, "*.npz"), recursive=True)
         self.files = sorted(
             glob.glob(os.path.join(self.dataset_dir, "**", "*.npz"), recursive=True)
@@ -131,6 +141,52 @@ class DynamicsDataset(Dataset):
 
         return link_lengths.astype(np.float32)
 
+    def _derive_curl_speed_score(self, data, base_radius):
+        """Backfill curl speed from trajectories in archives created before this metric."""
+        if "curl_speed_score" in data:
+            return float(np.clip(self._get_scalar(data, "curl_speed_score", 0.0), 0.0, 1.0))
+
+        final_time = self._get_scalar(data, "arg_final_time", 4.0)
+        if final_time <= 0.0 or "position" not in data or "cyl_position" not in data:
+            return 0.0
+
+        positions = np.asarray(data["position"])
+        if positions.ndim != 3 or positions.shape[1] < 3:
+            return 0.0
+
+        center = np.asarray(data["cyl_position"]).reshape(3, -1)[:, 0]
+        cyl_radius = self._get_scalar(data, "cyl_radius", 0.015)
+        dx = positions[:, 0, :] - center[0]
+        dz = positions[:, 2, :] - center[2]
+        radial_dist = np.sqrt(dx ** 2 + dz ** 2)
+        contact_counts = np.sum(
+            radial_dist < (cyl_radius + float(base_radius)), axis=1
+        )
+
+        peak_contacts = int(contact_counts.max()) if contact_counts.size else 0
+        threshold = max(
+            self.curl_min_contacts,
+            int(np.ceil(self.curl_contact_ratio * peak_contacts)),
+        )
+        if peak_contacts < threshold:
+            return 0.0
+
+        if "time" in data:
+            times = np.asarray(data["time"], dtype=float).reshape(-1)
+        else:
+            times = np.linspace(0.0, final_time, len(contact_counts))
+        if len(times) != len(contact_counts):
+            return 0.0
+
+        dt = float(np.median(np.diff(times))) if len(times) > 1 else final_time
+        hold_frames = max(1, int(np.ceil(self.curl_hold_time / max(dt, 1e-12))))
+        meets = contact_counts >= threshold
+        for frame_idx in range(0, len(meets) - hold_frames + 1):
+            if np.all(meets[frame_idx:frame_idx + hold_frames]):
+                curl_time = float(times[frame_idx])
+                return 1.0 - float(np.clip(curl_time / final_time, 0.0, 1.0))
+        return 0.0
+
     def __getitem__(self, idx):
         with np.load(self.files[idx], allow_pickle=True) as data:
             ####################################################################
@@ -212,6 +268,7 @@ class DynamicsDataset(Dataset):
             num_contacts = self._get_scalar(data, "num_contacts", 0.0)
             disturbance_score = self._get_scalar(data, "disturbance_resistance_score", 0.0)
             angular_span = self._get_scalar(data, "angular_span", 0.0)
+            curl_speed_score = self._derive_curl_speed_score(data, base_radius)
 
             num_contacts_norm = np.log1p(num_contacts) / np.log1p(n_elements)
             angular_span_norm = np.clip(angular_span / 180.0, 0.0, 1.0)
@@ -222,7 +279,7 @@ class DynamicsDataset(Dataset):
             # )
 
             target_metrics = torch.tensor(
-                [num_contacts_norm, disturbance_score, angular_span_norm],
+                [num_contacts_norm, disturbance_score, angular_span_norm, curl_speed_score],
                 dtype=torch.float32
             )
 

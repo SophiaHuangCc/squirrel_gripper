@@ -104,6 +104,10 @@ def optimize_fingers(args, model, random_idx=80000):
         pred_contacts = pred[0, 0]
         pred_disturbance = pred[0, 1]
         pred_angular_span = pred[0, 2]
+        pred_curl_speed = pred[0, 3]
+        curl_quality_gate = torch.sigmoid(
+            (pred_contacts - args.curl_contact_gate) / args.curl_gate_temperature
+        )
 
         if args.optimization_loss == 'disturbance':
             loss = -pred_disturbance
@@ -129,6 +133,19 @@ def optimize_fingers(args, model, random_idx=80000):
                 + args.contact_weight * pred_contacts
                 + args.angular_span_weight * pred_angular_span
             )
+        elif args.optimization_loss == 'curl_speed':
+            loss = -pred_curl_speed
+
+        elif args.optimization_loss == 'disturbance_contact_span_speed':
+            quality = (
+                args.disturbance_weight * pred_disturbance
+                + args.contact_weight * pred_contacts
+                + args.angular_span_weight * pred_angular_span
+            )
+            loss = -(
+                quality
+                + args.curl_speed_weight * pred_curl_speed * curl_quality_gate
+            )
 
         else:
             raise ValueError('optimization loss not supported')
@@ -141,6 +158,7 @@ def optimize_fingers(args, model, random_idx=80000):
             'pred_contacts': pred_contacts.detach().cpu().item(),
             'pred_disturbance': pred_disturbance.detach().cpu().item(),
             'pred_angular_span': pred_angular_span.detach().cpu().item(),
+            'pred_curl_speed': pred_curl_speed.detach().cpu().item(),
             'opt_approach_deg': task_params[0, 0].detach().cpu().item(),
         })
 
@@ -170,6 +188,7 @@ def optimize_fingers(args, model, random_idx=80000):
             'Pred contacts:', pred_contacts.detach().cpu().item(),
             'Pred disturbance:', pred_disturbance.detach().cpu().item(),
             'Pred angular span:', pred_angular_span.detach().cpu().item(),
+            'Pred curl speed:', pred_curl_speed.detach().cpu().item(),
             'Optimized approach_deg:', task_params[0, 0].detach().cpu().item(),
         )
 
@@ -276,7 +295,7 @@ if __name__ == '__main__':
     if not hasattr(args, 'init_dim'):
         args.init_dim = 3
     if not hasattr(args, 'output_dim'):
-        args.output_dim = 3
+        args.output_dim = 4
     if not hasattr(args, 'hidden_dim'):
         args.hidden_dim = 256
     if not hasattr(args, 'design_dim'):
@@ -308,6 +327,12 @@ if __name__ == '__main__':
         args.reg_weight = 0.0
     if not hasattr(args, 'angular_span_weight'):
         args.angular_span_weight = 0.5
+    if not hasattr(args, 'curl_speed_weight'):
+        args.curl_speed_weight = 0.1
+    if not hasattr(args, 'curl_contact_gate'):
+        args.curl_contact_gate = 0.3
+    if not hasattr(args, 'curl_gate_temperature'):
+        args.curl_gate_temperature = 0.05
 
     if not hasattr(args, 'approach_deg'):
         args.approach_deg = 45.0

@@ -51,6 +51,31 @@ def metric2objective(metric, objective):
                 + 0.5 * metric["angular_span"]
             ),
         }
+    elif objective == "curl_speed":
+        return {
+            "curl_speed_score": metric["curl_speed_score"],
+            "curl_time": metric["curl_time"],
+        }
+
+    elif objective == "disturbance_contact_span_speed":
+        n_elements = max(float(metric.get("n_elements", 100.0)), 1.0)
+        contacts_norm = np.log1p(metric["num_contacts"]) / np.log1p(n_elements)
+        quality_gate = 1.0 / (1.0 + np.exp(-(contacts_norm - 0.3) / 0.05))
+        quality = (
+            metric["disturbance_resistance_score"]
+            + 0.1 * metric["num_contacts"]
+            + 0.5 * metric["angular_span"]
+        )
+        return {
+            "disturbance_resistance_score": metric["disturbance_resistance_score"],
+            "num_contacts": metric["num_contacts"],
+            "angular_span": metric["angular_span"],
+            "curl_speed_score": metric["curl_speed_score"],
+            "curl_time": metric["curl_time"],
+            "combined_score": (
+                quality + 0.1 * metric["curl_speed_score"] * quality_gate
+            ),
+        }
 
     else:
         raise ValueError(f"objective not supported: {objective}")

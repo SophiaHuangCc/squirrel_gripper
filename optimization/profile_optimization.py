@@ -82,6 +82,21 @@ def get_best_ids_all_metrics(objectives, opt_obj="disturbance"):
                 [objective["combined_score"] for objective in objectives]
             ),
         }
+    elif opt_obj == "curl_speed":
+        best_ids = {
+            "curl_speed_score": np.argmax(
+                [objective["curl_speed_score"] for objective in objectives]
+            ),
+        }
+    elif opt_obj == "disturbance_contact_span_speed":
+        best_ids = {
+            "combined_score": np.argmax(
+                [objective["combined_score"] for objective in objectives]
+            ),
+            "curl_speed_score": np.argmax(
+                [objective["curl_speed_score"] for objective in objectives]
+            ),
+        }
     else:
         raise ValueError("opt obj not supported")
 
@@ -125,8 +140,21 @@ def optimization(args):
         param.requires_grad = False
     profile_model.eval()
 
-    for opt_obj in ["disturbance", "disturbance_contact", "contact", 
-                    "angular_span", "disturbance_span", "disturbance_contact_span"]:
+    # for opt_obj in ["disturbance", "disturbance_contact", "contact",
+    #                 "angular_span", "disturbance_span", "disturbance_contact_span"]:
+    objective_list = [
+        "disturbance",
+        "disturbance_contact",
+        "contact",
+        "angular_span",
+        "disturbance_span",
+        "disturbance_contact_span",
+        "curl_speed",
+        "disturbance_contact_span_speed",
+    ]
+
+    for obj_idx, opt_obj in enumerate(objective_list):
+        wandb_step_offset = obj_idx * (args.num_epochs + 5)
         if args.init_only:
             raise NotImplementedError(
                 "init_only needs physical design params, not raw [-1, 1] params."
@@ -160,6 +188,9 @@ def optimization(args):
             disturbance_weight=args.disturbance_weight,
             reg_weight=args.reg_weight,
             angular_span_weight=args.angular_span_weight,
+            curl_speed_weight=args.curl_speed_weight,
+            curl_contact_gate=args.curl_contact_gate,
+            curl_gate_temperature=args.curl_gate_temperature,
 
             joint_soft_min=args.joint_soft_min,
             joint_soft_max=args.joint_soft_max,
@@ -187,6 +218,7 @@ def optimization(args):
 
             approach_deg_min=args.approach_deg_min,
             approach_deg_max=args.approach_deg_max,
+            wandb_step_offset=wandb_step_offset,
         )
 
         # design_result, task_result = optimizer.solve()
@@ -263,7 +295,7 @@ if __name__ == "__main__":
     if not hasattr(args, "init_dim"):
         args.init_dim = 3
     if not hasattr(args, "output_dim"):
-        args.output_dim = 3
+        args.output_dim = 4
 
     if not hasattr(args, "batch_size"):
         args.batch_size = 16
@@ -303,6 +335,12 @@ if __name__ == "__main__":
         args.reg_weight = 0.0
     if not hasattr(args, "angular_span_weight"):
         args.angular_span_weight = 0.5
+    if not hasattr(args, "curl_speed_weight"):
+        args.curl_speed_weight = 0.1
+    if not hasattr(args, "curl_contact_gate"):
+        args.curl_contact_gate = 0.3
+    if not hasattr(args, "curl_gate_temperature"):
+        args.curl_gate_temperature = 0.05
 
     if not hasattr(args, "joint_soft_min"):
         args.joint_soft_min = 0.0005

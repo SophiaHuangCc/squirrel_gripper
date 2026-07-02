@@ -29,5 +29,21 @@ def parse():
     parser.add_argument("--wandb_id", type=str, default="squirrel_dynamics_01")
     parser.add_argument("--use_design_noise", action="store_true")
     parser.add_argument("--use_es", action="store_true", help="Use evolutionary strategy for training")
+    parser.add_argument("--output_dim", type=int, default=4)
+    parser.add_argument("--curl_contact_ratio", type=float, default=0.8)
+    parser.add_argument("--curl_hold_time", type=float, default=0.2)
+    parser.add_argument("--curl_min_contacts", type=int, default=3)
+    parser.add_argument(
+        "--curl_speed_weight", type=float, default=0.1,
+        help="Weight of the gated curl-speed reward in the combined optimization objective.",
+    )
+    parser.add_argument(
+        "--curl_contact_gate", type=float, default=0.3,
+        help="Normalized predicted contact score at the midpoint of the speed quality gate.",
+    )
+    parser.add_argument(
+        "--curl_gate_temperature", type=float, default=0.05,
+        help="Softness of the predicted-contact gate applied to curl speed.",
+    )
 
     return parser.parse_args()
