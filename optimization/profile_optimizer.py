@@ -638,11 +638,25 @@ class ProfileOptimizerES():
         seed: int = 0,
         wandb_step_offset: int = 0,
         device: torch.device = torch.device("cuda:0"),
+        cma_sigma: float = 0.35,
+        cma_popsize: int = 32,
+        cma_raw_bound: float = 4.0,
         **kwargs,
     ):
         super(ProfileOptimizerES, self).__init__()
         if cma is None:
             raise ImportError("cma is not installed. Install cma or use ProfileOptimizer instead.")
+        if batch_size != 1:
+            raise ValueError(
+                "CMA-ES expects batch_size=1 so each population member is one "
+                "13D finger. Use cma_popsize for parallel candidate count."
+            )
+        if cma_sigma <= 0.0:
+            raise ValueError("cma_sigma must be > 0")
+        if cma_popsize < 2:
+            raise ValueError("cma_popsize must be >= 2")
+        if cma_raw_bound <= 0.0:
+            raise ValueError("cma_raw_bound must be > 0")
 
         self.wandb_step_offset = wandb_step_offset
 
@@ -660,12 +674,29 @@ class ProfileOptimizerES():
             **kwargs,
         )
 
+        # Remove initialization noise from the approach coordinate so the
+        # physical start angle is exactly init_approach_deg. Clip all raw
+        # coordinates to a finite trust region to avoid sigmoid saturation.
+        x0 = self.model.state.detach().view(-1).cpu().numpy().copy()
+        x0[12] = inverse_sigmoid_from_range(
+            self.model.init_approach_deg,
+            self.model.approach_deg_min,
+            self.model.approach_deg_max,
+        )
+        x0 = np.clip(x0, -cma_raw_bound, cma_raw_bound)
+        self.model.state = nn.Parameter(
+            torch.from_numpy(x0.reshape(1, input_dim))
+            .float()
+            .to(self.model.device)
+        )
+
         self.optimizer = cma.CMAEvolutionStrategy(
-            x0=self.model.state.detach().view(-1).cpu().numpy(),
-            sigma0=0.25,
+            x0=x0,
+            sigma0=cma_sigma,
             inopts={
-                "popsize": 32,
-                # "bounds": [-8.0, 8.0],
+                "popsize": cma_popsize,
+                "bounds": [-cma_raw_bound, cma_raw_bound],
+                "seed": seed,
             },
         )
         self.object_vertices = object_vertices
@@ -709,6 +740,10 @@ class ProfileOptimizerES():
                 )
 
                 pred_now = self.model.predict_current()
+                _, task_now = self.model.state_to_design()
+                approach_now = float(
+                    task_now[0, 0].detach().cpu().item()
+                )
                 score_now = pred_to_objective_np(
                     pred_now,
                     self.opt_obj,
@@ -729,13 +764,15 @@ class ProfileOptimizerES():
                     f"{self.opt_obj}/es_pred_disturbance_mean": float(np.mean(pred_now[:, 1])),
                     f"{self.opt_obj}/es_pred_angular_span_mean": float(np.mean(pred_now[:, 2])),
                     f"{self.opt_obj}/es_pred_curl_speed_mean": float(np.mean(pred_now[:, 3])),
+                    f"{self.opt_obj}/es_best_approach_deg": approach_now,
                 }, step=self.wandb_step_offset + i)
 
                 if i % 10 == 0:
                     print(
                         f"[ES DEBUG] iter={i} "
                         f"mean_loss={losses.mean():.6f} "
-                        f"best_loss={losses.min():.6f}"
+                        f"best_loss={losses.min():.6f} "
+                        f"best_approach_deg={approach_now:.2f}"
                     )
 
         best_solution = np.asarray(self.optimizer.best.x).reshape(

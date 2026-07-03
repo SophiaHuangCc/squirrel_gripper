@@ -29,6 +29,48 @@ def parse():
     parser.add_argument("--wandb_id", type=str, default="squirrel_dynamics_01")
     parser.add_argument("--use_design_noise", action="store_true")
     parser.add_argument("--use_es", action="store_true", help="Use evolutionary strategy for training")
+    parser.add_argument(
+        "--cma_sigma",
+        type=float,
+        default=0.35,
+        help="Initial CMA-ES step size in raw optimizer coordinates.",
+    )
+    parser.add_argument(
+        "--cma_popsize",
+        type=int,
+        default=32,
+        help="Number of 13D candidate fingers evaluated per CMA-ES generation.",
+    )
+    parser.add_argument(
+        "--cma_raw_bound",
+        type=float,
+        default=4.0,
+        help="Symmetric bound on raw CMA-ES parameters before sigmoid mapping.",
+    )
+    parser.add_argument("--approach_deg", type=float, default=60.0)
+    parser.add_argument("--init_approach_deg", type=float, default=60.0)
+    parser.add_argument(
+        "--approach_deg_min",
+        type=float,
+        default=45.0,
+        help="Lower approach-angle bound; exp3 training samples start at 45 degrees.",
+    )
+    parser.add_argument(
+        "--approach_deg_max",
+        type=float,
+        default=75.0,
+        help="Upper approach-angle bound; exp3 training samples end at 75 degrees.",
+    )
+    parser.add_argument(
+        "--optimization_objectives",
+        type=str,
+        default=(
+            "disturbance,disturbance_contact,contact,angular_span,"
+            "disturbance_span,disturbance_contact_span,curl_speed,"
+            "disturbance_contact_span_speed"
+        ),
+        help="Comma-separated objectives to run in profile optimization.",
+    )
     parser.add_argument("--output_dim", type=int, default=4)
     parser.add_argument("--curl_contact_ratio", type=float, default=0.8)
     parser.add_argument("--curl_hold_time", type=float, default=0.2)

@@ -143,6 +143,11 @@ def optimization(args):
     # for opt_obj in ["disturbance", "disturbance_contact", "contact",
     #                 "angular_span", "disturbance_span", "disturbance_contact_span"]:
     objective_list = [
+        value.strip()
+        for value in args.optimization_objectives.split(",")
+        if value.strip()
+    ]
+    supported_objectives = {
         "disturbance",
         "disturbance_contact",
         "contact",
@@ -151,7 +156,13 @@ def optimization(args):
         "disturbance_contact_span",
         "curl_speed",
         "disturbance_contact_span_speed",
-    ]
+    }
+    unknown_objectives = set(objective_list) - supported_objectives
+    if not objective_list or unknown_objectives:
+        raise ValueError(
+            "Invalid --optimization_objectives. "
+            f"Unknown values: {sorted(unknown_objectives)}"
+        )
 
     for obj_idx, opt_obj in enumerate(objective_list):
         wandb_step_offset = obj_idx * (args.num_epochs + 5)
@@ -165,9 +176,22 @@ def optimization(args):
         else:
             optimizer_cls = ProfileOptimizer
 
+        # One CMA individual should represent one 13D finger. CMA's population
+        # supplies the multiple candidates. Passing the training/Adam batch size
+        # here previously produced a coupled (batch_size * 13)-D search whose
+        # loss was the mean over many fingers.
+        optimizer_batch_size = 1 if args.use_es else args.batch_size
+        optimizer_extra = {}
+        if args.use_es:
+            optimizer_extra = {
+                "cma_sigma": args.cma_sigma,
+                "cma_popsize": args.cma_popsize,
+                "cma_raw_bound": args.cma_raw_bound,
+            }
+
         optimizer = optimizer_cls(
             profile_model=profile_model,
-            batch_size=args.batch_size,
+            batch_size=optimizer_batch_size,
             num_epochs=args.num_epochs,
             learning_rate=args.learning_rate,
             opt_obj=opt_obj,
@@ -219,6 +243,7 @@ def optimization(args):
             approach_deg_min=args.approach_deg_min,
             approach_deg_max=args.approach_deg_max,
             wandb_step_offset=wandb_step_offset,
+            **optimizer_extra,
         )
 
         # design_result, task_result = optimizer.solve()
