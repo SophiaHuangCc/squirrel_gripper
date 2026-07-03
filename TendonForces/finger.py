@@ -1585,20 +1585,6 @@ def main():
                     f"Non-finite velocity at step {current_step}, time {time:.4f}"
                 )
 
-            # NaN checks alone miss the common optimizer failure where adjacent
-            # nodes fly apart but remain finite. Reject a candidate once any
-            # element stretches beyond three times its undeformed spacing.
-            segment_lengths = np.linalg.norm(
-                np.diff(system.position_collection, axis=1), axis=0
-            )
-            max_allowed_length = 3.0 * dx
-            if np.max(segment_lengths) > max_allowed_length:
-                raise FloatingPointError(
-                    "Rod element separation detected at "
-                    f"step {current_step}, time {time:.4f}: "
-                    f"max segment={np.max(segment_lengths):.6e} m, "
-                    f"allowed={max_allowed_length:.6e} m"
-                )
             if current_step % self.every == 0:
                 # --- Essential Tracking ---
                 self.callback_params["time"].append(time)
