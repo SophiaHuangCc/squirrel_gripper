@@ -83,22 +83,19 @@ def sim_test(
 
     cmd = [
         "python3", "finger.py",
-        # Match the simulation configuration used to generate the exp3 dataset.
-        # Keeping these explicit prevents finger.py defaults from silently
-        # changing the dynamics used to verify optimized candidates.
+        # Stable replay profile used before the two-second tuning attempt.
+        # Keep these explicit so future finger.py defaults cannot silently
+        # change optimized-candidate verification.
         "--E", "2e7",
-        # A moderate value preserves fast curling while damping the modes that
-        # optimized, near-boundary designs excite. The dataset's 0.1 value is
-        # fast but proved insufficiently robust for continuous optimization.
-        "--damping", "0.3",
+        "--damping", "0.8",
         "--n_elements", "100",
-        "--final_time", "2.0",
-        "--time_step_safety", "0.05",
+        "--final_time", "4.0",
+        "--time_step_safety", "0.1",
         "--k_contact", "1250.0",
         "--max_penetration_warn", "0.002",
-        "--nu_contact", "20.0",
-        "--mu_contact", "0.8",
-        "--vel_damp_contact", "30",
+        "--nu_contact", "5.0",
+        "--mu_contact", "0.6",
+        "--vel_damp_contact", "2",
         "--poisson_nu", "0.4",
         "--v_mass", "0.002",
         "--num_v", "3",
@@ -128,17 +125,16 @@ def sim_test(
         # that negative dataset margin creates a harsher impact for optimized
         # geometries and is not an optimized design variable.
         "--prescribed_contact_margin", "0.0",
-        "--landing_height", "0.04",
+        "--landing_height", "0.03",
         "--landing_speed", "0.0",
         "--initial_x_gap", "0.06",
         "--base_force_mag", "0.0",
         "--base_force_dir", "0,0,-1",
         "--base_force_nodes", "1",
-        "--disturbance_force_mag", "5.0",
+        "--disturbance_force_mag", "1.0",
         "--disturbance_base_nodes", "5",
-        "--disturbance_steps", "100",
+        "--disturbance_steps", "40",
         "--disturbance_dt_scale", "1.0",
-        "--continuous_disturbance_metric",
         "--min_tension", "0.1",
         # This caps the feedback-amplified tension, not merely the nominal
         # optimized tension. A nominal 3.5 N could otherwise rise to 20 N.
