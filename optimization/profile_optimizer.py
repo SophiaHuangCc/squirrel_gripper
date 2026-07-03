@@ -315,35 +315,11 @@ class ProfileOptimizerModel(nn.Module):
         """
         x = self.state
 
-        # Keep each joint inside the positional support of the exp3 samples.
-        # A single scalar [0.0005, 0.005] bound allowed Adam to make the
-        # proximal joint nearly disconnected while using full_material mode,
-        # which also scales shear and axial stiffness.
-        joint_soft_lo = x.new_tensor([
-            max(self.joint_soft_min, 0.0009),
-            max(self.joint_soft_min, 0.0008),
-            max(self.joint_soft_min, 0.0005),
-        ]).view(1, 3)
-        joint_soft_hi = x.new_tensor([
-            min(self.joint_soft_max, 0.0050),
-            min(self.joint_soft_max, 0.0040),
-            min(self.joint_soft_max, 0.0030),
-        ]).view(1, 3)
-        joint_softness = (
-            joint_soft_lo
-            + (joint_soft_hi - joint_soft_lo) * torch.sigmoid(x[:, 0:3])
-        )
+        joint_softness = sigmoid_to_range(x[:, 0:3], self.joint_soft_min, self.joint_soft_max)
 
+        raw_links = sigmoid_to_range(x[:, 3:7], self.link_min, self.link_max)
         base_length = sigmoid_to_range(x[:, 8:9], self.base_length_min, self.base_length_max)
-
-        # The supplied dataset command uses v_mode=uniform, v_start=38 and
-        # v_end=80. With three vertebrae that is [38, 59, 80], so the model has
-        # no training support for optimizing vertebra placement. Keep the four
-        # link fractions fixed at [38, 21, 21, 20] percent. To optimize these
-        # positions later, regenerate the dataset with varied manual v_list
-        # values and restore a constrained link parameterization here.
-        link_fractions = x.new_tensor([0.38, 0.21, 0.21, 0.20]).view(1, 4)
-        link_lengths = link_fractions * base_length
+        link_lengths = raw_links / torch.sum(raw_links, dim=-1, keepdim=True) * base_length
 
         base_radius = sigmoid_to_range(x[:, 7:8], self.base_radius_min, self.base_radius_max)
         tension = sigmoid_to_range(x[:, 9:10], self.tension_min, self.tension_max)

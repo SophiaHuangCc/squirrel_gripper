@@ -703,15 +703,6 @@ def main():
     parser.add_argument("--n_elements", type=int, default=100, help="Number of rod elements")
     parser.add_argument("--final_time", type=float, default=4.0, help="Total simulation time in seconds")
     parser.add_argument(
-        "--time_step_safety",
-        type=float,
-        default=0.1,
-        help=(
-            "Fraction of the axial-wave critical timestep to use. "
-            "Use 0.05 for optimized designs with contact and tendon feedback."
-        ),
-    )
-    parser.add_argument(
         "--curl_contact_ratio", type=float, default=0.8,
         help="Fraction of the trajectory's peak contact count required for curl completion.",
     )
@@ -1173,10 +1164,7 @@ def main():
     final_time = float(args.final_time)
     if final_time <= 0.0:
         raise ValueError("--final_time must be > 0")
-    time_step_safety = float(args.time_step_safety)
-    if not (0.0 < time_step_safety <= 0.2):
-        raise ValueError("--time_step_safety must be in (0, 0.2]")
-    time_step = time_step_safety * dt_critical
+    time_step = 0.1 * dt_critical
     rendering_fps = 30.0
     total_steps = int(final_time / time_step)
     step_skip = int(1.0 / (rendering_fps * time_step))
@@ -1189,11 +1177,7 @@ def main():
     print(f"\n==== RUNNING ====")
     print(f"E={E:.2e}  G={G:.2e}  tension={tension:.2f}  cyl_radius={cyl_radius:.3f}")
     print(f"contact: k={k_contact} nu={nu_contact} mu={mu_contact} vel_damp={vel_damp_contact}")
-    print(
-        f"damping_constant={damping_constant} "
-        f"time_step_safety={time_step_safety:.3f} "
-        f"time_step={time_step:.3e}s"
-    )
+    print(f"damping_constant={damping_constant}")
 
     ankle_contact_gated = (
         landing_motion
@@ -1576,15 +1560,12 @@ def main():
             self.landing_state = landing_state
 
         def make_callback(self, system, time, current_step):
-            if not np.isfinite(system.position_collection).all():
-                raise FloatingPointError(
-                    f"Non-finite position at step {current_step}, time {time:.4f}"
-                )
-            if not np.isfinite(system.velocity_collection).all():
-                raise FloatingPointError(
-                    f"Non-finite velocity at step {current_step}, time {time:.4f}"
-                )
-
+            if np.isnan(system.position_collection).any():
+                print(f"[ERROR] NaN in position at step {current_step}, time {time:.4f}")
+                sys.exit(1)
+            if np.isnan(system.velocity_collection).any():
+                print(f"[ERROR] NaN in velocity at step {current_step}, time {time:.4f}")
+                sys.exit(1)
             if current_step % self.every == 0:
                 # --- Essential Tracking ---
                 self.callback_params["time"].append(time)

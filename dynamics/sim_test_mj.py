@@ -83,32 +83,10 @@ def sim_test(
 
     cmd = [
         "python3", "finger.py",
-        # Stable replay profile used before the two-second tuning attempt.
-        # Keep these explicit so future finger.py defaults cannot silently
-        # change optimized-candidate verification.
-        "--E", "2e7",
-        "--damping", "0.8",
-        "--n_elements", "100",
-        "--final_time", "4.0",
-        "--time_step_safety", "0.1",
-        "--k_contact", "1250.0",
-        "--max_penetration_warn", "0.002",
-        "--nu_contact", "5.0",
-        "--mu_contact", "0.6",
-        "--vel_damp_contact", "2",
-        "--poisson_nu", "0.4",
-        "--v_mass", "0.002",
-        "--num_v", "3",
-        "--v_height", "0.005",
-        "--body_mass", "0.5",
         "--approach_deg", str(approach_deg),
         "--cyl_rad", str(cyl_rad),
-        # The dataset command used uniform nodes [38, 59, 80]. Its v_list
-        # argument was ignored by finger.py.
-        "--v_mode", "uniform",
-        "--v_start", "38",
-        "--v_end", "80",
-        "--joint_stiffness_mode", "full_material",
+        "--v_mode", "manual",
+        "--v_list", design["v_list_str"],
         "--joint_softness", design["joint_softness_str"],
         "--base_rad", str(design["base_rad"]),
         "--base_len", str(design["base_len"]),
@@ -119,26 +97,6 @@ def sim_test(
         "--suffix", f"opt_{finger_idx}",
         "--landing_motion",
         "--landing_mode", "prescribed",
-        "--landing_approach_deg", "30.0",
-        "--prescribed_stop_at_contact",
-        # Avoid commanding the base 5 mm inside the nominal contact boundary;
-        # that negative dataset margin creates a harsher impact for optimized
-        # geometries and is not an optimized design variable.
-        "--prescribed_contact_margin", "0.0",
-        "--landing_height", "0.03",
-        "--landing_speed", "0.0",
-        "--initial_x_gap", "0.06",
-        "--base_force_mag", "0.0",
-        "--base_force_dir", "0,0,-1",
-        "--base_force_nodes", "1",
-        "--disturbance_force_mag", "1.0",
-        "--disturbance_base_nodes", "5",
-        "--disturbance_steps", "40",
-        "--disturbance_dt_scale", "1.0",
-        "--min_tension", "0.1",
-        # This caps the feedback-amplified tension, not merely the nominal
-        # optimized tension. A nominal 3.5 N could otherwise rise to 20 N.
-        "--max_tension", "6.0",
         # "--disable_video_plots",
     ]
 
@@ -153,33 +111,10 @@ def sim_test(
     )
 
     if result.returncode != 0:
-        failure_log = os.path.join(run_dir, "simulation_failure.log")
-        with open(failure_log, "w") as f:
-            f.write(result.stdout)
-            f.write("\n\n--- STDERR ---\n")
-            f.write(result.stderr)
-
-        # Keep batch verification alive and make numerical failures rank below
-        # every physically valid candidate.
-        metric = {
-            "num_contacts": 0.0,
-            "disturbance_resistance_score": 0.0,
-            "angular_span": 0.0,
-            "curl_time": float("inf"),
-            "curl_speed_score": 0.0,
-            "n_elements": 100.0,
-            "combined_score": float("-inf"),
-            "simulation_stable": False,
-        }
-        print(
-            f"[sim_test] unstable candidate {finger_idx}; "
-            f"saved diagnostics to {failure_log}"
-        )
-        return metric, run_dir
+        raise RuntimeError(result.stderr[-2000:])
 
     npz_path = read_latest_npz(run_dir)
     metric = read_metric_from_npz(npz_path)
-    metric["simulation_stable"] = True
     summary_npz_path = os.path.join(run_dir, f"finger_{finger_idx}.npz")
 
     np.savez_compressed(
