@@ -1,0 +1,19 @@
+python generator/sample.py \
+    --diffusion_checkpoint_path "generator/runs/diffusion_exp3/best.pt" \
+    --dynamics_checkpoint_path "outputs/dynamics_2d_run/best.pt" \
+    --save_dir "generator/runs/sample_exp3" \
+    --num_samples 512 \
+    --batch_size 256 \
+    --num_inference_steps 20 \
+    --guidance_scale 0.0 \
+    --guidance_objective "disturbance_contact_span_speed" \
+    --approach_deg 45.0 \
+    --cyl_rad 0.03 \
+    --landing_height 0.04 \
+    --landing_speed 0.0 \
+    --initial_x_gap 0.06 \
+    --target_contacts 0.6 \
+    --target_disturbance 0.8 \
+    --target_angular_span 0.8 \
+    --target_curl_speed 0.8
+
