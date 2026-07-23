@@ -31,6 +31,8 @@ class SimpleEMA:
             for name, param in module.named_parameters():
                 if name not in self.shadow:
                     continue
+                if self.shadow[name].device != param.device:
+                    self.shadow[name] = self.shadow[name].to(param.device)
                 self.shadow[name].mul_(self.decay).add_(param.detach(), alpha=1.0 - self.decay)
 
     def copy_to(self, module: nn.Module) -> None:
