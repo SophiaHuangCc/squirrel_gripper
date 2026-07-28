@@ -28,6 +28,8 @@ TendonForces/sweep_videos/
 TendonForces/sweep_videos/**
 TendonForces/runs/
 TendonForces/runs/**
+TendonForces/study_videos/
+TendonForces/study_videos/**
 
 # --- Local archive ---
 TendonForces/outdated_files/
