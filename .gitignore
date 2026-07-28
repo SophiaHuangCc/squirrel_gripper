@@ -42,3 +42,6 @@ optimization/__pycache__/
 optimization/__pycache__/**
 optimization/runs/
 optimization/runs/**
+
+generator/runs/
+generator/runs/**
