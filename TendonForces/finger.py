@@ -732,6 +732,19 @@ def main():
     # finger arguments
     parser.add_argument("--base_len", type=float, default=0.10, help="Finger length in meters")
     parser.add_argument("--base_rad", type=float, default=0.005, help="Finger radius in meters")
+    # Cross-section: circular (default) or rectangular.
+    parser.add_argument(
+        "--cross_section", type=str, default="circ", choices=["circ", "rect"],
+        help="Finger cross-section shape. 'circ' uses --base_rad; 'rect' uses "
+             "--base_width (lateral/y) and --base_thickness (curl/z).")
+    parser.add_argument(
+        "--base_width", type=float, default=None,
+        help="Rectangular cross-section width along the lateral (y) axis, in meters. "
+             "Governs lateral bending stiffness (~width^3). Defaults to 2*base_rad.")
+    parser.add_argument(
+        "--base_thickness", type=float, default=None,
+        help="Rectangular cross-section thickness along the curl (z) axis, in meters. "
+             "Governs forward-curl stiffness (~thickness^3). Defaults to 2*base_rad.")
     parser.add_argument("--nu_contact", type=float, default=5.0, help="Contact damping")
     parser.add_argument("--mu_contact", type=float, default=0.6, help="Friction coefficient")
     parser.add_argument("--vel_damp_contact", type=int, default=2, help="Numerical contact stability")
@@ -759,6 +772,18 @@ def main():
             "full_material scales bending, twist, shear, and axial stiffness "
             "in each joint region; bending_only reproduces the legacy dataset "
             "by scaling only bend_matrix[1,1] and [2,2]."
+        ),
+    )
+    parser.add_argument(
+        "--joint_lengths",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated per-joint lengths in centimeters (one per joint). "
+            "The softened region for each joint spans this length, centered on "
+            "the vertebra node. For trapezoidal joints that shrink toward the "
+            "tip, pass decreasing values (e.g. '2.4,1.6,0.8'). A single value "
+            "applies to all joints. Empty = legacy fixed 8-element window."
         ),
     )
     # vertebra selector: 'uniform' or 'manual'
@@ -1094,7 +1119,49 @@ def main():
     base_radius = args.base_rad
     density = 1200
     mass_second_moment_of_inertia = 0.25 * np.pi * base_radius**4
-    
+
+    # ------------------------------------------------------------------
+    # Cross-section: circular (default) or rectangular.
+    #
+    # Rod frame (from direction=+x, normal=+z): tangent d3=+x (axial),
+    # d1=+z (curl/vertical), d2=-y (lateral). Therefore:
+    #   * forward curl  <-> bending about d2 <-> second moment I2 (uses thickness^3)
+    #   * lateral bend  <-> bending about d1 <-> second moment I1 (uses width^3)
+    # The rod is built as a circular rod from base_radius, then (for 'rect')
+    # its constitutive matrices are rescaled to the rectangular section so we
+    # reuse Elastica's exact shear-correction / Poisson conventions.
+    # For contact (an XZ-plane cylinder), the effective radial half-extent in
+    # the curl (z) direction is thickness/2, so we drive the contact model with
+    # contact_radius instead of base_radius.
+    # ------------------------------------------------------------------
+    cross_section = args.cross_section
+    if cross_section == "rect":
+        base_width = float(args.base_width) if args.base_width is not None else 2.0 * base_radius
+        base_thickness = float(args.base_thickness) if args.base_thickness is not None else 2.0 * base_radius
+        A_circ = np.pi * base_radius**2
+        I_circ = 0.25 * np.pi * base_radius**4        # I1==I2 for a circle
+        J_circ = 0.5 * np.pi * base_radius**4         # polar
+        A_rect = base_width * base_thickness
+        I1_rect = base_thickness * base_width**3 / 12.0   # lateral bend (about d1=z)
+        I2_rect = base_width * base_thickness**3 / 12.0   # forward curl (about d2=y)
+        J_rect = I1_rect + I2_rect                         # polar approx for twist
+        rect_ratio_area = A_rect / A_circ
+        rect_ratio_I1 = I1_rect / I_circ
+        rect_ratio_I2 = I2_rect / I_circ
+        rect_ratio_J = J_rect / J_circ
+        contact_radius = 0.5 * base_thickness
+        print(
+            f"[CROSS-SECTION] rectangular: width(y)={base_width*1e3:.2f}mm "
+            f"thickness(z)={base_thickness*1e3:.2f}mm | "
+            f"forward-curl I2={I2_rect:.3e} (x{rect_ratio_I2:.3f} vs circ), "
+            f"lateral I1={I1_rect:.3e} (x{rect_ratio_I1:.3f} vs circ)"
+        )
+    else:
+        base_width = 2.0 * base_radius
+        base_thickness = 2.0 * base_radius
+        contact_radius = base_radius
+        print(f"[CROSS-SECTION] circular: radius={base_radius*1e3:.2f}mm")
+
     # Cylinder (branch) parameters
     cyl_length = 0.20
     cyl_density = 1200.0
@@ -1126,6 +1193,28 @@ def main():
         arg_name="--joint_softness",
     )
 
+    # Per-joint softened-region length. Empty -> legacy fixed 8-element window.
+    # Values are centimeters, converted to an element count via the element
+    # size (base_length / n_elements). Passing decreasing values yields
+    # "trapezoidal" joints that shrink toward the tip.
+    element_size_m = base_length / n_elements
+    if str(args.joint_lengths).strip():
+        joint_len_cm = parse_float_list_with_resize(
+            args.joint_lengths,
+            target_len=len(vertebra_nodes),
+            arg_name="--joint_lengths",
+        )
+        joint_len_elements = [
+            max(1, int(round((L_cm * 1e-2) / element_size_m))) for L_cm in joint_len_cm
+        ]
+    else:
+        joint_len_elements = [8] * len(vertebra_nodes)
+    print(
+        f"[SOFT JOINTS] element size = {element_size_m*1e3:.2f} mm | "
+        f"joint lengths (elements) = {joint_len_elements} "
+        f"= {[round(n*element_size_m*1e2, 2) for n in joint_len_elements]} cm"
+    )
+
     # Mass of squirrel body
     body_mass = args.body_mass
     gravity = 9.80665
@@ -1146,9 +1235,9 @@ def main():
     dx = base_length / n_elements
     # Physical estimate: k ~ E*A/L where A~(radius*dx), L~(2*radius)
     # This avoids unrealistically deep penetration with low penalty stiffness.
-    contact_width = base_radius
+    contact_width = contact_radius
     area_per_element = contact_width * dx
-    k_contact_physical = (E * area_per_element) / max(2 * base_radius, 1e-12)
+    k_contact_physical = (E * area_per_element) / max(2 * contact_radius, 1e-12)
     print(f"[CONTACT] Physical stiffness estimate based on E and element size: {k_contact_physical:.2e} N/m")
     # area_per_element = np.pi * base_radius**2   # cross-sectional area
     # k_contact_physical = E * area_per_element / dx
@@ -1217,7 +1306,7 @@ def main():
     target_contact_s = target_contact_node / n_elements
     target_contact_offset = target_contact_s * base_length * direction
 
-    contact_gap = cyl_radius + base_radius + 0.003  # small clearance
+    contact_gap = cyl_radius + contact_radius + 0.003  # small clearance
     desired_contact_point = np.array([
         cyl_x - contact_gap * np.cos(angle_rad),
         0.0,
@@ -1273,6 +1362,29 @@ def main():
         shear_modulus=G,
         mass_second_moment_of_inertia=mass_second_moment_of_inertia,
     )
+
+    # Rescale the (circular) constitutive matrices to a rectangular section.
+    # This preserves Elastica's shear-correction / Poisson conventions while
+    # changing effective area and the two bending second moments independently.
+    # Diagonal index 0 -> curvature about d1 (=z)  -> lateral bending  (I1, width^3)
+    # Diagonal index 1 -> curvature about d2 (=-y) -> forward curl      (I2, thickness^3)
+    # Diagonal index 2 -> twist about d3 (=x)      -> torsion (polar J)
+    if cross_section == "rect":
+        finger.bend_matrix[0, 0, :] *= rect_ratio_I1
+        finger.bend_matrix[1, 1, :] *= rect_ratio_I2
+        finger.bend_matrix[2, 2, :] *= rect_ratio_J
+        finger.shear_matrix[0, 0, :] *= rect_ratio_area
+        finger.shear_matrix[1, 1, :] *= rect_ratio_area
+        finger.shear_matrix[2, 2, :] *= rect_ratio_area
+        finger.mass[:] *= rect_ratio_area
+        finger.mass_second_moment_of_inertia[0, 0, :] *= rect_ratio_I1
+        finger.mass_second_moment_of_inertia[1, 1, :] *= rect_ratio_I2
+        finger.mass_second_moment_of_inertia[2, 2, :] *= rect_ratio_J
+        for e in range(finger.inv_mass_second_moment_of_inertia.shape[2]):
+            diag = finger.mass_second_moment_of_inertia[:, :, e].diagonal()
+            finger.inv_mass_second_moment_of_inertia[:, :, e] = np.diag(1.0 / diag)
+        finger.radius[:] = contact_radius
+
     sim.append(finger)
 
     base_tangent_ref = finger.tangents[:, 0].copy()
@@ -1302,7 +1414,10 @@ def main():
     for i, j in enumerate(vertebra_nodes):
         idx = int(np.clip(j, 0, finger.bend_matrix.shape[2] - 1))
         joint_mult = joint_softness_list[i]
-        for k in range(idx - 4, idx + 4):
+        n_elem_joint = joint_len_elements[i]
+        half_lo = n_elem_joint // 2
+        half_hi = n_elem_joint - half_lo
+        for k in range(idx - half_lo, idx + half_hi):
             bend_idx = int(np.clip(k, 0, finger.bend_matrix.shape[2] - 1))
 
             if args.joint_stiffness_mode == "full_material":
@@ -1403,7 +1518,7 @@ def main():
             landing_state=landing_state,
             cyl_center=cylinder.position_collection[:, 0].copy(),
             cyl_radius=cyl_radius,
-            base_radius=base_radius,
+            base_radius=contact_radius,
         )
 
     tendon_debug = {
@@ -1625,6 +1740,11 @@ def main():
     data_to_save["mu_contact"] = np.array([mu_contact])
     data_to_save["base_length"] = np.array([base_length])
     data_to_save["base_radius"] = np.array([base_radius])
+    data_to_save["cross_section"] = np.array([cross_section])
+    data_to_save["base_width"] = np.array([base_width])
+    data_to_save["base_thickness"] = np.array([base_thickness])
+    data_to_save["contact_radius"] = np.array([contact_radius])
+    data_to_save["joint_len_elements"] = np.array(joint_len_elements)
     data_to_save["vertebra_nodes"] = vertebra_nodes
     data_to_save["dt_critical"] = np.array([dt_critical])
     data_to_save["time_step"] = np.array([time_step])
@@ -1699,7 +1819,7 @@ def main():
         cyl_radius,
         k_contact,
         mu_contact,
-        base_radius,
+        contact_radius,
         cyl_length,
     )
     contact_vertices = final_pos[:, contact_idx].T
@@ -1815,11 +1935,11 @@ def main():
         min_rad = np.inf
         for P, V in zip(pos_data, vel_data):
             (_, _, _, _, _, radial_dist, _) = compute_contact_metrics_frame(
-                P, V, cyl_center, a, cyl_radius, k_contact, mu_contact, base_radius, cyl_length
+                P, V, cyl_center, a, cyl_radius, k_contact, mu_contact, contact_radius, cyl_length
             )
             min_rad = min(min_rad, float(np.min(radial_dist)))
             # Keep this threshold consistent with compute_contact_metrics_frame.
-            total_contacts += int(np.sum((cyl_radius + base_radius - radial_dist) > 0.0))
+            total_contacts += int(np.sum((cyl_radius + contact_radius - radial_dist) > 0.0))
         best = max(best, (total_contacts, min_rad, a), key=lambda x: x[0]) if best else (total_contacts, min_rad, a)
 
     total_contacts, min_rad, cyl_axis = best
@@ -1849,7 +1969,7 @@ def main():
         for frame_idx, (P, V) in enumerate(zip(pos_data, vel_data)):
             t = frame_idx * dt_saved
             (idx, nF, nV, tS, fF, radial_dist_all, overlap_all) = compute_contact_metrics_frame(
-                P, V, cyl_center, cyl_axis, cyl_radius, k_contact, mu_contact, base_radius, cyl_length
+                P, V, cyl_center, cyl_axis, cyl_radius, k_contact, mu_contact, contact_radius, cyl_length
             )
             contact_counts.append(len(idx))
             # print("overlap average value:", np.mean(overlap_all))
@@ -2018,7 +2138,7 @@ def main():
                 cyl_radius=cyl_radius,
                 k=k_contact,
                 mu=mu_contact,
-                base_radius=base_radius,
+                base_radius=contact_radius,
                 base_indices=base_indices,
                 node_masses=node_mass_uniform,
                 disturbance_force=applied_force,
@@ -2187,6 +2307,15 @@ def main():
 
     except Exception as e:
         print(f"[ERROR] Error during contact/disturbance calculation: {e}")
+        # Still persist whatever trajectory/metadata we collected (e.g. when the
+        # finger never reaches the branch, so contact analysis has nothing to
+        # reduce). This keeps free-curl / no-contact runs usable.
+        try:
+            filename = os.path.join(base_outdir, f"master_log_{run_id}_{suffix}.npz")
+            np.savez_compressed(filename, **data_to_save)
+            print(f"Archive Complete (partial, no contact metrics): {filename}")
+        except Exception as e2:
+            print(f"[ERROR] Fallback save also failed: {e2}")
 
     summary_file = os.path.join(base_outdir, f"sweep_summary.csv")
     file_exists = os.path.isfile(summary_file)
@@ -2239,7 +2368,7 @@ def main():
 
     def make_frame(t):
         ax.clear()
-        rod_radius = base_radius
+        rod_radius = contact_radius
         frame_idx = min(int(max(0.0, t) / dt_saved), len(pos_data) - 1)
         P = pos_data[frame_idx]
         V = vel_data[frame_idx]
@@ -2382,7 +2511,7 @@ def main():
                     cyl_radius=cyl_radius,
                     k=k_contact,
                     mu=mu_contact,
-                    base_radius=base_radius,
+                    base_radius=contact_radius,
                 )
                 base_count_vis = min(disturbance_base_nodes, P.shape[1])
                 base_point_vis = P[:, :base_count_vis].mean(axis=1)
