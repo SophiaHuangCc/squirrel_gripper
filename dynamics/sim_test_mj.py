@@ -108,6 +108,16 @@ def sim_test(
                 continue
             cmd.extend([f"--{key}", str(value)])
 
+    with open(os.path.join(run_dir, "finger_command.json"), "w") as f:
+        json.dump(
+            {
+                "cwd": os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "TendonForces")),
+                "cmd": cmd,
+            },
+            f,
+            indent=2,
+        )
+
     # if not render:
     #     cmd.append("--no_render_video")  # only if you added this flag in finger.py
 
@@ -118,11 +128,42 @@ def sim_test(
         cwd=os.path.join(os.path.dirname(__file__), "..", "TendonForces"),
     )
 
+    with open(os.path.join(run_dir, "finger_stdout.txt"), "w") as f:
+        f.write(result.stdout)
+    with open(os.path.join(run_dir, "finger_stderr.txt"), "w") as f:
+        f.write(result.stderr)
+
     if result.returncode != 0:
         raise RuntimeError(result.stderr[-2000:])
 
     npz_path = read_latest_npz(run_dir)
     metric = read_metric_from_npz(npz_path)
+    used_sim_params = {}
+    with np.load(npz_path, allow_pickle=True) as data:
+        for key in [
+            "damping",
+            "nu_contact",
+            "vel_damp_contact",
+            "k_contact",
+            "final_time",
+            "E",
+            "n_elements",
+            "mu_contact",
+            "poisson_nu",
+            "landing_height",
+            "landing_speed",
+            "initial_x_gap",
+            "prescribed_contact_margin",
+        ]:
+            arg_key = f"arg_{key}"
+            if arg_key in data:
+                used_sim_params[key] = np.asarray(data[arg_key]).reshape(-1)[0].item()
+            elif key in data:
+                used_sim_params[key] = np.asarray(data[key]).reshape(-1)[0].item()
+
+    with open(os.path.join(run_dir, "finger_used_params.json"), "w") as f:
+        json.dump(used_sim_params, f, indent=2)
+
     summary_npz_path = os.path.join(run_dir, f"finger_{finger_idx}.npz")
 
     np.savez_compressed(
@@ -130,6 +171,7 @@ def sim_test(
         design_params=np.asarray(design_params),
         task_params=np.asarray([]) if task_params is None else np.asarray(task_params),
         metric=metric,
+        used_sim_params=np.asarray([used_sim_params], dtype=object),
         master_log_path=np.asarray([npz_path]),
     )
 

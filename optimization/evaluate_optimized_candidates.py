@@ -80,6 +80,14 @@ def evaluate_one_objective(args, objective):
     print(f"Candidate file: {candidate_path}")
     print(f"Selected ids: {top_ids}")
     print(f"Saving verification to: {save_dir}")
+    sim_params = {
+        "damping": args.damping,
+        "nu_contact": args.nu_contact,
+        "vel_damp_contact": args.vel_damp_contact,
+        "k_contact": args.k_contact,
+        "final_time": args.final_time,
+    }
+    print(f"finger.py sim params: {sim_params}")
 
     metrics, save_dirs = sim_test_batch(
         design_params=selected_designs,
@@ -87,6 +95,7 @@ def evaluate_one_objective(args, objective):
         save_dir=save_dir,
         num_cpus=args.num_cpus,
         render=args.render,
+        sim_params=sim_params,
     )
 
     np.savez_compressed(
@@ -108,6 +117,11 @@ def main():
     parser.add_argument("--top_k", type=int, default=3)
     parser.add_argument("--num_cpus", type=int, default=4)
     parser.add_argument("--render", action="store_true")
+    parser.add_argument("--damping", type=float, default=1.0)
+    parser.add_argument("--nu_contact", type=float, default=30.0)
+    parser.add_argument("--vel_damp_contact", type=int, default=90)
+    parser.add_argument("--k_contact", type=float, default=4000.0)
+    parser.add_argument("--final_time", type=float, default=5.0)
 
     parser.add_argument(
         "--objectives",
