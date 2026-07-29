@@ -15,7 +15,8 @@ def append_finger_arg(cmd, key, value):
     if value is None:
         return
     if isinstance(value, (bool, np.bool_)):
-        cmd.append(f"--{key}" if bool(value) else f"--no-{key}")
+        if bool(value):
+            cmd.append(f"--{key}")
         return
     cmd.extend([f"--{key}", str(value)])
 
