@@ -58,6 +58,36 @@ def main():
     parser.add_argument("--num_cpus", type=int, default=4)
     parser.add_argument("--render", action="store_true")
     parser.add_argument(
+        "--damping",
+        type=float,
+        default=1.0,
+        help="Internal damping passed to TendonForces/finger.py.",
+    )
+    parser.add_argument(
+        "--nu_contact",
+        type=float,
+        default=30.0,
+        help="Contact damping passed to TendonForces/finger.py.",
+    )
+    parser.add_argument(
+        "--vel_damp_contact",
+        type=int,
+        default=90,
+        help="Velocity contact damping passed to TendonForces/finger.py.",
+    )
+    parser.add_argument(
+        "--k_contact",
+        type=float,
+        default=4000.0,
+        help="Contact stiffness passed to TendonForces/finger.py.",
+    )
+    parser.add_argument(
+        "--final_time",
+        type=float,
+        default=5.0,
+        help="Simulation final time passed to TendonForces/finger.py.",
+    )
+    parser.add_argument(
         "--objective",
         type=str,
         default="disturbance_contact_span_speed",
@@ -108,6 +138,14 @@ def main():
     print(f"[GEN EVAL] Candidate file: {args.candidate_path}")
     print(f"[GEN EVAL] Selected ids: {top_ids}")
     print(f"[GEN EVAL] Saving verification to: {args.output_dir}")
+    sim_params = {
+        "damping": args.damping,
+        "nu_contact": args.nu_contact,
+        "vel_damp_contact": args.vel_damp_contact,
+        "k_contact": args.k_contact,
+        "final_time": args.final_time,
+    }
+    print(f"[GEN EVAL] finger.py sim params: {sim_params}")
 
     metrics, save_dirs = sim_test_batch(
         design_params=selected_designs,
@@ -115,6 +153,7 @@ def main():
         save_dir=args.output_dir,
         num_cpus=args.num_cpus,
         render=args.render,
+        sim_params=sim_params,
     )
 
     np.savez_compressed(
@@ -131,4 +170,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
