@@ -55,6 +55,7 @@ def sim_test(
     finger_idx=0,
     save_dir="sim",
     render=False,
+    sim_params=None,
 ):
     run_dir = os.path.abspath(
         os.path.join(save_dir, f"finger_{finger_idx}")
@@ -76,6 +77,7 @@ def sim_test(
                 **design,
                 "approach_deg": approach_deg,
                 "cyl_rad": cyl_rad,
+                "sim_params": {} if sim_params is None else dict(sim_params),
             },
             f,
             indent=2,
@@ -99,6 +101,12 @@ def sim_test(
         "--landing_mode", "prescribed",
         # "--disable_video_plots",
     ]
+
+    if sim_params is not None:
+        for key, value in sim_params.items():
+            if value is None:
+                continue
+            cmd.extend([f"--{key}", str(value)])
 
     # if not render:
     #     cmd.append("--no_render_video")  # only if you added this flag in finger.py
@@ -136,6 +144,7 @@ def sim_test_batch(
     num_cpus=8,
     render=False,
     task_params=None,
+    sim_params=None,
 ):
     save_dir = os.path.abspath(save_dir)
     os.makedirs(save_dir, exist_ok=True)
@@ -160,6 +169,7 @@ def sim_test_batch(
                 finger_idx=finger_idx,
                 save_dir=save_dir,
                 render=render,
+                sim_params=sim_params,
             )
         )
 
