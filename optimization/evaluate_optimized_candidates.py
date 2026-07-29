@@ -10,6 +10,77 @@ sys.path.insert(0, pjoin(BASEPATH, '..'))
 from dynamics.sim_test_mj import sim_test_batch
 
 
+def add_finger_runtime_args(parser):
+    parser.add_argument("--E", type=float, default=2e7)
+    parser.add_argument("--damping", type=float, default=1.0)
+    parser.add_argument("--n_elements", type=int, default=100)
+    parser.add_argument("--final_time", type=float, default=5.0)
+    parser.add_argument("--k_contact", type=float, default=4000.0)
+    parser.add_argument("--max_penetration_warn", type=float, default=0.002)
+    parser.add_argument("--nu_contact", type=float, default=30.0)
+    parser.add_argument("--mu_contact", type=float, default=0.8)
+    parser.add_argument("--vel_damp_contact", type=int, default=90)
+    parser.add_argument("--poisson_nu", type=float, default=0.4)
+    parser.add_argument("--v_mass", type=float, default=0.002)
+    parser.add_argument("--body_mass", type=float, default=0.5)
+    parser.add_argument(
+        "--joint_stiffness_mode",
+        choices=["full_material", "bending_only"],
+        default="full_material",
+    )
+    parser.add_argument("--joint_lengths", type=str, default="")
+    parser.add_argument("--landing_speed", type=float, default=0.0)
+    parser.add_argument("--landing_height", type=float, default=0.04)
+    parser.add_argument("--initial_x_gap", type=float, default=0.06)
+    parser.add_argument("--landing_approach_deg", type=float, default=30.0)
+    parser.add_argument(
+        "--prescribed_stop_at_contact",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--prescribed_contact_margin", type=float, default=-0.005)
+    parser.add_argument("--min_tension", type=float, default=0.1)
+    parser.add_argument("--max_tension", type=float, default=20.0)
+    parser.add_argument("--disturbance_force_mag", type=float, default=5.0)
+    parser.add_argument("--disturbance_base_nodes", type=int, default=5)
+    parser.add_argument("--disturbance_steps", type=int, default=100)
+    parser.add_argument("--disturbance_dt_scale", type=float, default=1.0)
+    parser.add_argument("--continuous_disturbance_metric", action="store_true")
+
+
+def collect_finger_runtime_args(args):
+    keys = [
+        "E",
+        "damping",
+        "n_elements",
+        "final_time",
+        "k_contact",
+        "max_penetration_warn",
+        "nu_contact",
+        "mu_contact",
+        "vel_damp_contact",
+        "poisson_nu",
+        "v_mass",
+        "body_mass",
+        "joint_stiffness_mode",
+        "joint_lengths",
+        "landing_speed",
+        "landing_height",
+        "initial_x_gap",
+        "landing_approach_deg",
+        "prescribed_stop_at_contact",
+        "prescribed_contact_margin",
+        "min_tension",
+        "max_tension",
+        "disturbance_force_mag",
+        "disturbance_base_nodes",
+        "disturbance_steps",
+        "disturbance_dt_scale",
+        "continuous_disturbance_metric",
+    ]
+    return {key: getattr(args, key) for key in keys}
+
+
 def objective_score(pred_metrics, objective):
     contacts = pred_metrics[:, 0]
     disturbance = pred_metrics[:, 1]
@@ -80,13 +151,7 @@ def evaluate_one_objective(args, objective):
     print(f"Candidate file: {candidate_path}")
     print(f"Selected ids: {top_ids}")
     print(f"Saving verification to: {save_dir}")
-    sim_params = {
-        "damping": args.damping,
-        "nu_contact": args.nu_contact,
-        "vel_damp_contact": args.vel_damp_contact,
-        "k_contact": args.k_contact,
-        "final_time": args.final_time,
-    }
+    sim_params = collect_finger_runtime_args(args)
     print(f"finger.py sim params: {sim_params}")
 
     metrics, save_dirs = sim_test_batch(
@@ -117,11 +182,7 @@ def main():
     parser.add_argument("--top_k", type=int, default=3)
     parser.add_argument("--num_cpus", type=int, default=4)
     parser.add_argument("--render", action="store_true")
-    parser.add_argument("--damping", type=float, default=1.0)
-    parser.add_argument("--nu_contact", type=float, default=30.0)
-    parser.add_argument("--vel_damp_contact", type=int, default=90)
-    parser.add_argument("--k_contact", type=float, default=4000.0)
-    parser.add_argument("--final_time", type=float, default=5.0)
+    add_finger_runtime_args(parser)
 
     parser.add_argument(
         "--objectives",

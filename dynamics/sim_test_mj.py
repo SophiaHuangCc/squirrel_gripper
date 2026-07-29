@@ -9,6 +9,17 @@ import ray
 
 from dynamics.utils import design_to_dict
 
+
+def append_finger_arg(cmd, key, value):
+    """Append one argparse-compatible finger.py argument."""
+    if value is None:
+        return
+    if isinstance(value, (bool, np.bool_)):
+        cmd.append(f"--{key}" if bool(value) else f"--no-{key}")
+        return
+    cmd.extend([f"--{key}", str(value)])
+
+
 def read_latest_npz(run_dir):
     files = glob.glob(os.path.join(run_dir, "**", "master_log_*.npz"), recursive=True)
     if len(files) == 0:
@@ -104,9 +115,7 @@ def sim_test(
 
     if sim_params is not None:
         for key, value in sim_params.items():
-            if value is None:
-                continue
-            cmd.extend([f"--{key}", str(value)])
+            append_finger_arg(cmd, key, value)
 
     with open(os.path.join(run_dir, "finger_command.json"), "w") as f:
         json.dump(
@@ -150,10 +159,21 @@ def sim_test(
             "n_elements",
             "mu_contact",
             "poisson_nu",
+            "joint_stiffness_mode",
+            "joint_lengths",
             "landing_height",
             "landing_speed",
             "initial_x_gap",
+            "landing_approach_deg",
+            "prescribed_stop_at_contact",
             "prescribed_contact_margin",
+            "min_tension",
+            "max_tension",
+            "disturbance_force_mag",
+            "disturbance_base_nodes",
+            "disturbance_steps",
+            "disturbance_dt_scale",
+            "continuous_disturbance_metric",
         ]:
             arg_key = f"arg_{key}"
             if arg_key in data:
