@@ -127,6 +127,27 @@ def draw_cylinder(ax, center, axis_dir, radius, length,
 
     ax.plot_surface(X, Y, Z, color=color, alpha=alpha, linewidth=0, shade=True)
 
+
+def set_equal_data_aspect_3d(ax):
+    """Set Matplotlib 3D box aspect so data units have equal visual scale.
+
+    In side-view plots this keeps one meter in X visually equal to one meter in
+    Z. Without this, a 3D axes box can stretch the shorter axis, making the
+    finger-only curl look geometrically different from the simulated data.
+    """
+    xlim = np.asarray(ax.get_xlim3d(), dtype=float)
+    ylim = np.asarray(ax.get_ylim3d(), dtype=float)
+    zlim = np.asarray(ax.get_zlim3d(), dtype=float)
+    spans = np.array(
+        [
+            max(abs(xlim[1] - xlim[0]), 1e-9),
+            max(abs(ylim[1] - ylim[0]), 1e-9),
+            max(abs(zlim[1] - zlim[0]), 1e-9),
+        ],
+        dtype=float,
+    )
+    ax.set_box_aspect(spans)
+
 # Function to compute contact metrics for a single frame
 def compute_contact_metrics_frame(
     rod_pos, rod_vel, cyl_center, cyl_axis, cyl_radius, k, mu, base_radius, cyl_length,
@@ -696,11 +717,14 @@ def main():
     parser.add_argument(
         "--debug", action="store_true",
         help="Enable debug mode with plot of total force magnitude and direction.")
+    parser.add_argument(
+        "--torque_debug", action="store_true",
+        help="Log and visualize per-joint tendon directions, forces, and torques.")
     # material and simulation params
     parser.add_argument("--E", type=float, default=2e7, help="Youngs Modulus (Pa)")
     parser.add_argument("--tension", type=float, default=0.4, help="Tendon tension (N)")
     parser.add_argument("--damping", type=float, default=0.8, help="Internal damping constant")
-    parser.add_argument("--n_elements", type=int, default=100, help="Number of rod elements")
+    parser.add_argument("--n_elements", type=int, default=0, help="Number of rod elements (0 = auto: 1000 per meter of base_len)")
     parser.add_argument("--final_time", type=float, default=4.0, help="Total simulation time in seconds")
     parser.add_argument(
         "--curl_contact_ratio", type=float, default=0.8,
@@ -715,7 +739,15 @@ def main():
         help="Minimum useful contacts required before curl completion can be declared.",
     )
     # cylinder and contact params
-    parser.add_argument("--cyl_rad", type=float, default=0.015, help="Cylinder radius (m)")
+    parser.add_argument(
+        "--finger_only",
+        action="store_true",
+        help=(
+            "Run/free-curl the finger without creating the cylinder branch or "
+            "rod-cylinder contact. The base node and base director are fixed."
+        ),
+    )
+    parser.add_argument("--cyl_rad", type=float, default=0.025, help="Cylinder radius (m)")
     parser.add_argument("--k_contact", type=float, default=1.25e3, help="Contact stiffness")
     parser.add_argument(
         "--auto_contact_stiffness",
@@ -748,9 +780,9 @@ def main():
     parser.add_argument("--nu_contact", type=float, default=5.0, help="Contact damping")
     parser.add_argument("--mu_contact", type=float, default=0.6, help="Friction coefficient")
     parser.add_argument("--vel_damp_contact", type=int, default=2, help="Numerical contact stability")
-    parser.add_argument("--poisson_nu", type=float, default=0.4, help="Poisson's ratio")
+    parser.add_argument("--poisson_nu", type=float, default=0.49, help="Poisson's ratio")
     # vertebrae arguments
-    parser.add_argument("--v_mass", type=float, default=0.002, help="Mass of each vertebra")
+    parser.add_argument("--v_mass", type=float, default=0.004, help="Mass of each vertebra")
     parser.add_argument("--num_v", type=int, default=3, help="Number of vertebrae")
     parser.add_argument("--v_start", type=int, default=38, help="Node index of first vertebra")
     parser.add_argument("--v_end", type=int, default=80, help="Node index of final vertebra")
@@ -786,13 +818,32 @@ def main():
             "applies to all joints. Empty = legacy fixed 8-element window."
         ),
     )
+    parser.add_argument(
+        "--joint_E",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated per-joint Young's modulus values. Units: Pa or MPa; "
+            "if all values <= 1000 they are interpreted as MPa (e.g. '6.74,0.1,6.74'). "
+            "When provided, these override --joint_softness by computing joint_E/base_E ratios."
+        ),
+    )
     # vertebra selector: 'uniform' or 'manual'
     parser.add_argument("--v_mode", type=str, default="uniform", 
-                        choices=["uniform", "manual"], 
-                        help="How to place vertebrae: 'uniform' uses linspace, 'manual' uses v_list")
+                        choices=["uniform", "manual", "from_links"], 
+                        help="How to place vertebrae: 'uniform' uses linspace, 'manual' uses v_list, 'from_links' derives v_list from --link_lengths and --joint_lengths")
     # Manual list input (passed as a string of comma-separated integers)
     parser.add_argument("--v_list", type=str, default="30,46,62", 
                         help="Comma-separated node indices for manual vertebrae placement")
+    parser.add_argument(
+        "--link_lengths",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated link lengths in centimeters (one per link). "
+            "Used with --v_mode from_links to compute vertebra node indices at joint centers."
+        ),
+    )
     # squirrel body mass for stability calculation
     parser.add_argument("--body_mass", type=float, default=0.5, help="Mass of the squirrel body in kg")
     parser.add_argument("--suffix", type=str, default="default", 
@@ -1017,11 +1068,31 @@ def main():
         '--confirm_tendon', 
         action='store_true', 
         help='Enable tendon force verification mode')
+    parser.add_argument(
+        "--distal_tendon_anchor",
+        choices=["none", "tip"],
+        default="none",
+        help=(
+            "Where the tendon continues after the final vertebra. "
+            "'none' preserves legacy behavior where stretch_next at the final "
+            "vertebra is zero. 'tip' routes the final tendon segment from the "
+            "last vertebra to the tip node."
+        ),
+    )
+    parser.add_argument(
+        "--distal_tendon_anchor_node",
+        type=int,
+        default=-1,
+        help=(
+            "Optional explicit distal tendon anchor node. If >=0, this overrides "
+            "--distal_tendon_anchor. Use n_elements for the tip node."
+        ),
+    )
     
     parser.add_argument(
         "--ankle_wrap_radius",
         type=float,
-        default=0.005,
+        default=0.03,
         help="Effective tendon wrap radius around the ankle (m).",
     )
     parser.add_argument(
@@ -1073,11 +1144,12 @@ def main():
 
     # Parameters from args (key variables to tune)
     E = args.E
-    nu = args.poisson_nu  # Poisson's ratio (0.3~0.4 for TPU)
+    nu = args.poisson_nu  # Poisson's ratio (0.49 for VTP)
     G = E / (2 * (1 + nu))  # Shear modulus in Pa
     tension = args.tension
     n_elements = args.n_elements
     damping_constant = args.damping
+    finger_only = bool(args.finger_only)
     landing_motion = args.landing_motion
     landing_mode = args.landing_mode
     landing_speed = abs(args.landing_speed)
@@ -1114,10 +1186,27 @@ def main():
     max_penetration_warn = max(0.0, float(args.max_penetration_warn))
     cyl_radius = args.cyl_rad
     suffix = args.suffix
+    if finger_only:
+        if landing_motion:
+            print("[FINGER_ONLY] Disabling landing_motion because no cylinder/branch is present.")
+        landing_motion = False
+        force_driven_stabilize = False
+        force_driven_lock_base_xy = False
+        force_driven_z_stabilize = False
+        force_driven_rot_stabilize = False
+        print("[FINGER_ONLY] Running without cylinder/contact; base position and orientation fixed.")
     # Geometry for finger (optimize later?)
     base_length = args.base_len
     base_radius = args.base_rad
-    density = 1200
+    # Auto-compute discretization: if user passed 0 or negative, set
+    # elements = round(base_length (m) * 1000) -> ~1 element per mm.
+    if args.n_elements is None or int(args.n_elements) <= 0:
+        n_elements = max(10, int(round(base_length * 1000)))
+        print(f"[DISCRETIZATION] n_elements auto-set from base_length: {n_elements} (1/mm resolution)")
+    else:
+        n_elements = int(args.n_elements)
+        print(f"[DISCRETIZATION] n_elements explicitly set: {n_elements}")
+    density = 843
     mass_second_moment_of_inertia = 0.25 * np.pi * base_radius**4
 
     # ------------------------------------------------------------------
@@ -1149,12 +1238,18 @@ def main():
         rect_ratio_I1 = I1_rect / I_circ
         rect_ratio_I2 = I2_rect / I_circ
         rect_ratio_J = J_rect / J_circ
-        contact_radius = 0.5 * base_thickness
+        # Conservative contact envelope used by PyElastica's scalar-radius
+        # RodCylinderContact. For a rectangular finger, thickness/2 is the
+        # forward-curl half-thickness, but the real/sim visual envelope and the
+        # original circular rod radius can be slightly larger. Using only
+        # thickness/2 made near-contact cases miss by sub-millimeter amounts.
+        contact_radius = max(0.5 * base_thickness, base_radius)
         print(
             f"[CROSS-SECTION] rectangular: width(y)={base_width*1e3:.2f}mm "
             f"thickness(z)={base_thickness*1e3:.2f}mm | "
             f"forward-curl I2={I2_rect:.3e} (x{rect_ratio_I2:.3f} vs circ), "
-            f"lateral I1={I1_rect:.3e} (x{rect_ratio_I1:.3f} vs circ)"
+            f"lateral I1={I1_rect:.3e} (x{rect_ratio_I1:.3f} vs circ) | "
+            f"contact_radius={contact_radius*1e3:.2f}mm"
         )
     else:
         base_width = 2.0 * base_radius
@@ -1180,18 +1275,99 @@ def main():
     first_vertebra_node = args.v_start
     final_vertebra_node = args.v_end
     vertebra_height = args.v_height
+    joint_centers_m = []
+    joint_m = []
     if args.v_mode == "uniform":
         vertebra_nodes = np.linspace(first_vertebra_node, final_vertebra_node, num_vertebrae, dtype=int)
     elif args.v_mode == "manual":
         vertebra_nodes = np.array([int(x) for x in args.v_list.split(",")], dtype=int)
         num_vertebrae = len(vertebra_nodes)
-    print(f"[VISUALIZATION] Drawing red disks at nodes: {vertebra_nodes}")
+    elif args.v_mode == "from_links":
+        # Derive vertebra node indices from provided link and joint lengths.
+        if not str(args.link_lengths).strip():
+            raise ValueError("--v_mode from_links requires --link_lengths to be set")
+        # parse link lengths as free-length CSV (cm)
+        try:
+            link_len_cm = [float(x.strip()) for x in args.link_lengths.split(",") if x.strip() != ""]
+        except ValueError as exc:
+            raise ValueError("--link_lengths must be a comma-separated list of numbers (cm)") from exc
+        if len(link_len_cm) < 2:
+            raise ValueError("--link_lengths must contain at least two links")
+
+        # joint_lengths expected as per-joint in cm (n_links-1 values)
+        if str(args.joint_lengths).strip():
+            joint_len_cm = parse_float_list_with_resize(
+                args.joint_lengths,
+                target_len=len(link_len_cm) - 1,
+                arg_name="--joint_lengths",
+            )
+        else:
+            raise ValueError("--v_mode from_links requires --joint_lengths to be set as well")
+
+        # Convert to meters
+        link_m = [float(x) * 1e-2 for x in link_len_cm]
+        joint_m = [float(x) * 1e-2 for x in joint_len_cm]
+
+        # Compute joint center positions from base (meters)
+        joint_centers_m = []
+        s = 0.0
+        for i in range(len(joint_m)):
+            s += link_m[i]
+            s += joint_m[i] / 2.0
+            joint_centers_m.append(s)
+            s += joint_m[i] / 2.0
+
+        # Map positions to node indices (0..n_elements)
+        node_indices = [int(round((pos / base_length) * n_elements)) for pos in joint_centers_m]
+        # clamp indices
+        node_indices = [max(0, min(n_elements, idx)) for idx in node_indices]
+        vertebra_nodes = np.array(node_indices, dtype=int)
+        num_vertebrae = len(vertebra_nodes)
+        print(f"[V_FROM_LINKS] computed vertebra node indices: {vertebra_nodes} from link_lengths(cm)={link_len_cm} and joint_lengths(cm)={joint_len_cm}")
+    if not joint_centers_m:
+        joint_centers_m = [float(node) * base_length / n_elements for node in vertebra_nodes]
+        joint_m = [8.0 * base_length / n_elements] * len(vertebra_nodes)
+
+    joint_span_node_ranges = []
+    for center_m, length_m in zip(joint_centers_m, joint_m):
+        start_m = max(0.0, center_m - 0.5 * length_m)
+        end_m = min(base_length, center_m + 0.5 * length_m)
+        start_node = int(round(start_m / base_length * n_elements))
+        end_node = int(round(end_m / base_length * n_elements))
+        joint_span_node_ranges.append((start_node, max(start_node, end_node)))
+
+    if joint_span_node_ranges:
+        first_start_m = joint_span_node_ranges[0][0] * base_length / n_elements
+        first_end_m = joint_span_node_ranges[0][1] * base_length / n_elements
+        print(
+            "[JOINT 1] length="
+            f"{(first_end_m - first_start_m) * 100:.3f} cm | "
+            f"center={joint_centers_m[0] * 100:.3f} cm | "
+            f"start={first_start_m * 100:.3f} cm (node {joint_span_node_ranges[0][0]}) | "
+            f"end={first_end_m * 100:.3f} cm (node {joint_span_node_ranges[0][1]})"
+        )
+    print(f"[VISUALIZATION] Drawing red joint spans at nodes: {joint_span_node_ranges}")
 
     joint_softness_list = parse_float_list_with_resize(
         args.joint_softness,
         target_len=len(vertebra_nodes),
         arg_name="--joint_softness",
     )
+    # Allow overriding via absolute per-joint Young's modulus values.
+    if str(args.joint_E).strip():
+        joint_E_list = parse_float_list_with_resize(
+            args.joint_E,
+            target_len=len(vertebra_nodes),
+            arg_name="--joint_E",
+        )
+        # Interpret small numbers (<=1000) as MPa for convenience (e.g. 6.74 -> 6.74 MPa)
+        if all(abs(v) <= 1000 for v in joint_E_list):
+            joint_E_list = [float(v) * 1e6 for v in joint_E_list]
+        # Compute ratios relative to base E
+        joint_softness_list = [max(1e-12, float(je) / max(1e-12, E)) for je in joint_E_list]
+        print(f"[JOINTS] --joint_E provided; joint_E (Pa) = {joint_E_list}; joint_softness ratios = {joint_softness_list}")
+    else:
+        print(f"[JOINTS] joint_softness ratios = {joint_softness_list}")
 
     # Per-joint softened-region length. Empty -> legacy fixed 8-element window.
     # Values are centimeters, converted to an element count via the element
@@ -1264,8 +1440,13 @@ def main():
     run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     video_path = os.path.join(base_outdir, f"output_{run_id}_{suffix}.mp4")
     print(f"\n==== RUNNING ====")
-    print(f"E={E:.2e}  G={G:.2e}  tension={tension:.2f}  cyl_radius={cyl_radius:.3f}")
+    print(f"E={E:.2e}  G={G:.2e}  density={density:.1f}  tension={tension:.2f}  cyl_radius={cyl_radius:.3f}")
     print(f"contact: k={k_contact} nu={nu_contact} mu={mu_contact} vel_damp={vel_damp_contact}")
+    print(f"[MODE] finger_only={finger_only} landing_motion={landing_motion} landing_mode={landing_mode}")
+    print(
+        f"[CONTACT SETUP] cyl_radius={cyl_radius:.6f} contact_radius={contact_radius:.6f} "
+        f"threshold={cyl_radius + contact_radius:.6f}"
+    )
     print(f"damping_constant={damping_constant}")
 
     ankle_contact_gated = (
@@ -1299,31 +1480,40 @@ def main():
 
 
     angle_rad = np.deg2rad(args.approach_deg)
-    print(f">>> MODE: Dynamic Approach at {args.approach_deg} degrees")
-    x_gap = (2.0 * cyl_radius) if initial_x_gap is None else initial_x_gap
+    world_side = np.array([0.0, 1.0, 0.0])
+    if finger_only:
+        print(f">>> MODE: Finger-only free curl at initial angle {args.approach_deg} degrees")
+        direction = np.array([np.cos(angle_rad), 0.0, np.sin(angle_rad)])
+        direction /= max(np.linalg.norm(direction), 1e-12)
+        normal = np.cross(world_side, direction)
+        normal /= max(np.linalg.norm(normal), 1e-12)
+        v_height_dir = normal.copy()
+        start_pos = np.array([0.0, 0.0, 0.0])
+    else:
+        print(f">>> MODE: Dynamic Approach at {args.approach_deg} degrees")
+        x_gap = (2.0 * cyl_radius) if initial_x_gap is None else initial_x_gap
 
-    target_contact_node = first_vertebra_node   # for 100 elements, around first link / first joint
-    target_contact_s = target_contact_node / n_elements
-    target_contact_offset = target_contact_s * base_length * direction
+        target_contact_node = first_vertebra_node   # for 100 elements, around first link / first joint
+        target_contact_s = target_contact_node / n_elements
+        target_contact_offset = target_contact_s * base_length * direction
 
-    contact_gap = cyl_radius + contact_radius + 0.003  # small clearance
-    desired_contact_point = np.array([
-        cyl_x - contact_gap * np.cos(angle_rad),
-        0.0,
-        cyl_z - contact_gap * np.sin(angle_rad),
-    ])
-    start_pos = desired_contact_point - target_contact_offset
-    
-    # Define direction: Points 'down and forward' toward the cylinder
-    dir_x = np.cos(angle_rad)
-    dir_z = np.sin(angle_rad)
-    direction = np.array([dir_x, 0.0, dir_z])
-    
-    # Ensure normal is perpendicular for tendon routing
-    world_side = np.array([0.0, 1.0, 0.0]) 
-    normal = np.cross(world_side, direction)
-    normal /= np.linalg.norm(normal)
-    v_height_dir = normal.copy()
+        contact_gap = cyl_radius + contact_radius + 0.003  # small clearance
+        desired_contact_point = np.array([
+            cyl_x - contact_gap * np.cos(angle_rad),
+            0.0,
+            cyl_z - contact_gap * np.sin(angle_rad),
+        ])
+        start_pos = desired_contact_point - target_contact_offset
+
+        # Define direction: Points 'down and forward' toward the cylinder
+        dir_x = np.cos(angle_rad)
+        dir_z = np.sin(angle_rad)
+        direction = np.array([dir_x, 0.0, dir_z])
+
+        # Ensure normal is perpendicular for tendon routing
+        normal = np.cross(world_side, direction)
+        normal /= np.linalg.norm(normal)
+        v_height_dir = normal.copy()
 
 
     # if initial_x_gap is not None and args.sol != "approach_angle":
@@ -1436,19 +1626,22 @@ def main():
                 finger.bend_matrix[1, 1, bend_idx] *= joint_mult
                 finger.bend_matrix[2, 2, bend_idx] *= joint_mult
 
-    # Create cylinder (branch)
+    # Create physical cylinder used for branch contact, unless explicitly
+    # running the free-curl finger-only diagnostic.
+    cylinder_start_for_object = cyl_start if not finger_only else np.array([1.0e6, 0.0, 1.0e6])
     cylinder = Cylinder(
-        start=cyl_start,
+        start=cylinder_start_for_object,
         direction=cyl_direction,
         normal=cyl_normal,
         base_length=cyl_length,
         base_radius=cyl_radius,
         density=cyl_density,
     )
-    sim.append(cylinder)
+    if not finger_only:
+        sim.append(cylinder)
 
     # Apply boundary conditions
-    if not landing_motion:
+    if finger_only or not landing_motion:
         sim.constrain(finger).using(
             OneEndFixedBC,
             constrained_position_idx=(0,),
@@ -1506,13 +1699,14 @@ def main():
                     constrained_position_idx=(0,),
                 )
                 print(">>> FORCE_DRIVEN: base X/Y locked (Z and orientation remain free)")
-    sim.constrain(cylinder).using(
-        FixedConstraint,
-        constrained_position_idx=(0,),
-        constrained_director_idx=(0,),
-    )
+    if not finger_only:
+        sim.constrain(cylinder).using(
+            FixedConstraint,
+            constrained_position_idx=(0,),
+            constrained_director_idx=(0,),
+        )
 
-    if ankle_contact_gated:
+    if ankle_contact_gated and not finger_only:
         sim.add_forcing_to(finger).using(
             ContactAnkleRestMonitor,
             landing_state=landing_state,
@@ -1524,7 +1718,19 @@ def main():
     tendon_debug = {
         "stretch_prev": np.zeros((len(vertebra_nodes), 3)),
         "stretch_next": np.zeros((len(vertebra_nodes), 3)),
+        "tendon_direction_prev": np.zeros((len(vertebra_nodes), 3)),
+        "tendon_direction_next": np.zeros((len(vertebra_nodes), 3)),
+        "resultant_force_global": np.zeros((len(vertebra_nodes), 3)),
+        "computed_torque_local": np.zeros((len(vertebra_nodes), 3)),
+        "computed_torque_global": np.zeros((len(vertebra_nodes), 3)),
     }
+    distal_anchor_node = int(args.distal_tendon_anchor_node)
+    if distal_anchor_node < 0 and args.distal_tendon_anchor == "tip":
+        distal_anchor_node = int(n_elements)
+    if distal_anchor_node >= 0:
+        print(f"[TENDON] distal tendon anchor node: {distal_anchor_node}")
+    else:
+        print("[TENDON] distal tendon anchor disabled; final stretch_next uses legacy zero segment")
     tendon_actuation = sim.add_forcing_to(finger).using(
         TendonForces,
         vertebra_height=vertebra_height,
@@ -1544,6 +1750,7 @@ def main():
         min_tension=args.min_tension,
         max_tension=args.max_tension,
         ankle_contact_gated=ankle_contact_gated,
+        distal_anchor_node=distal_anchor_node,
     )
 
     # Gravity
@@ -1646,24 +1853,22 @@ def main():
             time_step=time_step,
         )
 
-    # Contact between finger and cylinder
-    # sim.detect_contact_between(finger, cylinder).using(
-    #     RodCylinderContact,
-    #     k=k_contact, 
-    #     nu=nu_contact,
-    #     velocity_damping_coefficient=vel_damp_contact,
-    #     friction_coefficient=mu_contact,
-    # )
     contact_log = {}
-
-    sim.detect_contact_between(finger, cylinder).using(
-        LoggingRodCylinderContact,
-        k=k_contact,
-        nu=nu_contact,
-        velocity_damping_coefficient=vel_damp_contact,
-        friction_coefficient=mu_contact,
-        log_dict=contact_log,
-    )
+    if not finger_only:
+        print(
+            "[CONTACT SETUP] registering RodCylinderContact "
+            f"center={cylinder.position_collection[:, 0]} "
+            f"axis(d3)={cylinder.director_collection[2, :, 0]}"
+        )
+        # Contact between finger and cylinder.
+        sim.detect_contact_between(finger, cylinder).using(
+            LoggingRodCylinderContact,
+            k=k_contact,
+            nu=nu_contact,
+            velocity_damping_coefficient=vel_damp_contact,
+            friction_coefficient=mu_contact,
+            log_dict=contact_log,
+        )
 
     # Callbacks for data collection
     class CB(CallBackBaseClass):
@@ -1714,6 +1919,22 @@ def main():
 
                 self.callback_params["stretch_prev"].append(self.tendon_debug["stretch_prev"].copy())
                 self.callback_params["stretch_next"].append(self.tendon_debug["stretch_next"].copy())
+                if args.torque_debug:
+                    self.callback_params["tendon_direction_prev"].append(
+                        self.tendon_debug["tendon_direction_prev"].copy()
+                    )
+                    self.callback_params["tendon_direction_next"].append(
+                        self.tendon_debug["tendon_direction_next"].copy()
+                    )
+                    self.callback_params["resultant_force_global"].append(
+                        self.tendon_debug["resultant_force_global"].copy()
+                    )
+                    self.callback_params["computed_torque_local"].append(
+                        self.tendon_debug["computed_torque_local"].copy()
+                    )
+                    self.callback_params["computed_torque_global"].append(
+                        self.tendon_debug["computed_torque_global"].copy()
+                    )
 
                 self.callback_params["ankle_angle"].append(self.landing_state["ankle_angle"])
                 self.callback_params["current_tension"].append(self.landing_state["current_tension"])
@@ -1728,6 +1949,44 @@ def main():
     integrate(timestepper, sim, final_time, total_steps)
 
     data_to_save = {key: np.array(value) for key, value in data.items()}
+
+    if args.torque_debug:
+        torque_log_path = os.path.join(base_outdir, f"torque_debug_{run_id}_{suffix}.csv")
+        with open(torque_log_path, "w", newline="") as torque_file:
+            torque_writer = csv.writer(torque_file)
+            torque_writer.writerow([
+                "frame_idx", "time", "joint_idx", "vertebra_node",
+                "prev_dir_x", "prev_dir_y", "prev_dir_z",
+                "next_dir_x", "next_dir_y", "next_dir_z",
+                "force_x", "force_y", "force_z",
+                "torque_local_x", "torque_local_y", "torque_local_z",
+                "torque_global_x", "torque_global_y", "torque_global_z",
+            ])
+            debug_keys = (
+                "tendon_direction_prev", "tendon_direction_next",
+                "resultant_force_global", "computed_torque_local",
+                "computed_torque_global",
+            )
+            if all(key in data_to_save for key in debug_keys):
+                debug_times = np.asarray(data_to_save.get("time", []), dtype=float)
+                for frame_idx in range(len(data_to_save["computed_torque_local"])):
+                    frame_time = (
+                        float(debug_times[frame_idx])
+                        if frame_idx < len(debug_times)
+                        else float(frame_idx * dt_saved)
+                    )
+                    for joint_idx, node in enumerate(vertebra_nodes):
+                        prev_dir = data_to_save["tendon_direction_prev"][frame_idx, joint_idx]
+                        next_dir = data_to_save["tendon_direction_next"][frame_idx, joint_idx]
+                        force = data_to_save["resultant_force_global"][frame_idx, joint_idx]
+                        torque_local = data_to_save["computed_torque_local"][frame_idx, joint_idx]
+                        torque_global = data_to_save["computed_torque_global"][frame_idx, joint_idx]
+                        torque_writer.writerow([
+                            frame_idx, frame_time, joint_idx, int(node),
+                            *prev_dir, *next_dir, *force,
+                            *torque_local, *torque_global,
+                        ])
+        print(f"[TORQUE DEBUG] Wrote per-joint diagnostics to: {torque_log_path}")
 
     for arg_name, arg_value in vars(args).items():
         data_to_save[f"arg_{arg_name}"] = np.array([arg_value])
@@ -1754,11 +2013,18 @@ def main():
     data_to_save["arg_landing_height"] = np.array([float(landing_height)])
     data_to_save["arg_landing_speed"] = np.array([float(landing_speed)])
     data_to_save["arg_initial_x_gap"] = np.array([0.0 if initial_x_gap is None else float(initial_x_gap)])
+    data_to_save["finger_only"] = np.array([finger_only])
 
-    data_to_save["cyl_position"] = cylinder.position_collection.copy() # Center point
-    data_to_save["cyl_directors"] = cylinder.director_collection.copy() # Orientation
-    data_to_save["cyl_radius"] = np.array([cylinder.radius])
-    data_to_save["cyl_length"] = np.array([cylinder.length])
+    if not finger_only:
+        data_to_save["cyl_position"] = cylinder.position_collection.copy() # Center point
+        data_to_save["cyl_directors"] = cylinder.director_collection.copy() # Orientation
+        data_to_save["cyl_radius"] = np.array([cylinder.radius])
+        data_to_save["cyl_length"] = np.array([cylinder.length])
+    else:
+        data_to_save["cyl_position"] = np.full((3, 1), np.nan)
+        data_to_save["cyl_directors"] = np.full((3, 3, 1), np.nan)
+        data_to_save["cyl_radius"] = np.array([0.0])
+        data_to_save["cyl_length"] = np.array([0.0])
 
     if "rod_contact_force" in contact_log and len(contact_log["rod_contact_force"]) > 0:
         final_contact_force = np.asarray(contact_log["rod_contact_force"][-1])
@@ -2037,6 +2303,12 @@ def main():
 
     if first_contact_frame is None:
         print("[CONTACT] No contact in any saved frame. (Likely cylinder too far, too small, or axis mismatch.)")
+        if np.isfinite(min_rad):
+            miss = float(min_rad - (cyl_radius + contact_radius))
+            print(
+                f"[CONTACT DEBUG] closest clearance relative to threshold: {miss:.6e} m "
+                f"(negative means penetration/contact)"
+            )
         if landing_motion and landing_mode == "prescribed" and prescribed_stop_at_contact:
             print(
                 "[CONTACT HINT] prescribed_stop_at_contact may be too conservative for this setup. "
@@ -2070,7 +2342,19 @@ def main():
     }
     disturbance_results = {}
 
-    try:
+    if first_contact_frame is None:
+        print("[CONTACT] Skipping contact/disturbance metrics because contact log has no contact rows.")
+        data_to_save["num_contacts"] = np.array([0])
+        data_to_save["angular_span"] = np.array([0.0])
+        data_to_save["total_normal_force"] = np.array([0.0])
+        data_to_save["total_friction_force"] = np.array([0.0])
+        data_to_save["max_normal_force"] = np.array([0.0])
+        data_to_save["disturbance_resistance_score"] = np.array([0.0])
+        filename = os.path.join(base_outdir, f"master_log_{run_id}_{suffix}.npz")
+        np.savez_compressed(filename, **data_to_save)
+        print(f"Archive Complete (no contact metrics): {filename}")
+    else:
+      try:
         # --------------------------------------------------
         # 1. Contact-related metrics only
         # --------------------------------------------------
@@ -2305,17 +2589,17 @@ def main():
 
         print(f"Archive Complete: {filename}")
 
-    except Exception as e:
-        print(f"[ERROR] Error during contact/disturbance calculation: {e}")
-        # Still persist whatever trajectory/metadata we collected (e.g. when the
-        # finger never reaches the branch, so contact analysis has nothing to
-        # reduce). This keeps free-curl / no-contact runs usable.
-        try:
-            filename = os.path.join(base_outdir, f"master_log_{run_id}_{suffix}.npz")
-            np.savez_compressed(filename, **data_to_save)
-            print(f"Archive Complete (partial, no contact metrics): {filename}")
-        except Exception as e2:
-            print(f"[ERROR] Fallback save also failed: {e2}")
+      except Exception as e:
+          print(f"[ERROR] Error during contact/disturbance calculation: {e}")
+          # Still persist whatever trajectory/metadata we collected (e.g. when the
+          # finger never reaches the branch, so contact analysis has nothing to
+          # reduce). This keeps free-curl / no-contact runs usable.
+          try:
+              filename = os.path.join(base_outdir, f"master_log_{run_id}_{suffix}.npz")
+              np.savez_compressed(filename, **data_to_save)
+              print(f"Archive Complete (partial, no contact metrics): {filename}")
+          except Exception as e2:
+              print(f"[ERROR] Fallback save also failed: {e2}")
 
     summary_file = os.path.join(base_outdir, f"sweep_summary.csv")
     file_exists = os.path.isfile(summary_file)
@@ -2355,7 +2639,13 @@ def main():
     ax = fig.add_subplot(111, projection="3d")
 
     full_limits = None
-    if args.full_visualization:
+    if finger_only:
+        pos_stack = np.stack(pos_data, axis=0)  # (n_saved, 3, n_nodes)
+        rod_min = np.min(pos_stack, axis=(0, 2))
+        rod_max = np.max(pos_stack, axis=(0, 2))
+        margin = np.array([0.02, 0.02, 0.02])
+        full_limits = (rod_min - margin, rod_max + margin)
+    elif args.full_visualization:
         pos_stack = np.stack(pos_data, axis=0)  # (n_saved, 3, n_nodes)
         rod_min = np.min(pos_stack, axis=(0, 2))
         rod_max = np.max(pos_stack, axis=(0, 2))
@@ -2380,13 +2670,15 @@ def main():
             y = rod_radius * np.sin(u) * np.sin(v) + P[1, i]
             z = rod_radius * np.cos(v) + P[2, i]
             ax.plot_surface(x, y, z, alpha=0.2)
-        for v_idx in vertebra_nodes:
-            v_idx = int(np.clip(v_idx, 0, P.shape[1] - 1))
-            ax.scatter(
-                P[0, v_idx], P[1, v_idx], P[2, v_idx],
+        for start_node, end_node in joint_span_node_ranges:
+            start_node = int(np.clip(start_node, 0, P.shape[1] - 1))
+            end_node = int(np.clip(end_node, start_node, P.shape[1] - 1))
+            ax.plot(
+                P[0, start_node:end_node + 1],
+                P[1, start_node:end_node + 1],
+                P[2, start_node:end_node + 1],
                 color="red",
-                s=20,
-                depthshade=False,
+                linewidth=3,
                 zorder=10,
             )
 
@@ -2409,15 +2701,34 @@ def main():
             ax.set_xlim(-0.02, 0.12)
             ax.set_ylim(-0.12, 0.12)
             ax.set_zlim(-0.10, 0.10)
+        set_equal_data_aspect_3d(ax)
 
         # --- Force visualization of forces ---
-        if args.confirm_tendon or args.debug:
+        if args.confirm_tendon or args.debug or args.torque_debug:
             F = data["external_forces"][frame_idx]          # (3, n_nodes)
             mag = np.linalg.norm(F, axis=0)  # (n_nodes,)
 
-            if args.confirm_tendon:
+            if args.confirm_tendon or args.torque_debug:
                 sp_frame = data["stretch_prev"][frame_idx]  # Red Arrow 1
                 sn_frame = data["stretch_next"][frame_idx]  # Red Arrow 2
+                torque_frame = (
+                    np.asarray(data["computed_torque_global"])
+                    if "computed_torque_global" in data else None
+                )
+                force_frame = (
+                    np.asarray(data["resultant_force_global"])
+                    if "resultant_force_global" in data else None
+                )
+                prev_dir_frame = (
+                    np.asarray(data["tendon_direction_prev"])
+                    if "tendon_direction_prev" in data else None
+                )
+                next_dir_frame = (
+                    np.asarray(data["tendon_direction_next"])
+                    if "tendon_direction_next" in data else None
+                )
+
+                diagnostic_lines = []
 
                 for i, v_idx in enumerate(vertebra_nodes):
 
@@ -2429,32 +2740,78 @@ def main():
                     tendon_sum_vec = stretch_prev_vec + stretch_next_vec
                     external_vec = F[:, v_idx]
 
-                    # red = stretch_prev
-                    ax.quiver(
-                        pos[0], pos[1], pos[2],
-                        stretch_prev_vec[0], stretch_prev_vec[1], stretch_prev_vec[2],
-                        color="red", length=0.02
-                    )
+                    if args.confirm_tendon:
+                        # Red and blue show the two tension vectors at the joint.
+                        ax.quiver(
+                            pos[0], pos[1], pos[2],
+                            stretch_prev_vec[0], stretch_prev_vec[1], stretch_prev_vec[2],
+                            color="red", length=0.02
+                        )
+                        ax.quiver(
+                            pos[0], pos[1], pos[2],
+                            stretch_next_vec[0], stretch_next_vec[1], stretch_next_vec[2],
+                            color="blue", length=0.02
+                        )
 
-                    # blue = stretch_next
-                    ax.quiver(
-                        pos[0], pos[1], pos[2],
-                        stretch_next_vec[0], stretch_next_vec[1], stretch_next_vec[2],
-                        color="blue", length=0.02
-                    )
+                    if args.torque_debug and prev_dir_frame is not None:
+                        # Direction arrows are normalized and scaled for visibility.
+                        for direction_vec, color in (
+                            (prev_dir_frame[frame_idx, i], "tab:red"),
+                            (next_dir_frame[frame_idx, i], "tab:blue"),
+                        ):
+                            ax.quiver(
+                                pos[0], pos[1], pos[2],
+                                direction_vec[0], direction_vec[1], direction_vec[2],
+                                color=color, length=0.025, normalize=True,
+                            )
 
-                    # green = SUM (actual tendon resultant)
-                    ax.quiver(
-                        pos[0], pos[1], pos[2],
-                        tendon_sum_vec[0], tendon_sum_vec[1], tendon_sum_vec[2],
-                        color="green", length=0.02
-                    )
+                    if args.torque_debug and force_frame is not None:
+                        force_vec = force_frame[frame_idx, i]
+                        ax.quiver(
+                            pos[0], pos[1], pos[2],
+                            force_vec[0], force_vec[1], force_vec[2],
+                            color="green", length=0.025, normalize=True,
+                        )
 
                     # magenta = simulation external force
-                    ax.quiver(
-                        pos[0], pos[1], pos[2],
-                        external_vec[0], external_vec[1], external_vec[2],
-                        color="magenta", length=0.02
+                    if args.confirm_tendon:
+                        ax.quiver(
+                            pos[0], pos[1], pos[2],
+                            external_vec[0], external_vec[1], external_vec[2],
+                            color="magenta", length=0.02
+                        )
+
+                    if args.torque_debug and torque_frame is not None:
+                        torque_vec = torque_frame[frame_idx, i]
+                        ax.quiver(
+                            pos[0], pos[1], pos[2],
+                            torque_vec[0], torque_vec[1], torque_vec[2],
+                            color="orange", length=0.045, normalize=True,
+                            arrow_length_ratio=0.25,
+                        )
+
+                    if args.torque_debug:
+                        prev_magnitude = np.linalg.norm(stretch_prev_vec)
+                        next_magnitude = np.linalg.norm(stretch_next_vec)
+                        force_magnitude = np.linalg.norm(
+                            force_frame[frame_idx, i]
+                            if force_frame is not None else tendon_sum_vec
+                        )
+                        torque_magnitude = np.linalg.norm(
+                            torque_frame[frame_idx, i]
+                            if torque_frame is not None else np.zeros(3)
+                        )
+                        diagnostic_lines.append(
+                            f"J{i + 1}: |Tprev|={prev_magnitude:.2f} N "
+                            f"|Tnext|={next_magnitude:.2f} N "
+                            f"|Fres|={force_magnitude:.2f} N "
+                            f"|tau|={torque_magnitude:.4f} Nm"
+                        )
+
+                if diagnostic_lines:
+                    fig.suptitle(
+                        "Torque debug   " + "   |   ".join(diagnostic_lines),
+                        fontsize=9,
                     )
 
             else: 
@@ -2496,66 +2853,68 @@ def main():
                         arrow_length_ratio=0.3
                     )
 
-                # Contact force vectors and net contact wrench (about base).
-                (
-                    cidx,
-                    contact_forces,
-                    _,
-                    _,
-                    _,
-                    _,
-                ) = compute_contact_force_vectors(
-                    rod_pos=P,
-                    rod_vel=V,
-                    cyl_center=cylinder.position_collection[:, 0],
-                    cyl_radius=cyl_radius,
-                    k=k_contact,
-                    mu=mu_contact,
-                    base_radius=contact_radius,
-                )
-                base_count_vis = min(disturbance_base_nodes, P.shape[1])
-                base_point_vis = P[:, :base_count_vis].mean(axis=1)
-                ax.scatter(
-                    base_point_vis[0], base_point_vis[1], base_point_vis[2],
-                    color="black", s=45, marker="x", depthshade=False,
-                )
-                if len(cidx) > 0:
-                    cscale = 0.01
-                    for j in range(len(cidx)):
-                        cf = contact_forces[j]
-                        if np.linalg.norm(cf) < 1e-8:
-                            continue
-                        ax.quiver(
-                            base_point_vis[0], base_point_vis[1], base_point_vis[2],
-                            cf[0], cf[1], cf[2],
-                            length=cscale,
-                            normalize=True,
-                            color="yellow",
-                        )
-                    net_cf = np.sum(contact_forces, axis=0)
-                    if np.linalg.norm(net_cf) > 1e-8:
-                        ax.quiver(
-                            base_point_vis[0], base_point_vis[1], base_point_vis[2],
-                            net_cf[0], net_cf[1], net_cf[2],
-                            length=0.03,
-                            normalize=True,
-                            color="lime",
-                        )
-                    cp = P[:, cidx]
-                    r = cp.T - base_point_vis[None, :]
-                    net_tau = np.sum(np.cross(r, contact_forces), axis=0)
-                    if np.linalg.norm(net_tau) > 1e-8:
-                        ax.quiver(
-                            base_point_vis[0], base_point_vis[1], base_point_vis[2],
-                            net_tau[0], net_tau[1], net_tau[2],
-                            length=0.03,
-                            normalize=True,
-                            color="orange",
-                        )
+                if not finger_only:
+                    # Contact force vectors and net contact wrench (about base).
+                    (
+                        cidx,
+                        contact_forces,
+                        _,
+                        _,
+                        _,
+                        _,
+                    ) = compute_contact_force_vectors(
+                        rod_pos=P,
+                        rod_vel=V,
+                        cyl_center=cylinder.position_collection[:, 0],
+                        cyl_radius=cyl_radius,
+                        k=k_contact,
+                        mu=mu_contact,
+                        base_radius=contact_radius,
+                    )
+                    base_count_vis = min(disturbance_base_nodes, P.shape[1])
+                    base_point_vis = P[:, :base_count_vis].mean(axis=1)
+                    ax.scatter(
+                        base_point_vis[0], base_point_vis[1], base_point_vis[2],
+                        color="black", s=45, marker="x", depthshade=False,
+                    )
+                    if len(cidx) > 0:
+                        cscale = 0.01
+                        for j in range(len(cidx)):
+                            cf = contact_forces[j]
+                            if np.linalg.norm(cf) < 1e-8:
+                                continue
+                            ax.quiver(
+                                base_point_vis[0], base_point_vis[1], base_point_vis[2],
+                                cf[0], cf[1], cf[2],
+                                length=cscale,
+                                normalize=True,
+                                color="yellow",
+                            )
+                        net_cf = np.sum(contact_forces, axis=0)
+                        if np.linalg.norm(net_cf) > 1e-8:
+                            ax.quiver(
+                                base_point_vis[0], base_point_vis[1], base_point_vis[2],
+                                net_cf[0], net_cf[1], net_cf[2],
+                                length=0.03,
+                                normalize=True,
+                                color="lime",
+                            )
+                        cp = P[:, cidx]
+                        r = cp.T - base_point_vis[None, :]
+                        net_tau = np.sum(np.cross(r, contact_forces), axis=0)
+                        if np.linalg.norm(net_tau) > 1e-8:
+                            ax.quiver(
+                                base_point_vis[0], base_point_vis[1], base_point_vis[2],
+                                net_tau[0], net_tau[1], net_tau[2],
+                                length=0.03,
+                                normalize=True,
+                                color="orange",
+                            )
             
-        center = cylinder.position_collection[:, 0]
-        axis_dir = cylinder.director_collection[2, :, 0]
-        draw_cylinder(ax, center, axis_dir, cyl_radius, cyl_length, color="black", alpha=0.35)
+        if not finger_only:
+            center = cylinder.position_collection[:, 0]
+            axis_dir = cylinder.director_collection[2, :, 0]
+            draw_cylinder(ax, center, axis_dir, cyl_radius, cyl_length, color="black", alpha=0.35)
 
         # front view: from -Y looking toward +Y
         ax.view_init(elev=0, azim=-90)
@@ -2597,13 +2956,21 @@ def main():
         P = pos_data[-1] 
         
         ax_live.scatter(P[0], P[1], P[2], s=10)
-        for v_idx in vertebra_nodes:
-            v_idx = int(np.clip(v_idx, 0, P.shape[1] - 1))
-            ax_live.scatter(P[0, v_idx], P[1, v_idx], P[2, v_idx], color="red", s=40)
+        for start_node, end_node in joint_span_node_ranges:
+            start_node = int(np.clip(start_node, 0, P.shape[1] - 1))
+            end_node = int(np.clip(end_node, start_node, P.shape[1] - 1))
+            ax_live.plot(
+                P[0, start_node:end_node + 1],
+                P[1, start_node:end_node + 1],
+                P[2, start_node:end_node + 1],
+                color="red",
+                linewidth=3,
+            )
 
-        center = cylinder.position_collection[:, 0]
-        axis_dir = cylinder.director_collection[2, :, 0]
-        draw_cylinder(ax_live, center, axis_dir, cyl_radius, cyl_length, color="black", alpha=0.3)
+        if not finger_only:
+            center = cylinder.position_collection[:, 0]
+            axis_dir = cylinder.director_collection[2, :, 0]
+            draw_cylinder(ax_live, center, axis_dir, cyl_radius, cyl_length, color="black", alpha=0.3)
 
         if disturbance_results:
             base_count_live = min(disturbance_base_nodes, P.shape[1])
@@ -2645,6 +3012,7 @@ def main():
         ax_live.set_xlim(-0.02, 0.12)
         ax_live.set_ylim(-0.12, 0.12)
         ax_live.set_zlim(-0.10, 0.10)
+        set_equal_data_aspect_3d(ax_live)
         ax_live.set_title(f"Steady State - Rotate with Mouse (E={E:.1e})")
 
         ax_live.view_init(elev=30, azim=45)

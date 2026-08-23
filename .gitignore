@@ -47,3 +47,9 @@ optimization/runs/**
 
 generator/runs/
 generator/runs/**
+
+docs/
+docs/**
+
+TendonForces/manufactured_runs/
+TendonForces/manufactured_runs/**

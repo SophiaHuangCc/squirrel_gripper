@@ -85,7 +85,7 @@
 #     main()
 
 import os
-from moviepy.editor import VideoFileClip
+from moviepy.editor import VideoFileClip, vfx
 from PIL import Image
 
 # Fix for Pillow >= 10
@@ -99,14 +99,21 @@ def center_crop_clip(clip, crop_w, crop_h):
     crop_h = min(crop_h, h)
 
     x1 = max(0, int((w - crop_w) / 2))
-    y1 = max(0, int((h - crop_h) / 2))
+    y1 = max(0, int((h - crop_h) / 2)) 
     x2 = x1 + crop_w
     y2 = y1 + crop_h
 
     return clip.crop(x1=x1, y1=y1, x2=x2, y2=y2)
 
 
-def mp4_to_cropped_gif(video_path, output_path=None, crop_w=320, crop_h=240, fps=None):
+def mp4_to_cropped_gif(
+    video_path,
+    output_path=None,
+    crop_w=320,
+    crop_h=240,
+    fps=None,
+    target_duration=None,
+):
     video_path = os.path.abspath(video_path)
 
     if not os.path.exists(video_path):
@@ -122,6 +129,13 @@ def mp4_to_cropped_gif(video_path, output_path=None, crop_w=320, crop_h=240, fps
 
     cropped = center_crop_clip(clip, crop_w, crop_h)
 
+    if target_duration is not None:
+        target_duration = float(target_duration)
+        if target_duration <= 0.0:
+            raise ValueError("target_duration must be greater than zero")
+        speed_factor = cropped.duration / target_duration
+        cropped = cropped.fx(vfx.speedx, factor=speed_factor)
+
     cropped.write_gif(
         output_path,
         fps=fps,
@@ -135,11 +149,12 @@ def mp4_to_cropped_gif(video_path, output_path=None, crop_w=320, crop_h=240, fps
 
 
 if __name__ == "__main__":
-    video_path = "/Users/sophiahuang/Desktop/SquirrelGripper/docs/output_20260728_225016_opt_0.mp4"
+    video_path = "/Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/TendonForces/manufactured_runs/output_20260822_011651_manufactured_real_from_runsh.mp4"
 
     mp4_to_cropped_gif(
         video_path,
         crop_w=320,
         crop_h=240,
-        fps=None,   # lower fps makes smaller GIF; set None to use original
+        fps=None,   # use the source FPS so every source frame is exported
+        target_duration=None,  # preserve the source duration and timing
     )

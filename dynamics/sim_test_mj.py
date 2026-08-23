@@ -161,6 +161,8 @@ def sim_test(
             "mu_contact",
             "poisson_nu",
             "joint_stiffness_mode",
+            "distal_tendon_anchor",
+            "distal_tendon_anchor_node",
             "joint_lengths",
             "landing_height",
             "landing_speed",

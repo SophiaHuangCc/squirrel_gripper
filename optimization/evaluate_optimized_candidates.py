@@ -28,6 +28,12 @@ def add_finger_runtime_args(parser):
         choices=["full_material", "bending_only"],
         default="full_material",
     )
+    parser.add_argument(
+        "--distal_tendon_anchor",
+        choices=["none", "tip"],
+        default="none",
+    )
+    parser.add_argument("--distal_tendon_anchor_node", type=int, default=-1)
     parser.add_argument("--joint_lengths", type=str, default="")
     parser.add_argument("--landing_speed", type=float, default=0.0)
     parser.add_argument("--landing_height", type=float, default=0.04)
@@ -63,6 +69,8 @@ def collect_finger_runtime_args(args):
         "v_mass",
         "body_mass",
         "joint_stiffness_mode",
+        "distal_tendon_anchor",
+        "distal_tendon_anchor_node",
         "joint_lengths",
         "landing_speed",
         "landing_height",

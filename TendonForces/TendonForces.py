@@ -32,9 +32,9 @@ class TendonForces(NoForces):
 
     """
 
-    def __init__(self, vertebra_height, num_vertebrae, first_vertebra_node, final_vertebra_node, vertebra_mass, tension, vertebra_height_orientation, n_elements, 
+    def __init__(self, vertebra_height, num_vertebrae, first_vertebra_node, final_vertebra_node, vertebra_mass, tension, vertebra_height_orientation, n_elements,
                  vertebra_nodes_list=None, debug_store=None, landing_state=None, ankle_wrap_radius=0.0, ankle_stiffness=0.0, ankle_rest_angle=0.0, min_tension=0.0, max_tension=100.0,
-                 ankle_contact_gated=False):
+                 ankle_contact_gated=False, distal_anchor_node=-1):
         """
 
         Parameters 
@@ -78,6 +78,7 @@ class TendonForces(NoForces):
         self.max_tension = None if max_tension is None else float(max_tension)
         self.nominal_tension = float(tension)
         self.ankle_contact_gated = bool(ankle_contact_gated)
+        self.distal_anchor_node = int(distal_anchor_node)
 
         # self.stretch_next = np.zeros((self.num_vertebrae, 3))
         # self.stretch_prev = np.zeros((self.num_vertebrae, 3))
@@ -157,7 +158,13 @@ class TendonForces(NoForces):
         # The application of the force data is done outside of the @njit decorated function because self.force_data needs to be referenced in self.compute_torques()
 
         # Retrieves relative position unit norm vectors between each vertebra top (where the tendon contacts the vertebra)
-        unit_norm_vector_array = self.get_rotations(np.array(system.position_collection), np.array(system.director_collection), np.array(self.vertebra_nodes), self.vertebra_height_vector)
+        unit_norm_vector_array = self.get_rotations(
+            np.array(system.position_collection),
+            np.array(system.director_collection),
+            np.array(self.vertebra_nodes),
+            self.vertebra_height_vector,
+            self.distal_anchor_node,
+        )
 
 
         current_tension = self._get_current_tension()
@@ -168,6 +175,9 @@ class TendonForces(NoForces):
 
         # Computes the forces in each vertebra
         self.force_data = self.compute_forces(current_tension, np.array(self.vertebra_nodes), unit_norm_vector_array)
+        distal_anchor_force = np.zeros(3)
+        if self.distal_anchor_node >= 0:
+            distal_anchor_force = -unit_norm_vector_array[-1] * current_tension
 
         # Creating the force data set to apply to the rod
         apply_force = np.zeros((3,self.n_elements+1))
@@ -175,6 +185,9 @@ class TendonForces(NoForces):
         # PyElastica handles forces in GLOBAL coord. system, so they are applied directly. Also, the vertebra weights are added to each vertebra
         for i in range (len(self.vertebra_nodes)):
             apply_force[:,self.vertebra_nodes[i]] = self.force_data[i] + self.vertebra_weight_vector
+        if self.distal_anchor_node >= 0:
+            anchor_node = min(max(self.distal_anchor_node, 0), self.n_elements)
+            apply_force[:, anchor_node] += distal_anchor_force
 
         # Applies forces to the rod
         system.external_forces += apply_force
@@ -182,6 +195,10 @@ class TendonForces(NoForces):
         if self.debug_store is not None:
             self.debug_store["stretch_next"] = self.stretch_next.copy()
             self.debug_store["stretch_prev"] = self.stretch_prev.copy()
+            # The proximal force acts toward the previous tendon anchor.
+            self.debug_store["tendon_direction_prev"] = (-unit_norm_vector_array[:-1]).copy()
+            self.debug_store["tendon_direction_next"] = unit_norm_vector_array[1:].copy()
+            self.debug_store["resultant_force_global"] = self.force_data.copy()
 
 
     def apply_torques(self, system: SystemType, time: np.float64 = 0.0):
@@ -192,20 +209,49 @@ class TendonForces(NoForces):
         # Transforming the force vectors calculated in the compute_forces method from the global reference frame to the local reference frame
         for i in range(len(self.vertebra_nodes)):
             transformed_force_data[i] = system.director_collection[...,(self.vertebra_nodes[i]-1)] @ self.force_data[i]
+        transformed_anchor_force = np.zeros(3, dtype=np.float64)
+        anchor_element_idx = -1
+        if self.distal_anchor_node >= 0:
+            anchor_node = min(max(self.distal_anchor_node, 0), self.n_elements)
+            anchor_element_idx = min(max(anchor_node - 1, 0), self.n_elements - 1)
+            distal_unit = self.get_rotations(
+                np.array(system.position_collection),
+                np.array(system.director_collection),
+                np.array(self.vertebra_nodes),
+                self.vertebra_height_vector,
+                self.distal_anchor_node,
+            )[-1]
+            distal_anchor_force = -distal_unit * self._get_current_tension()
+            transformed_anchor_force = system.director_collection[..., anchor_element_idx] @ distal_anchor_force
 
         self.compute_torques(
             self.vertebra_height_vector, np.array(self.vertebra_nodes), transformed_force_data,
-            self.n_elements, system.external_torques
+            self.n_elements, system.external_torques,
+            anchor_element_idx, transformed_anchor_force,
         )
+
+        if self.debug_store is not None:
+            torque_local = np.cross(
+                self.vertebra_height_vector.reshape(1, 3),
+                transformed_force_data,
+            )
+            torque_global = np.zeros_like(torque_local)
+            for i, node in enumerate(self.vertebra_nodes):
+                element_idx = min(max(int(node) - 1, 0), system.director_collection.shape[2] - 1)
+                torque_global[i] = system.director_collection[..., element_idx].T @ torque_local[i]
+            self.debug_store["computed_torque_local"] = torque_local
+            self.debug_store["computed_torque_global"] = torque_global
 
 
     @staticmethod
     @njit(cache=True)
-    def get_rotations(position_collection, director_collection, vertebra_nodes, vertebra_height_vector):
+    def get_rotations(position_collection, director_collection, vertebra_nodes, vertebra_height_vector, distal_anchor_node):
         # Returns an array containing the unit norm vector which describes the orientation of each segment of tendon between vertebrae
 
         # Initializing unit_norm_vector_array to store the unit normed vectors that describe the global orientation of the forces in each vertebra
         unit_norm_vector_array = np.zeros((len(vertebra_nodes) + 1, 3), dtype=np.float64) # +1 modified
+        n_nodes = position_collection.shape[1]
+        n_directors = director_collection.shape[2]
 
         for i in range(len(vertebra_nodes)+1):
             # There is a +1 in the for loop to account for the force between the first vertebra and the fixed node
@@ -216,7 +262,10 @@ class TendonForces(NoForces):
                 next_vertebra = vertebra_nodes[i]
             elif i==len(vertebra_nodes):
                 current_vertebra = vertebra_nodes[i-1]
-                next_vertebra = vertebra_nodes[i-1]
+                if distal_anchor_node >= 0:
+                    next_vertebra = min(max(distal_anchor_node, 0), n_nodes - 1)
+                else:
+                    next_vertebra = vertebra_nodes[i-1]
             else:
                 current_vertebra = vertebra_nodes[i-1]
                 next_vertebra = vertebra_nodes[i]
@@ -230,8 +279,10 @@ class TendonForces(NoForces):
             y_next = position_collection[1, next_vertebra]
             z_next = position_collection[2, next_vertebra]
 
-            current_rotation_matrix = director_collection[...,current_vertebra]
-            next_rotation_matrix = director_collection[...,next_vertebra]
+            current_director_idx = min(max(current_vertebra, 0), n_directors - 1)
+            next_director_idx = min(max(next_vertebra, 0), n_directors - 1)
+            current_rotation_matrix = director_collection[...,current_director_idx]
+            next_rotation_matrix = director_collection[...,next_director_idx]
 
             current_node = np.array([x_current, y_current, z_current])
             next_node = np.array([x_next, y_next, z_next])
@@ -242,10 +293,15 @@ class TendonForces(NoForces):
 
             # Calculating the unit-normed vector based on the differences calculated in the previous step
             delta_vector_norm = np.linalg.norm(delta_vector)
-            unit_norm_delta_vector = delta_vector / delta_vector_norm
+            if delta_vector_norm < 1e-12:
+                unit_norm_delta_vector = np.zeros(3)
+            else:
+                unit_norm_delta_vector = delta_vector / delta_vector_norm
 
-            # This if statement is to stop unit_norm_delta_vector from becoming a 'nan'
-            if i==len(vertebra_nodes):
+            # Legacy behavior: if no distal anchor is requested, the final
+            # tendon segment is zero. With distal_anchor_node>=0, the tendon
+            # continues from the last vertebra to that anchor node.
+            if i==len(vertebra_nodes) and distal_anchor_node < 0:
                 unit_norm_delta_vector = np.zeros(3)
 
             # Storing the unit normed vector to be later used in the compute_forces method
@@ -274,7 +330,7 @@ class TendonForces(NoForces):
 
     @staticmethod
     @njit(cache=True)
-    def compute_torques(vertebra_height_vector, vertebra_nodes, transformed_force_data, n_elements, external_torques):
+    def compute_torques(vertebra_height_vector, vertebra_nodes, transformed_force_data, n_elements, external_torques, anchor_element_idx, transformed_anchor_force):
 
         # Creating torque data set for storage
         torque_data = np.zeros((len(vertebra_nodes), 3),dtype=np.float64)
@@ -300,3 +356,5 @@ class TendonForces(NoForces):
 
         # Applying the torque data set to the rod (torque on the final vertebra)
         external_torques += apply_torque
+        if anchor_element_idx >= 0:
+            external_torques[:, anchor_element_idx] += np.cross(vertebra_height_vector, transformed_anchor_force)
