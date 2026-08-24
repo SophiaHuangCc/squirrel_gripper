@@ -38,6 +38,10 @@ def sample_from_list(rng, values):
     return values[int(rng.integers(0, len(values)))]
 
 
+def format_float_csv(values, ndigits=4):
+    return ",".join(f"{float(x):.{ndigits}f}".rstrip("0").rstrip(".") for x in values)
+
+
 def sample_joint_positions(rng, n_elements, min_first=30, max_last=95, min_gap=20):
     max_last = min(max_last, n_elements - 1)
 
@@ -55,27 +59,80 @@ def sample_joint_positions(rng, n_elements, min_first=30, max_last=95, min_gap=2
     return [j1, j2, j3]
 
 
+def geometry_total_cm(link_lengths_cm, joint_lengths_cm):
+    return float(sum(link_lengths_cm) + sum(joint_lengths_cm))
+
+
+def get_geometry_choices():
+    """Explicit from_links geometry candidates.
+
+    All candidates keep the three soft-joint lengths fixed at 2 cm each.
+    The link lengths are written directly instead of generated from hidden
+    fractions, and each row is validated against base_len.
+    """
+    fixed_joint_lengths_cm = [2.0, 2.0, 2.0]
+    choices = [
+        # Current run.sh geometry: 6.6 + 2 + 2.4 + 3 links, plus 6 cm joints = 20 cm.
+        {"name": "runsh_20cm", "base_len": 0.20, "link_lengths": [6.6, 2.0, 2.4, 3.0]},
+
+        # Shorter 15 cm candidates.
+        {"name": "short_even_15cm", "base_len": 0.15, "link_lengths": [4.0, 1.5, 1.5, 2.0]},
+        {"name": "short_longbase_15cm", "base_len": 0.15, "link_lengths": [4.8, 1.2, 1.3, 1.7]},
+        {"name": "short_distal_15cm", "base_len": 0.15, "link_lengths": [3.5, 1.5, 1.8, 2.2]},
+
+        # 20 cm candidates around the manufactured design.
+        {"name": "balanced_20cm", "base_len": 0.20, "link_lengths": [5.5, 2.5, 3.0, 3.0]},
+        {"name": "longbase_20cm", "base_len": 0.20, "link_lengths": [7.5, 1.8, 2.2, 2.5]},
+        {"name": "distalwrap_20cm", "base_len": 0.20, "link_lengths": [5.8, 1.8, 2.9, 3.5]},
+
+        # Longer 25 cm candidates.
+        {"name": "balanced_25cm", "base_len": 0.25, "link_lengths": [7.5, 3.5, 4.0, 4.0]},
+        {"name": "longbase_25cm", "base_len": 0.25, "link_lengths": [10.0, 2.5, 3.0, 3.5]},
+        {"name": "distalwrap_25cm", "base_len": 0.25, "link_lengths": [7.5, 2.5, 4.0, 5.0]},
+
+        # 30 cm candidates, useful as bad/edge examples and long-reach tasks.
+        {"name": "balanced_30cm", "base_len": 0.30, "link_lengths": [9.0, 4.5, 5.0, 5.5]},
+        {"name": "longbase_30cm", "base_len": 0.30, "link_lengths": [13.0, 3.0, 3.5, 4.5]},
+        {"name": "distalwrap_30cm", "base_len": 0.30, "link_lengths": [8.5, 3.5, 5.5, 6.5]},
+    ]
+
+    for choice in choices:
+        total_cm = geometry_total_cm(choice["link_lengths"], fixed_joint_lengths_cm)
+        expected_cm = 100.0 * choice["base_len"]
+        if abs(total_cm - expected_cm) > 1e-9:
+            raise ValueError(
+                f"Invalid geometry choice {choice['name']}: "
+                f"links + joints = {total_cm:.3f} cm, "
+                f"but base_len = {expected_cm:.3f} cm"
+            )
+        choice["joint_lengths"] = list(fixed_joint_lengths_cm)
+
+    return choices
+
+
 def build_design_only_sample(rng):
     params = {
-        "E": 2e7,
+        "E": 6.74e6,
         "damping": 0.1,
-        "n_elements": 100,
+        "n_elements": 0,
         "final_time": 2.0,
-        "k_contact": 1250.0,
+        "k_contact": 500.0,
         "max_penetration_warn": 0.002,
-        "nu_contact": 5.0,
-        "mu_contact": 0.6,
-        "vel_damp_contact": 10,
-        "poisson_nu": 0.4,
-        "v_mass": 0.002,
+        "nu_contact": 20.0,
+        "mu_contact": 0.8,
+        "vel_damp_contact": 30,
+        "poisson_nu": 0.49,
+        "v_mass": 0.04,
         "num_v": 3,
-        "v_height": 0.005,
-        "body_mass": 0.5,
+        "v_start": 38,
+        "v_end": 80,
+        "v_height": 0.002,
+        "body_mass": 3.0,
         "landing_motion": True,
         "landing_mode": "prescribed",
         "landing_approach_deg": 30.0,
         "prescribed_stop_at_contact": True,
-        "prescribed_contact_margin": 0.0,
+        "prescribed_contact_margin": -0.005,
         "base_force_mag": 0.0,
         "base_force_dir": "0,0,-1",
         "base_force_nodes": 1,
@@ -98,57 +155,60 @@ def build_design_only_sample(rng):
         "force_driven_rot_k": 0.03,
         "force_driven_rot_c": 0.02,
         "force_driven_rot_tmax": 0.02,
-        "disturbance_force_mag": 1.0,
+        "disturbance_force_mag": 5.0,
         "disturbance_base_nodes": 5,
-        "disturbance_steps": 40,
+        "disturbance_steps": 100,
         "disturbance_dt_scale": 1.0,
+        "continuous_disturbance_metric": True,
         "min_tension": 0.1,
-        "max_tension": 20.0,
-        "v_mode": "manual",
-        "joint_stiffness_mode": "full_material",
+        # Keep this at/above the sweep maximum, otherwise finger.py may clamp
+        # high-tension samples even though the sampled design says 25 N.
+        "max_tension": 30.0,
+        "distal_tendon_anchor": "tip",
+        "v_mode": "from_links",
+        "joint_stiffness_mode": "bending_only",
         "data_only": True,
-        "cyl_rad": 0.03,
-        "landing_height": 0.04,
+        "base_rad": 0.01,
+        "cross_section": "rect",
+        "base_width": 0.03,
         "landing_speed": 0.0,
-        "initial_x_gap": 0.06,
+        "ankle_wrap_radius": 0.03,
+        "ankle_stiffness": 500.0,
     }
 
-    base_rad_choices = [0.01025, 0.011, 0.0115, 0.012, 0.0125, 0.013]
-    base_len_choices = [0.15, 0.20, 0.25, 0.30]
-    tension_choices = [1.0, 2.0, 2.5, 3.0, 4.0, 4.5, 5.0, 6.0]
-    ankle_wrap_choices = [0.015, 0.0175, 0.020, 0.0225, 0.025]
-    ankle_stiff_choices = [300.0, 400.0, 500.0, 600.0, 700.0]
-    approach_angle_choices = [45.0, 50.0, 60.0, 65.0, 70.0, 75.0]
-
-    joint_soft_choices = [
-        [0.005, 0.004, 0.003],
-        [0.0045, 0.0035, 0.0025],
-        [0.0035, 0.0025, 0.0015],
-        [0.003, 0.002, 0.001],
-        [0.0025, 0.0015, 0.0005],
-        [0.002, 0.001, 0.0009],
-        [0.001, 0.0009, 0.0008],
-        [0.0009, 0.0008, 0.0007],
+    geometry_choices = get_geometry_choices()
+    cyl_rad_choices = [0.020, 0.025, 0.030, 0.035]
+    initial_x_gap_choices = [0.06, 0.10, 0.15, 0.20]
+    landing_height_choices = [0.02, 0.04, 0.06]
+    landing_approach_deg_choices = [15.0, 30.0, 45.0]
+    base_thickness_choices = [0.015, 0.018, 0.020, 0.023, 0.025]
+    tension_choices = [5.0, 7.5, 10.0, 12.5, 14.7, 17.5, 20.0, 22.5, 25.0]
+    approach_angle_choices = list(np.arange(5.0, 90.0, 10.0))  # 0-90 exclusive
+    joint_E_choices_mpa = [
+        [0.05, 0.04, 0.03],
+        [0.08, 0.06, 0.04],
+        [0.10, 0.08, 0.06],  # run.sh value
+        [0.15, 0.12, 0.09],
+        [0.20, 0.16, 0.12],
+        [0.30, 0.20, 0.15],
     ]
 
-    params["base_rad"] = maybe_round(sample_from_list(rng, base_rad_choices), 5)
-    params["base_len"] = maybe_round(sample_from_list(rng, base_len_choices), 4)
+    geometry = sample_from_list(rng, geometry_choices)
+    params["base_len"] = maybe_round(geometry["base_len"], 4)
+    params["cyl_rad"] = maybe_round(sample_from_list(rng, cyl_rad_choices), 4)
+    params["initial_x_gap"] = maybe_round(sample_from_list(rng, initial_x_gap_choices), 4)
+    params["landing_height"] = maybe_round(sample_from_list(rng, landing_height_choices), 4)
+    params["landing_approach_deg"] = maybe_round(sample_from_list(rng, landing_approach_deg_choices), 4)
+    params["base_thickness"] = maybe_round(sample_from_list(rng, base_thickness_choices), 4)
     params["tension"] = maybe_round(sample_from_list(rng, tension_choices), 4)
-    params["ankle_wrap_radius"] = maybe_round(sample_from_list(rng, ankle_wrap_choices), 4)
-    params["ankle_stiffness"] = maybe_round(sample_from_list(rng, ankle_stiff_choices), 4)
     params["approach_deg"] = maybe_round(sample_from_list(rng, approach_angle_choices), 4)
 
-    js = sample_from_list(rng, joint_soft_choices)
-    params["joint_softness"] = ",".join([f"{x:.6f}" for x in js])
+    joint_E_mpa = sample_from_list(rng, joint_E_choices_mpa)
 
-    joint_positions = sample_joint_positions(
-        rng,
-        n_elements=params["n_elements"],
-        min_first=30,
-        max_last=95,
-        min_gap=20,
-    )
-    params["v_list"] = ",".join([str(x) for x in joint_positions])
+    params["geometry_name"] = geometry["name"]
+    params["link_lengths"] = format_float_csv(geometry["link_lengths"], ndigits=3)
+    params["joint_lengths"] = format_float_csv(geometry["joint_lengths"], ndigits=3)
+    params["joint_E"] = format_float_csv(joint_E_mpa, ndigits=4)
 
     return params
 
@@ -162,14 +222,17 @@ def generate_all_dataset_tasks(n_total, train_dir, test_dir, seed, num_train):
         p = build_design_only_sample(rng)
 
         key = (
-            p["base_rad"],
+            p["cyl_rad"],
+            p["initial_x_gap"],
+            p["landing_height"],
+            p["landing_approach_deg"],
             p["base_len"],
+            p["base_thickness"],
             p["tension"],
-            p["ankle_wrap_radius"],
-            p["ankle_stiffness"],
-            p["joint_softness"],
-            p["v_list"],
             p["approach_deg"],
+            p["link_lengths"],
+            p["joint_lengths"],
+            p["joint_E"],
         )
 
         if key in seen:
@@ -196,19 +259,26 @@ def run_simulation(bundle):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     unique_id = (
         f"T{params['tension']}_"
-        f"BR{params['base_rad']}_"
+        f"CR{params['cyl_rad']}_"
+        f"XG{params['initial_x_gap']}_"
+        f"LH{params['landing_height']}_"
+        f"LA{params['landing_approach_deg']}_"
         f"BL{params['base_len']}_"
-        f"AR{params['ankle_wrap_radius']}_"
-        f"AK{params['ankle_stiffness']}_"
+        f"BT{params['base_thickness']}_"
         f"A{params['approach_deg']}_"
-        f"JS{params['joint_softness'].replace(',', '-')}_"
-        f"JP{params['v_list'].replace(',', '-')}_"
+        f"G{params['geometry_name']}_"
+        f"JE{params['joint_E'].replace(',', '-')}_"
+        f"LL{params['link_lengths'].replace(',', '-')}_"
+        f"JL{params['joint_lengths'].replace(',', '-')}_"
         f"{timestamp}"
     )
 
     cmd = ["python3", "finger.py"]
+    internal_keys = {"geometry_name"}
 
     for key, value in params.items():
+        if key in internal_keys:
+            continue
         if isinstance(value, bool):
             if value:
                 cmd.append(f"--{key}")
@@ -289,11 +359,12 @@ def run_split(tasks_to_run, output_dir, num_workers, split_label):
                 print(
                     f"[-] Crash @ "
                     f"T:{p.get('tension')} "
-                    f"BR:{p.get('base_rad')} "
                     f"BL:{p.get('base_len')} "
+                    f"BT:{p.get('base_thickness')} "
                     f"A:{p.get('approach_deg')} "
-                    f"JS:{p.get('joint_softness')} "
-                    f"JP:{p.get('v_list')}"
+                    f"JE:{p.get('joint_E')} "
+                    f"LL:{p.get('link_lengths')} "
+                    f"JL:{p.get('joint_lengths')}"
                 )
                 print(f"Error: {err[-500:] if err else 'Unknown'}\n")
                 shown += 1
@@ -307,8 +378,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Generate squirrel finger dataset with pooled random train/test split."
     )
-    parser.add_argument("--num_train", type=int, default=400)
-    parser.add_argument("--num_test", type=int, default=100)
+    parser.add_argument("--num_train", type=int, default=8000)
+    parser.add_argument("--num_test", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--num_cpus", type=int, default=None)
     args = parser.parse_args()
