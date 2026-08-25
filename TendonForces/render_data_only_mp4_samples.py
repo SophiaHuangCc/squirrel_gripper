@@ -288,6 +288,7 @@ def main() -> None:
     print(f"[WORKERS] {max(1, args.num_workers)}")
 
     results: list[dict[str, Any]] = []
+    printed_first_failure = False
     with futures.ThreadPoolExecutor(max_workers=max(1, args.num_workers)) as executor:
         future_to_idx = {executor.submit(render_one, task): task[0] for task in tasks}
         for future in futures.as_completed(future_to_idx):
@@ -306,6 +307,22 @@ def main() -> None:
             results.append(result)
             status = "OK" if result["ok"] else "FAIL"
             print(f"[{status}] {idx + 1:03d}/{len(tasks):03d} {Path(result['npz']).name}")
+            if (not result["ok"]) and (not printed_first_failure):
+                printed_first_failure = True
+                print("\n[FIRST FAILURE DEBUG]")
+                print("Command:")
+                print(" ".join(result.get("cmd", [])))
+                if result.get("returncode") is not None:
+                    print(f"Return code: {result['returncode']}")
+                stdout_tail = result.get("stdout_tail") or ""
+                stderr_tail = result.get("stderr_tail") or ""
+                if stdout_tail:
+                    print("\nstdout tail:")
+                    print(stdout_tail)
+                if stderr_tail:
+                    print("\nstderr tail:")
+                    print(stderr_tail)
+                print("[END FIRST FAILURE DEBUG]\n")
 
     results = sorted(results, key=lambda r: r["npz"])
     summary = {
