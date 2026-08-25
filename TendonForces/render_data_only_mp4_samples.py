@@ -23,6 +23,7 @@ import concurrent.futures as futures
 import json
 import math
 import os
+import re
 import random
 import subprocess
 import sys
@@ -70,7 +71,8 @@ def scalarize(value: Any) -> Any:
     if arr.shape == ():
         return arr.item()
     if arr.size == 1:
-        return arr.reshape(-1)[0].item()
+        one = arr.reshape(-1)[0]
+        return one.item() if hasattr(one, "item") else one
     return arr.tolist()
 
 
@@ -132,12 +134,32 @@ def load_args_from_npz(npz_path: Path) -> dict[str, Any]:
     return args
 
 
+def get_finger_parser_args(finger_py: Path, python_executable: str) -> set[str]:
+    """Best-effort parse of supported --args from finger.py --help."""
+    proc = subprocess.run(
+        [python_executable, str(finger_py), "--help"],
+        cwd=str(finger_py.parent),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    text = proc.stdout + "\n" + proc.stderr
+    names = set()
+    for match in re.finditer(r"--([A-Za-z0-9_][A-Za-z0-9_-]*)", text):
+        name = match.group(1)
+        if name.startswith("no-"):
+            name = name[3:]
+        names.add(name.replace("-", "_"))
+    return names
+
+
 def build_finger_command(
     npz_path: Path,
     output_dir: Path,
     sample_index: int,
     python_executable: str,
     finger_py: Path,
+    allowed_args: set[str] | None,
 ) -> list[str]:
     saved_args = load_args_from_npz(npz_path)
     source_suffix = str(saved_args.get("suffix", npz_path.stem))
@@ -146,6 +168,8 @@ def build_finger_command(
     cmd = [python_executable, str(finger_py)]
     for key in sorted(saved_args):
         if key in SKIP_ARG_KEYS:
+            continue
+        if allowed_args is not None and key not in allowed_args:
             continue
         value = saved_args[key]
         if is_missing(value):
@@ -164,8 +188,8 @@ def build_finger_command(
     return cmd
 
 
-def render_one(task: tuple[int, str, str, str, str, bool]) -> dict[str, Any]:
-    idx, npz_str, output_dir_str, python_executable, finger_py_str, dry_run = task
+def render_one(task: tuple[int, str, str, str, str, bool, set[str] | None]) -> dict[str, Any]:
+    idx, npz_str, output_dir_str, python_executable, finger_py_str, dry_run, allowed_args = task
     npz_path = Path(npz_str)
     output_dir = Path(output_dir_str)
     finger_py = Path(finger_py_str)
@@ -175,6 +199,7 @@ def render_one(task: tuple[int, str, str, str, str, bool]) -> dict[str, Any]:
         sample_index=idx,
         python_executable=python_executable,
         finger_py=finger_py,
+        allowed_args=allowed_args,
     )
 
     if dry_run:
@@ -240,6 +265,14 @@ def main() -> None:
         action="store_true",
         help="Write selected files and commands, but do not run simulations.",
     )
+    parser.add_argument(
+        "--no_filter_unknown_args",
+        action="store_true",
+        help=(
+            "Pass every saved arg_* key to finger.py. By default, this script "
+            "drops saved args that are not present in the current finger.py --help."
+        ),
+    )
     args = parser.parse_args()
 
     dataset_dir = Path(args.dataset_dir).expanduser().resolve()
@@ -261,6 +294,15 @@ def main() -> None:
     if not finger_py.exists():
         raise FileNotFoundError(f"finger.py not found: {finger_py}")
 
+    allowed_args = None
+    if not args.no_filter_unknown_args:
+        allowed_args = get_finger_parser_args(finger_py, args.python)
+        if not allowed_args:
+            raise RuntimeError(
+                "Could not read finger.py --help to determine valid arguments. "
+                "Rerun with --no_filter_unknown_args if you want to bypass this check."
+            )
+
     npz_files = find_npz_files(dataset_dir)
     selected = sample_npz_files(npz_files, n=args.n, seed=args.seed)
 
@@ -277,6 +319,7 @@ def main() -> None:
             args.python,
             str(finger_py),
             args.dry_run,
+            allowed_args,
         )
         for idx, npz_path in enumerate(selected)
     ]
@@ -286,6 +329,8 @@ def main() -> None:
     print(f"[OUTPUT] {output_dir}")
     print(f"[SELECTED LIST] {selected_list_path}")
     print(f"[WORKERS] {max(1, args.num_workers)}")
+    if allowed_args is not None:
+        print(f"[ARG FILTER] keeping saved args that exist in current finger.py ({len(allowed_args)} args)")
 
     results: list[dict[str, Any]] = []
     printed_first_failure = False

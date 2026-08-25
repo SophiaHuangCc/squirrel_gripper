@@ -3,6 +3,7 @@
 python finger.py \
   --approach_deg 60.0 \
   --distal_tendon_anchor tip \
+  --data_only \
   --tension 14.7 \
   --base_rad 0.01 \
   --v_mode from_links \
@@ -31,7 +32,7 @@ python finger.py \
   --v_height 0.002 \
   --body_mass 3 \
   --suffix manufactured_real_from_runsh \
-  --output_dir manufactured_runs \
+  --output_dir debug_runs \
   --landing_motion \
   --landing_mode prescribed \
   --ankle_wrap_radius 0.03 \
