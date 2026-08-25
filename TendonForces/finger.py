@@ -1201,7 +1201,7 @@ def main():
     # Auto-compute discretization: if user passed 0 or negative, set
     # elements = round(base_length (m) * 1000) -> ~1 element per mm.
     if args.n_elements is None or int(args.n_elements) <= 0:
-        n_elements = max(10, int(round(base_length * 500)))
+        n_elements = max(10, int(round(base_length * 1000)))
         print(f"[DISCRETIZATION] n_elements auto-set from base_length: {n_elements} (1/mm resolution)")
     else:
         n_elements = int(args.n_elements)
