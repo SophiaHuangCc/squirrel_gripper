@@ -177,12 +177,12 @@ def build_design_only_sample(rng):
     }
 
     geometry_choices = get_geometry_choices()
-    cyl_rad_choices = [0.020, 0.025, 0.030, 0.035]
-    initial_x_gap_choices = [0.06, 0.10, 0.15, 0.20]
-    landing_height_choices = [0.02, 0.04, 0.06]
-    landing_approach_deg_choices = [15.0, 30.0, 45.0]
+    cyl_rad_choices = [0.015, 0.020, 0.025, 0.030, 0.035]
+    initial_x_gap_choices = [0.06, 0.10, 0.12, 0.15, 0.20]
+    landing_height_choices = [0, 0.02, 0.04, 0.06, 0.08]
+    landing_approach_deg_choices = [15.0, 30.0, 45.0, 60.0, 75.0]
     base_thickness_choices = [0.015, 0.018, 0.020, 0.023, 0.025]
-    tension_choices = [5.0, 7.5, 10.0, 12.5, 14.7, 17.5, 20.0, 22.5, 25.0]
+    tension_choices = [5.0, 7.5, 10.0, 12.5, 14.7, 17.5, 20.0, 22.5, 25.0, 27.5]
     approach_angle_choices = list(np.arange(5.0, 90.0, 10.0))  # 0-90 exclusive
     joint_E_choices_mpa = [
         [0.05, 0.04, 0.03],
@@ -191,6 +191,9 @@ def build_design_only_sample(rng):
         [0.15, 0.12, 0.09],
         [0.20, 0.16, 0.12],
         [0.30, 0.20, 0.15],
+        [0.30, 0.20, 0.15],
+        [0.08, 0.08, 0.08],
+        [0.06, 0.08, 0.10],
     ]
 
     geometry = sample_from_list(rng, geometry_choices)
