@@ -8,12 +8,7 @@ import numpy as np
 from benchmarks.candidates import save_candidates
 from benchmarks.protocol import DEFAULT_CONFIG, expand_core_scenarios, load_config
 from dynamics.dataloader import DynamicsDataset
-
-
-SCALES = np.asarray(
-    [0.001] * 3 + [0.3] * 4 + [0.05] * 3 + [0.02, 0.2, 10.0, 0.025, 1000.0],
-    dtype=np.float32,
-)
+from generator.dataloader import model_norm_to_physical
 ENV_KEYS = ("approach_deg", "cyl_rad", "landing_approach_deg", "initial_x_gap", "landing_height")
 ENV_SCALES = np.asarray([90.0, 0.05, 90.0, 0.20, 0.10], dtype=np.float32)
 
@@ -60,7 +55,10 @@ def retrieve(dataset_dir, config, num_candidates, scenario_id=None, family=None,
     rows = []
     for index, path in enumerate(dataset.files):
         item = dataset[index]
-        design = item["design_params"].numpy() * SCALES
+        # Use the shared model-to-physical conversion so retrieval cannot drift
+        # from the dynamics/generator design contract (currently 16D and
+        # including base_thickness).
+        design = model_norm_to_physical(item["design_params"]).numpy()
         environment = archive_environment(path)
         distances = np.linalg.norm((targets - environment[None, :]) / ENV_SCALES, axis=1)
         scenario_distance = float(np.mean(distances))

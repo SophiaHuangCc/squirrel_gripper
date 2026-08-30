@@ -12,7 +12,10 @@ from benchmarks.baselines.surrogate_search import adam_search, select_target_cel
 from benchmarks.candidates import load_candidates, save_candidates, validate_designs
 from benchmarks.protocol import aggregate_records, expand_core_scenarios, load_config
 from dynamics.trainer import Trainer
-from generator.dataloader import DesignBounds, project_physical_design
+from generator.dataloader import (
+    DESIGN_MODEL_SCALES, DesignBounds, model_norm_to_physical,
+    project_physical_design,
+)
 
 
 class BenchmarkTests(unittest.TestCase):
@@ -108,6 +111,11 @@ class BenchmarkTests(unittest.TestCase):
             projected[:, 3:10].sum(dim=1).numpy(),
             projected[:, 12].numpy(), atol=1e-5,
         )
+
+    def test_shared_design_conversion_includes_base_thickness(self):
+        physical = model_norm_to_physical(torch.ones(16))
+        self.assertEqual(tuple(physical.shape), (16,))
+        self.assertAlmostEqual(float(physical[11]), float(DESIGN_MODEL_SCALES[11]))
 
 
 if __name__ == "__main__":
