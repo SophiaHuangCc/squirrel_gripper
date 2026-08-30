@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -10,6 +11,7 @@ from benchmarks.baselines.reference import reference_design
 from benchmarks.baselines.surrogate_search import adam_search, select_target_cells
 from benchmarks.candidates import load_candidates, save_candidates, validate_designs
 from benchmarks.protocol import aggregate_records, expand_core_scenarios, load_config
+from dynamics.trainer import Trainer
 
 
 class BenchmarkTests(unittest.TestCase):
@@ -80,6 +82,15 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(result.designs.shape, (3, 15))
         self.assertTrue(np.all(result.scores[:-1] >= result.scores[1:]))
         self.assertEqual(result.model_evaluations, 6)
+
+    def test_standard_dynamics_trainer_does_not_require_diffusers(self):
+        args = SimpleNamespace(
+            device="cpu", task_dim=2, design_dim=15, init_dim=3,
+            output_dim=3, hidden_dim=16, lr=1e-3, use_design_noise=False,
+        )
+        trainer = Trainer(args)
+        trainer.create_model()
+        self.assertIsNone(trainer.noise_scheduler)
 
 
 if __name__ == "__main__":

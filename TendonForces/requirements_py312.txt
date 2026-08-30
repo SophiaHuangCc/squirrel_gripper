@@ -49,6 +49,7 @@ torchvision==0.18.1
 torchaudio==2.3.1
 wandb==0.17.0
 diffusers==0.28.0
-transformers>=4.40
+huggingface-hub==0.25.2
+transformers==4.41.2
 accelerate>=0.28
 scipy>=1.11,<2.0

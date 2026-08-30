@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 from dynamics.profile_forward_2d import ProfileForward2DModel
 
 
@@ -60,14 +59,25 @@ class Trainer:
         self.lr_scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=30, gamma=0.5)
         self.criterion = nn.MSELoss()
 
-        # DDIM scheduler only used to add noise to design params
-        self.noise_scheduler = DDIMScheduler(
-            num_train_timesteps=self.num_train_timesteps,
-            beta_schedule="squaredcos_cap_v2",
-            clip_sample=True,
-            prediction_type="epsilon",  # fine to leave this, even though target is not epsilon
-        )
-        self.noise_scheduler.set_timesteps(self.num_inference_steps)
+        # Diffusers is needed only for the optional design-noise augmentation.
+        # Keep ordinary surrogate training independent of the Hugging Face stack.
+        self.noise_scheduler = None
+        if self.use_design_noise:
+            try:
+                from diffusers.schedulers.scheduling_ddim import DDIMScheduler
+            except (ImportError, RuntimeError) as exc:
+                raise RuntimeError(
+                    "--use_design_noise requires a compatible diffusers and "
+                    "huggingface_hub installation. Ordinary dynamics training "
+                    "does not require this flag."
+                ) from exc
+            self.noise_scheduler = DDIMScheduler(
+                num_train_timesteps=self.num_train_timesteps,
+                beta_schedule="squaredcos_cap_v2",
+                clip_sample=True,
+                prediction_type="epsilon",
+            )
+            self.noise_scheduler.set_timesteps(self.num_inference_steps)
 
     def _prepare_tensors(self, task_params, design_params, init_config):
         task_tensor = task_params.view(task_params.shape[0], -1)
