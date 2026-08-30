@@ -12,6 +12,7 @@ from benchmarks.baselines.surrogate_search import adam_search, select_target_cel
 from benchmarks.candidates import load_candidates, save_candidates, validate_designs
 from benchmarks.protocol import aggregate_records, expand_core_scenarios, load_config
 from dynamics.trainer import Trainer
+from generator.dataloader import DesignBounds, project_physical_design
 
 
 class BenchmarkTests(unittest.TestCase):
@@ -23,8 +24,8 @@ class BenchmarkTests(unittest.TestCase):
 
     def test_reference_is_valid_from_links_design(self):
         design = validate_designs(reference_design())
-        self.assertEqual(design.shape, (1, 15))
-        self.assertAlmostEqual(float(design[0, 3:10].sum()), float(design[0, 11]), places=6)
+        self.assertEqual(design.shape, (1, 16))
+        self.assertAlmostEqual(float(design[0, 3:10].sum()), float(design[0, 12]), places=6)
 
     def test_random_designs_are_reproducible_and_feasible(self):
         first = sample_feasible_designs(16, seed=7)
@@ -39,7 +40,7 @@ class BenchmarkTests(unittest.TestCase):
             designs = sample_feasible_designs(3, seed=2)
             save_candidates(path, designs, method="random", seed=2)
             loaded = load_candidates(path, top_k=2)
-            self.assertEqual(loaded["design_params"].shape, (2, 15))
+            self.assertEqual(loaded["design_params"].shape, (2, 16))
             self.assertEqual(loaded["method"], "random")
             self.assertEqual(loaded["seed"], 2)
 
@@ -79,18 +80,34 @@ class BenchmarkTests(unittest.TestCase):
             num_steps=2, learning_rate=0.01, device="cpu",
         )
         validate_designs(result.designs)
-        self.assertEqual(result.designs.shape, (3, 15))
+        self.assertEqual(result.designs.shape, (3, 16))
         self.assertTrue(np.all(result.scores[:-1] >= result.scores[1:]))
         self.assertEqual(result.model_evaluations, 6)
 
     def test_standard_dynamics_trainer_does_not_require_diffusers(self):
         args = SimpleNamespace(
-            device="cpu", task_dim=2, design_dim=15, init_dim=3,
+            device="cpu", task_dim=3, design_dim=16, init_dim=3,
             output_dim=3, hidden_dim=16, lr=1e-3, use_design_noise=False,
         )
         trainer = Trainer(args)
         trainer.create_model()
         self.assertIsNone(trainer.noise_scheduler)
+
+    def test_geometry_projection_preserves_each_link_bound(self):
+        bounds = DesignBounds.defaults()
+        raw = bounds.hi.repeat(3, 1)
+        raw[:, 3:7] = torch.tensor([
+            [1.0, -1.0, 1.0, -1.0],
+            [-1.0, 1.0, -1.0, 1.0],
+            [1.0, 1.0, -1.0, -1.0],
+        ])
+        projected = project_physical_design(raw, bounds)
+        self.assertTrue(torch.all(projected[:, 3:7] >= bounds.lo[3:7] - 1e-6))
+        self.assertTrue(torch.all(projected[:, 3:7] <= bounds.hi[3:7] + 1e-6))
+        np.testing.assert_allclose(
+            projected[:, 3:10].sum(dim=1).numpy(),
+            projected[:, 12].numpy(), atol=1e-5,
+        )
 
 
 if __name__ == "__main__":

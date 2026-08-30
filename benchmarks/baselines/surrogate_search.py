@@ -37,7 +37,7 @@ def select_target_cells(config, scenario_id=None, family=None, generalist=False)
 
 def load_surrogate(checkpoint_path, device="cpu", hidden_dim=256):
     model = ProfileForward2DModel(
-        W=hidden_dim, task_ch=2, design_ch=15, init_ch=3, output_ch=3
+        W=hidden_dim, task_ch=3, design_ch=16, init_ch=3, output_ch=3
     ).to(device)
     state = torch.load(checkpoint_path, map_location=device)
     if isinstance(state, dict) and "model" in state:
@@ -57,7 +57,9 @@ def load_surrogate(checkpoint_path, device="cpu", hidden_dim=256):
 
 def _scenario_tensors(cells, device):
     task = torch.tensor(
-        [[cell["params"]["approach_deg"] / 90.0, cell["params"]["cyl_rad"] / 0.05] for cell in cells],
+        [[cell["params"]["approach_deg"] / 90.0,
+          cell["params"]["landing_approach_deg"] / 90.0,
+          cell["params"]["cyl_rad"] / 0.05] for cell in cells],
         dtype=torch.float32,
         device=device,
     )
@@ -124,7 +126,7 @@ def adam_search(
     task, init = _scenario_tensors(cells, device)
     bounds = DesignBounds.defaults()
     generator = torch.Generator(device=device).manual_seed(seed)
-    raw = torch.nn.Parameter(torch.randn(num_candidates, 15, generator=generator, device=device))
+    raw = torch.nn.Parameter(torch.randn(num_candidates, 16, generator=generator, device=device))
     optimizer = torch.optim.Adam([raw], lr=learning_rate)
     weights = config["evaluation"]["utility_weights"]
     best_scores = torch.full((num_candidates,), -torch.inf, device=device)
@@ -163,7 +165,7 @@ def cma_es_search(
     bounds = DesignBounds.defaults()
     weights = config["evaluation"]["utility_weights"]
     strategy = cma.CMAEvolutionStrategy(
-        np.zeros(15), sigma,
+        np.zeros(16), sigma,
         {"seed": seed, "popsize": max(popsize, num_candidates), "bounds": [-5.0, 5.0], "verbose": -9},
     )
     archive = {}

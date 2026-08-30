@@ -5,16 +5,17 @@ This folder adapts the DGDM `generator` pattern to this project.
 The generator learns a conditional design prior:
 
 ```text
-task params + init config + desired metrics  --->  diffusion model  --->  15D From Links design
+task params + init config + desired metrics  --->  diffusion model  --->  16D From Links design
 ```
 
-The 15D design is:
+The 16D design is:
 
 ```text
 [3 joint softness values,
  4 free-link lengths,
  3 finite joint lengths,
  base radius,
+ base thickness,
  base length,
  tension,
  ankle wrap radius,

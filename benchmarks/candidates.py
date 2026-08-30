@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 
-DESIGN_DIM = 15
+DESIGN_DIM = 16
 
 
 def _text_scalar(value, default=""):
@@ -25,7 +25,7 @@ def validate_designs(designs):
     if not np.all(np.isfinite(designs)):
         raise ValueError("Candidate designs contain non-finite values")
     geometry_total = designs[:, 3:7].sum(axis=1) + designs[:, 7:10].sum(axis=1)
-    if not np.allclose(geometry_total, designs[:, 11], rtol=0.0, atol=1e-5):
+    if not np.allclose(geometry_total, designs[:, 12], rtol=0.0, atol=1e-5):
         raise ValueError("Every candidate must satisfy sum(links) + sum(joints) = base_length")
     return designs
 

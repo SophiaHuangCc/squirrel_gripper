@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FINGER_DIR = REPO_ROOT / "TendonForces"
 FINGER_SCRIPT = FINGER_DIR / "finger.py"
 RESERVED_SCENARIO_KEYS = {
-    "base_len", "base_rad", "tension", "ankle_wrap_radius", "ankle_stiffness",
+    "base_len", "base_rad", "base_thickness", "tension", "ankle_wrap_radius", "ankle_stiffness",
     "joint_softness", "joint_lengths", "link_lengths", "output_dir", "suffix",
 }
 
@@ -104,6 +104,7 @@ def build_command(design, scenario, run_dir, run_id, python_executable):
         "--joint_lengths", decoded["joint_lengths_str"],
         "--joint_softness", decoded["joint_softness_str"],
         "--base_rad", str(decoded["base_rad"]),
+        "--base_thickness", str(decoded["base_thickness"]),
         "--base_len", str(decoded["base_len"]),
         "--tension", str(decoded["tension"]),
         "--ankle_wrap_radius", str(decoded["ankle_wrap_radius"]),

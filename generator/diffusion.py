@@ -53,7 +53,7 @@ class SquirrelDesignDiffusion(nn.Module):
     Squirrel-finger adaptation of DGDM's diffusion generator.
 
     Training learns p(design | task, init, desired_metrics).
-    Sampling starts from Gaussian noise and denoises into a 15D From Links design.
+    Sampling starts from Gaussian noise and denoises into a 16D From Links design.
     """
 
     def __init__(
@@ -105,16 +105,31 @@ class SquirrelDesignDiffusion(nn.Module):
         cond: torch.Tensor,
         dynamics_model: nn.Module,
         objective: str,
+        guidance_task_params: Optional[torch.Tensor] = None,
+        guidance_init_config: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         design_physical = project_physical_design(
             diffusion_to_physical(design_unit.squeeze(-1), self.bounds),
             self.bounds,
         )
         design_norm = physical_to_model_norm(design_physical)
-        task_params = cond[:, 0:2]
-        init_config = cond[:, 2:5]
-        timesteps = torch.zeros(design_unit.shape[0], dtype=torch.float32, device=design_unit.device)
-        pred = dynamics_model(task_params, design_norm, init_config, timesteps)
+        if (guidance_task_params is None) != (guidance_init_config is None):
+            raise ValueError("guidance task and initial-condition sets must be provided together")
+        if guidance_task_params is None:
+            task_params = cond[:, 0:3]
+            init_config = cond[:, 3:6]
+            design_batch = design_norm
+            scenario_count = 1
+        else:
+            scenario_count = guidance_task_params.shape[0]
+            if guidance_init_config.shape[0] != scenario_count:
+                raise ValueError("guidance task and initial-condition sets must have equal length")
+            batch_size = design_unit.shape[0]
+            task_params = guidance_task_params.repeat(batch_size, 1)
+            init_config = guidance_init_config.repeat(batch_size, 1)
+            design_batch = design_norm.repeat_interleave(scenario_count, dim=0)
+        timesteps = torch.zeros(design_batch.shape[0], dtype=torch.float32, device=design_unit.device)
+        pred = dynamics_model(task_params, design_batch, init_config, timesteps)
 
         contacts = pred[:, 0]
         disturbance = pred[:, 1]
@@ -127,9 +142,11 @@ class SquirrelDesignDiffusion(nn.Module):
             score = angular_span
         elif objective == "disturbance_contact_span":
             score = disturbance + 0.1 * contacts + 0.5 * angular_span
+        elif objective == "benchmark_utility":
+            score = 0.45 * disturbance + 0.20 * contacts + 0.35 * angular_span
         else:
             raise ValueError(f"Unknown guidance objective: {objective}")
-        return score
+        return score.reshape(design_unit.shape[0], scenario_count).mean(dim=1)
 
     @torch.no_grad()
     def sample(
@@ -139,6 +156,8 @@ class SquirrelDesignDiffusion(nn.Module):
         guidance_scale: float = 0.0,
         guidance_objective: str = "disturbance_contact_span",
         generator: Optional[torch.Generator] = None,
+        guidance_task_params: Optional[torch.Tensor] = None,
+        guidance_init_config: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Generate designs.
@@ -169,6 +188,8 @@ class SquirrelDesignDiffusion(nn.Module):
                         cond,
                         dynamics_model=dynamics_model,
                         objective=guidance_objective,
+                        guidance_task_params=guidance_task_params,
+                        guidance_init_config=guidance_init_config,
                     ).sum()
                     grad = torch.autograd.grad(score, guided_sample)[0]
                 alpha_term = (1.0 - self.noise_scheduler.alphas_cumprod[t]).sqrt()
@@ -193,6 +214,7 @@ class SquirrelDesignDiffusion(nn.Module):
 def make_condition_batch(
     batch_size: int,
     approach_deg: float = 45.0,
+    landing_approach_deg: float = 45.0,
     cyl_radius: float = 0.03,
     landing_height: float = 0.04,
     landing_speed: float = 0.0,
@@ -203,7 +225,7 @@ def make_condition_batch(
     device: torch.device = torch.device("cpu"),
 ) -> torch.Tensor:
     task = torch.tensor(
-        [[approach_deg / 90.0, cyl_radius / 0.05]],
+        [[approach_deg / 90.0, landing_approach_deg / 90.0, cyl_radius / 0.05]],
         dtype=torch.float32,
         device=device,
     ).repeat(batch_size, 1)

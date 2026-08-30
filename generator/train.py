@@ -99,7 +99,7 @@ def main():
 
     unet = ConditionalUnet1D(
         input_dim=1,
-        global_cond_dim=8,
+        global_cond_dim=9,
         down_dims=[128, 256],
         diffusion_step_embed_dim=32,
     )

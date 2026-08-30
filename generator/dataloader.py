@@ -21,6 +21,7 @@ DESIGN_NAMES = [
     "joint_length_1",
     "joint_length_2",
     "base_radius",
+    "base_thickness",
     "base_length",
     "tension",
     "ankle_wrap_radius",
@@ -28,7 +29,7 @@ DESIGN_NAMES = [
 ]
 
 DESIGN_MODEL_SCALES = torch.tensor(
-    [0.001, 0.001, 0.001, 0.3, 0.3, 0.3, 0.3, 0.05, 0.05, 0.05, 0.02, 0.2, 10.0, 0.025, 1000.0],
+    [0.001, 0.001, 0.001, 0.3, 0.3, 0.3, 0.3, 0.05, 0.05, 0.05, 0.02, 0.03, 0.2, 10.0, 0.025, 1000.0],
     dtype=torch.float32,
 )
 
@@ -42,13 +43,23 @@ class DesignBounds:
 
     @classmethod
     def defaults(cls) -> "DesignBounds":
+        # Support of TendonForces/parallel_runner_ray.py. Parameters that are
+        # fixed in the dataset must remain fixed during surrogate optimization;
+        # otherwise a search method can exploit unconstrained extrapolation.
+        base_e = 6.74
         return cls(
             lo=torch.tensor(
-                [0.0005, 0.0005, 0.0005, 0.01, 0.01, 0.01, 0.01, 0.005, 0.005, 0.005, 0.01025, 0.15, 1.0, 0.015, 300.0],
+                [0.05 / base_e, 0.04 / base_e, 0.03 / base_e,
+                 0.035, 0.012, 0.013, 0.017,
+                 0.020, 0.020, 0.020,
+                 0.010, 0.015, 0.15, 5.0, 0.030, 500.0],
                 dtype=torch.float32,
             ),
             hi=torch.tensor(
-                [0.05, 0.05, 0.05, 0.13, 0.10, 0.10, 0.10, 0.03, 0.03, 0.03, 0.013, 0.30, 30.0, 0.035, 700.0],
+                [0.30 / base_e, 0.20 / base_e, 0.15 / base_e,
+                 0.130, 0.045, 0.055, 0.065,
+                 0.020, 0.020, 0.020,
+                 0.010, 0.025, 0.30, 27.5, 0.030, 500.0],
                 dtype=torch.float32,
             ),
         )
@@ -116,12 +127,27 @@ def project_physical_design(design_physical: torch.Tensor, bounds: DesignBounds)
 
     links = design[..., 3:7]
     joints = design[..., 7:10]
-    base_length = design[..., 11:12]
+    base_length = design[..., 12:13]
     link_lo = lo[3:7]
     link_hi = hi[3:7]
-    links = torch.clamp(links, link_lo, link_hi)
     available_link_length = (base_length - joints.sum(dim=-1, keepdim=True)).clamp_min(1e-6)
-    links = links / links.sum(dim=-1, keepdim=True).clamp_min(1e-12) * available_link_length
+    # Euclidean projection onto the bounded simplex
+    #   sum(links) = available_link_length, link_lo <= links <= link_hi.
+    # A proportional rescale does not preserve per-link bounds.  Solving for
+    # the scalar shift with bisection does, and remains differentiable almost
+    # everywhere for dynamics-guided sampling.
+    min_total = link_lo.sum()
+    max_total = link_hi.sum()
+    available_link_length = available_link_length.clamp(min=min_total, max=max_total)
+    shift_lo = (link_lo - links).amin(dim=-1, keepdim=True) - 1.0
+    shift_hi = (link_hi - links).amax(dim=-1, keepdim=True) + 1.0
+    for _ in range(40):
+        shift_mid = 0.5 * (shift_lo + shift_hi)
+        projected = torch.clamp(links + shift_mid, link_lo, link_hi)
+        too_long = projected.sum(dim=-1, keepdim=True) > available_link_length
+        shift_hi = torch.where(too_long, shift_mid, shift_hi)
+        shift_lo = torch.where(too_long, shift_lo, shift_mid)
+    links = torch.clamp(links + 0.5 * (shift_lo + shift_hi), link_lo, link_hi)
     design = torch.cat([design[..., :3], links, design[..., 7:]], dim=-1)
     return design
 
@@ -136,7 +162,7 @@ def build_condition(
     Create the global condition vector.
 
     The condition is intentionally small and matches your trained dynamics model:
-    task_params(2), init_config(3), desired_metrics(3).
+    task_params(3), init_config(3), desired_metrics(3).
 
     metric_mask can zero out unknown metric targets. By default all target
     metrics are used.
@@ -153,8 +179,8 @@ class SquirrelDiffusionDataset(Dataset):
 
     It reuses DynamicsDataset so diffusion and the dynamics model see the exact
     same parsing conventions. Returned sample:
-      design_unit: (15, 1), normalized to [-1, 1]
-      cond:        (8,), task/init/target metric condition
+      design_unit: (16, 1), normalized to [-1, 1]
+      cond:        (9,), task/init/target metric condition
     """
 
     def __init__(

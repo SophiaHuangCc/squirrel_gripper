@@ -33,6 +33,7 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda")
 
     parser.add_argument("--approach_deg", type=float, default=45.0)
+    parser.add_argument("--landing_approach_deg", type=float, default=45.0)
     parser.add_argument("--cyl_rad", type=float, default=0.03)
     parser.add_argument("--landing_height", type=float, default=0.04)
     parser.add_argument("--landing_speed", type=float, default=0.0)
@@ -50,7 +51,7 @@ def load_diffusion(args, device):
     bounds = DesignBounds.from_npz(bounds_path) if os.path.exists(bounds_path) else DesignBounds.defaults()
     unet = ConditionalUnet1D(
         input_dim=1,
-        global_cond_dim=8,
+        global_cond_dim=9,
         down_dims=[128, 256],
         diffusion_step_embed_dim=32,
     )
@@ -78,7 +79,7 @@ def load_diffusion(args, device):
 def load_dynamics(path, device):
     if path is None:
         return None
-    model = ProfileForward2DModel(W=256, task_ch=2, design_ch=15, init_ch=3, output_ch=3).to(device)
+    model = ProfileForward2DModel(W=256, task_ch=3, design_ch=16, init_ch=3, output_ch=3).to(device)
     model.load_state_dict(torch.load(path, map_location=device))
     model.eval()
     for param in model.parameters():
@@ -121,6 +122,7 @@ def main():
         cond = make_condition_batch(
             batch_size=current_bs,
             approach_deg=args.approach_deg,
+            landing_approach_deg=args.landing_approach_deg,
             cyl_radius=args.cyl_rad,
             landing_height=args.landing_height,
             landing_speed=args.landing_speed,
@@ -143,7 +145,7 @@ def main():
         if dynamics_model is not None:
             with torch.no_grad():
                 timesteps = torch.zeros(current_bs, dtype=torch.float32, device=device)
-                pred = dynamics_model(cond[:, 0:2], out["design_norm"], cond[:, 2:5], timesteps)
+                pred = dynamics_model(cond[:, 0:3], out["design_norm"], cond[:, 3:6], timesteps)
             all_pred.append(pred.detach().cpu().numpy())
         remaining -= current_bs
 
@@ -151,7 +153,7 @@ def main():
     design_norm = np.concatenate(all_design_norm, axis=0)
     pred_metrics = np.concatenate(all_pred, axis=0) if all_pred else None
     task_params = np.tile(
-        np.asarray([[args.approach_deg, args.cyl_rad]], dtype=np.float32),
+        np.asarray([[args.approach_deg, args.landing_approach_deg, args.cyl_rad]], dtype=np.float32),
         (design_physical.shape[0], 1),
     )
 

@@ -71,6 +71,11 @@ def aggregate_records(records, config):
         family: sum(family_values) / len(family_values)
         for family, family_values in by_family.items()
     }
+    component_names = tuple(weights)
+    component_means = {
+        name: sum(normalized_metrics(record["metrics"])[name] for record in scored) / len(scored)
+        for name in component_names
+    }
     return {
         "num_rollouts": len(values),
         "mean_utility": sum(values) / len(values),
@@ -80,6 +85,7 @@ def aggregate_records(records, config):
         "worst_cell_utility": values[0],
         "worst_family_utility": min(family_means.values()),
         "family_mean_utility": family_means,
+        "component_mean": component_means,
     }
 
 

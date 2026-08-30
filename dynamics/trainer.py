@@ -25,7 +25,7 @@ class Trainer:
     def create_model(self):
         """
         Inputs:
-          - task_params   : [approach_angle, cylinder_radius]
+          - task_params   : [approach_angle, landing_approach_angle, cylinder_radius]
           - design_params : [joint_stiffnesses, link_lengths, joint_lengths, finger_radius,
                              finger_length, prebend_tension, ankle_radius,
                              ankle_stiffness]
@@ -35,8 +35,8 @@ class Trainer:
           - [num_contacts, disturbance_resistance_score, angular_span]
         """
 
-        self.task_dim = getattr(self.args, "task_dim", 2)
-        self.design_dim = getattr(self.args, "design_dim", 15)
+        self.task_dim = getattr(self.args, "task_dim", 3)
+        self.design_dim = getattr(self.args, "design_dim", 16)
         self.init_dim = getattr(self.args, "init_dim", 3)
         self.output_dim = getattr(self.args, "output_dim", 3)
         self.hidden_dim = getattr(self.args, "hidden_dim", 256)

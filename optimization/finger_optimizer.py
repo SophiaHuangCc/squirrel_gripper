@@ -91,7 +91,8 @@ def optimize_fingers(args, model, random_idx=80000):
     for i in tqdm(range(args.num_epochs)):
         # finger_forward now returns:
         # task_params   = [approach_deg, cyl_rad]
-        # design_params = 15D physical From Links design vector
+        # Legacy standalone optimizer contract; benchmark optimizers use
+        # benchmarks.baselines.surrogate_search with the current 16D contract.
         task_params, design_params = finger_forward(params, args)
 
         pred = model(

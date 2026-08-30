@@ -73,6 +73,175 @@ pip install ray
 
 A CUDA GPU is currently expected by `profile_optimization.py`.
 
+## Recommended end-to-end benchmark workflow
+
+Run this workflow from the repository root. These paths match the Ubuntu lab
+machine; change only `PROJECT_DIR` and `DATASET_DIR` when using another machine
+or experiment.
+
+### 1. Export paths
+
+```bash
+export PROJECT_DIR=/home/real/Desktop/Squirrel_Gripper/ws/squirrel_gripper
+export DATASET_DIR="$PROJECT_DIR/TendonForces/runs/exp1"
+export DYNAMICS_DIR="$PROJECT_DIR/outputs/from_links_v2/dynamics"
+export DIFFUSION_DIR="$PROJECT_DIR/outputs/from_links_v2/diffusion"
+export BENCHMARK_DIR="$PROJECT_DIR/outputs/from_links_v2/benchmark"
+
+cd "$PROJECT_DIR"
+source .venv/bin/activate
+```
+
+Dynamics training logs to W&B automatically. Run `wandb login` once on a new
+machine, or set `WANDB_MODE=offline` if the machine temporarily has no network.
+
+### 2. Train the 3-task, 16-design dynamics model
+
+```bash
+python dynamics/main.py \
+  --mode train \
+  --device cuda \
+  --data_dir "$DATASET_DIR/train" \
+  --test_data_dir "$DATASET_DIR/test" \
+  --save_dir "$DYNAMICS_DIR" \
+  --batch_size 64 \
+  --num_workers 8 \
+  --lr 1e-3 \
+  --num_epochs 300 \
+  --patience 20 \
+  --val_step 5 \
+  --save_ckpt_step 500 \
+  --output_dim 3
+```
+
+Use `$DYNAMICS_DIR/best.pt` for candidate selection. Checkpoints from the old
+2-task/15-design contract are incompatible and must not be reused.
+
+### 3. Train conditional diffusion
+
+```bash
+python generator/train.py \
+  --device cuda \
+  --data_dir "$DATASET_DIR/train" \
+  --save_dir "$DIFFUSION_DIR" \
+  --batch_size 256 \
+  --num_workers 8 \
+  --num_epochs 500 \
+  --num_train_timesteps 100 \
+  --num_inference_steps 20 \
+  --learning_rate 1e-4 \
+  --val_ratio 0.05 \
+  --save_every 25 \
+  --seed 0
+```
+
+Both `conditional_diffusion` and `dgdm` use this same diffusion checkpoint.
+DGDM additionally uses the dynamics checkpoint during denoising.
+
+### 4. Candidate-generation smoke test
+
+This quick command exercises every method and writes candidate files, but does
+not start the expensive PyElastica scenario rollouts:
+
+```bash
+python -m benchmarks.run_baselines \
+  --output_dir "${BENCHMARK_DIR}_smoke" \
+  --methods reference,random,random_search,retrieval,adam,cma_es,conditional_diffusion,dgdm \
+  --candidate_budget 2 \
+  --seeds 0 \
+  --retrieval_data_dir "$DATASET_DIR/train" \
+  --dynamics_checkpoint "$DYNAMICS_DIR/best.pt" \
+  --diffusion_checkpoint "$DIFFUSION_DIR/best.pt" \
+  --device cuda \
+  --random_pool_size 32 \
+  --adam_steps 10 \
+  --cma_generations 3 \
+  --cma_popsize 8 \
+  --diffusion_num_samples 8 \
+  --diffusion_batch_size 8 \
+  --diffusion_inference_steps 5 \
+  --dgdm_guidance_scale 0.1
+```
+
+Successful completion produces one candidate NPZ per requested method under
+`${BENCHMARK_DIR}_smoke/candidates/`. To test simulator command construction
+without executing PyElastica, add `--run_benchmark --dry_run`; `--dry_run` is
+an option on this command, not a separate benchmark protocol.
+
+### 5. Choose the design-selection protocol
+
+Set `TARGET_ARGS` once before the full command:
+
+| Protocol | Setting | Meaning |
+| --- | --- | --- |
+| Default nominal specialist | `TARGET_ARGS=()` | Select for `nominal:00` |
+| Exact-cell specialist | `TARGET_ARGS=(--target_scenario_id orientation:08)` | Select for one named cell |
+| Family specialist | `TARGET_ARGS=(--target_family orientation)` | Select for mean utility over one family |
+| Generalist | `TARGET_ARGS=(--generalist)` | Select for mean utility over all 28 labeled cells |
+
+These options are mutually exclusive. In every case, `--run_benchmark`
+evaluates the selected frozen top-1 design on the common 28-cell suite. Thus a
+specialist is selected on its target but still receives the full transfer test.
+
+### 6. Run the full selected protocol
+
+After setting `TARGET_ARGS`, use the same command for nominal, exact-cell,
+family, or generalist experiments:
+
+```bash
+python -m benchmarks.run_baselines \
+  --output_dir "$BENCHMARK_DIR" \
+  --methods reference,random,random_search,retrieval,adam,cma_es,conditional_diffusion,dgdm \
+  --candidate_budget 16 \
+  --seeds 0,1,2,3,4 \
+  --retrieval_data_dir "$DATASET_DIR/train" \
+  --dynamics_checkpoint "$DYNAMICS_DIR/best.pt" \
+  --diffusion_checkpoint "$DIFFUSION_DIR/best.pt" \
+  --device cuda \
+  --random_pool_size 256 \
+  --adam_steps 300 \
+  --adam_lr 0.03 \
+  --cma_generations 100 \
+  --cma_popsize 32 \
+  --cma_sigma 0.5 \
+  --diffusion_num_samples 256 \
+  --diffusion_batch_size 256 \
+  --diffusion_inference_steps 20 \
+  --dgdm_guidance_scale 0.1 \
+  "${TARGET_ARGS[@]}" \
+  --run_benchmark \
+  --benchmark_top_k 1 \
+  --num_workers 1 \
+  --timeout 1800
+```
+
+Use a different `BENCHMARK_DIR` for each protocol so results are not mixed or
+mistaken for resumable copies of another experiment. For example, append
+`/nominal`, `/orientation_family`, or `/generalist` to the exported path.
+
+Useful options on this single command are:
+
+- `--families orientation,branch_offset` limits the *simulation evaluation*
+  suite; it does not change which conditions select the candidate.
+- `--benchmark_top_k K` evaluates multiple candidates and is an oracle
+  diagnostic. Keep `1` for the primary deployable comparison.
+- `--render` enables simulator videos. Without it, benchmark runs disable video
+  generation to save time and storage.
+- `--surrogate_eval_budget N` overrides method-specific search lengths to
+  approximately equalize surrogate evaluations. Record the chosen value when
+  using it; its effect depends on whether the target contains 1, 9, or 28 cells.
+- `--dgdm_guidance_scale` should be selected on validation scenarios and then
+  frozen before the final test run.
+
+Final tables and plots are written under `$BENCHMARK_DIR/summary/`, including
+`method_summary.csv`, `method_aggregate.csv`, `surrogate_calibration.csv`, and
+`method_comparison.png`.
+
+> **Current versus legacy paths:** the workflow above is the authoritative
+> 3-task/16-design benchmark pipeline. The standalone optimization notes below
+> document older scripts and checkpoint layouts; do not mix their legacy
+> 2-task/12–15-design artifacts with the benchmark commands above.
+
 ## 1. Generate a dataset
 
 The current dataset generator samples unique finger designs, shuffles them,

@@ -30,26 +30,28 @@ def link_lengths_to_v_list(link_lengths, joint_lengths=None, base_length=None, n
 
 def design_to_dict(design_params, task_params=None, n_elements=100):
     """
-    Convert one 15D physical From Links design vector into finger.py args.
+    Convert one 16D physical From Links design vector into finger.py args.
 
     design_params:
       [0:3]  joint_softness
       [3:7]  link_lengths
       [7:10] joint_lengths
       [10]   base_radius
-      [11]   base_length
-      [12]   tension
-      [13]   ankle_wrap_radius
-      [14]   ankle_stiffness
+      [11]   base_thickness
+      [12]   base_length
+      [13]   tension
+      [14]   ankle_wrap_radius
+      [15]   ankle_stiffness
 
     task_params:
       [0] approach_deg
-      [1] cyl_radius
+      [1] landing_approach_deg
+      [2] cyl_radius
     """
     d = np.asarray(design_params, dtype=np.float32).reshape(-1)
-    if d.size != 15:
+    if d.size != 16:
         raise ValueError(
-            f"Expected a 15D From Links design, got {d.size} values. "
+            f"Expected a 16D From Links design, got {d.size} values. "
             "Legacy 12D checkpoints/candidates must be retrained or regenerated."
         )
 
@@ -57,10 +59,11 @@ def design_to_dict(design_params, task_params=None, n_elements=100):
     link_lengths = d[3:7]
     joint_lengths = d[7:10]
     base_radius = float(d[10])
-    base_length = float(d[11])
-    tension = float(d[12])
-    ankle_wrap_radius = float(d[13])
-    ankle_stiffness = float(d[14])
+    base_thickness = float(d[11])
+    base_length = float(d[12])
+    tension = float(d[13])
+    ankle_wrap_radius = float(d[14])
+    ankle_stiffness = float(d[15])
 
     v_list = link_lengths_to_v_list(
         link_lengths=link_lengths,
@@ -80,6 +83,7 @@ def design_to_dict(design_params, task_params=None, n_elements=100):
         "v_list": v_list,
         "v_list_str": ",".join([str(x) for x in v_list]),
         "base_rad": base_radius,
+        "base_thickness": base_thickness,
         "base_len": base_length,
         "tension": tension,
         "ankle_wrap_radius": ankle_wrap_radius,
@@ -89,7 +93,8 @@ def design_to_dict(design_params, task_params=None, n_elements=100):
     if task_params is not None:
         t = np.asarray(task_params, dtype=np.float32).reshape(-1)
         out["approach_deg"] = float(t[0])
-        out["cyl_rad"] = float(t[1])
+        out["landing_approach_deg"] = float(t[1])
+        out["cyl_rad"] = float(t[2])
 
     return out
 
@@ -97,8 +102,8 @@ def design_to_dict(design_params, task_params=None, n_elements=100):
 def finger_forward(raw_params, args):
     """
     Convert raw optimizer params into:
-      task_params   : (B, 2)  = [approach_deg, cyl_rad]
-      design_params : (B, 15)
+      task_params   : (B, 3)  = [approach_deg, landing_approach_deg, cyl_rad]
+      design_params : (B, 16)
 
     raw_params is 16D: 15 design parameters plus approach angle.
     """

@@ -178,12 +178,13 @@ class DynamicsDataset(Dataset):
             ####################################################################
             # 1. TASK PARAMETERS
             ####################################################################
-            # [approach angle, cylinder radius]
+            # [installed approach angle, landing trajectory angle, cylinder radius]
             approach_angle = self._get_scalar(data, "arg_approach_deg", 0.0)
+            landing_approach_angle = self._get_scalar(data, "arg_landing_approach_deg", 0.0)
             cylinder_radius = self._get_scalar(data, "cyl_radius", 0.015)
 
             task_params = torch.tensor(
-                [approach_angle / 90.0, cylinder_radius / 0.05],
+                [approach_angle / 90.0, landing_approach_angle / 90.0, cylinder_radius / 0.05],
                 dtype=torch.float32
             )
 
@@ -208,6 +209,7 @@ class DynamicsDataset(Dataset):
 
             # base geometry
             base_radius = self._get_scalar(data, "base_radius", 0.005)
+            base_thickness = self._get_scalar(data, "base_thickness", 2.0 * base_radius)
             base_length = self._get_scalar(data, "base_length", 0.10)
             tension = self._get_scalar(data, "tension", 0.0)
             ankle_wrap_radius = self._get_scalar(data, "arg_ankle_wrap_radius", 0.005)
@@ -224,6 +226,7 @@ class DynamicsDataset(Dataset):
                 joint_lengths.astype(np.float32) / 0.05,       # 3 finite joints
                 np.asarray([
                     base_radius / 0.02,
+                    base_thickness / 0.03,
                     base_length / 0.2,
                     tension / 10.0,
                     ankle_wrap_radius / 0.025,

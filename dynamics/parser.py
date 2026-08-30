@@ -21,8 +21,8 @@ def parse():
     parser.add_argument("--num_epochs", type=int, default=100)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--hidden_dim", type=int, default=256)
-    parser.add_argument("--task_dim", type=int, default=2)
-    parser.add_argument("--design_dim", type=int, default=15)
+    parser.add_argument("--task_dim", type=int, default=3)
+    parser.add_argument("--design_dim", type=int, default=16)
     parser.add_argument("--init_dim", type=int, default=3)
     parser.add_argument("--patience", type=int, default=10, help="Early stopping patience")
     

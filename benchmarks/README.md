@@ -25,7 +25,7 @@ from the scenario. Giving every design the same exam makes the comparison fair.
 The implemented data flow is:
 
 ```text
-design method -> candidate designs -> common 15D From Links format
+design method -> candidate designs -> common 16D From Links format
                                       |
                                       v
                          each candidate x each scenario
@@ -41,7 +41,7 @@ design method -> candidate designs -> common 15D From Links format
 
 | Term | Meaning in this repository | Example |
 |---|---|---|
-| **Design** | One fixed physical/actuation configuration represented by 15 From Links values | link lengths, joint lengths, stiffness ratios, tension |
+| **Design** | One fixed physical/actuation configuration represented by 16 From Links values | link lengths, joint lengths, stiffness ratios, cross-section, tension |
 | **Candidate** | A design proposed for evaluation | “candidate 7” is one particular finger |
 | **Method** | An algorithm or rule that proposes candidates | reference, random, retrieval, diffusion, Adam |
 | **Scenario** | A deployment condition supplied by the benchmark | a 75-degree landing onto a thin branch |
@@ -53,7 +53,7 @@ finger design. A method may propose one candidate or a budget of `K` candidates.
 
 - **Reference** proposes the existing manufactured/default finger. It is the
   control: can a new method outperform the design we already have?
-- **Random** samples feasible 15D From Links designs from the allowed design
+- **Random** samples feasible 16D From Links designs from the allowed design
   ranges. In the current top-1 implementation, the first seeded random design
   is precommitted for evaluation; it is not secretly selected using test
   simulator results.
@@ -112,9 +112,13 @@ story is then: “the specialist is best on its target, but the generalist gives
 up only a little peak performance and improves average, worst-case, and
 worst-family performance.”
 
-The benchmark can already evaluate either kind of design. Training or selecting
-a true generalist by aggregating guidance across scenario batches is not yet
-implemented; that belongs to the design-method work in points 2 and 3.
+The benchmark can evaluate either kind of design. Adam, CMA-ES, random search,
+conditional diffusion, and dynamics-guided diffusion all support cell,
+family, and generalist selection. For a multi-scenario diffusion target, the
+conditional prior uses the target-set centroid and every proposal is ranked by
+mean surrogate utility over the complete target set. DGDM additionally averages
+its differentiable guidance objective over the complete target set at every
+denoising step.
 
 ### What point 1 has and has not completed
 
@@ -238,7 +242,7 @@ story.
 
 ## Baselines
 
-Use the same feasible 15D From Links design domain and candidate budget.
+Use the same feasible 16D From Links design domain and candidate budget.
 
 1. **Reference:** the manufactured/run.sh design, unchanged for every task.
 2. **Random:** feasible uniform random sampling followed by the common geometry

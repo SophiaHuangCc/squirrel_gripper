@@ -115,7 +115,7 @@ class ConditionalUnet1D(nn.Module):
 
     For this project, horizon=15 design parameters and input_dim=1.
     The condition is usually:
-      [task_params(2), init_config(3), desired_metrics(4)] -> 9D
+      [task_params(3), init_config(3), desired_metrics(3)] -> 9D
     """
 
     def __init__(

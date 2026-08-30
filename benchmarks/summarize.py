@@ -58,6 +58,7 @@ def summarize_candidates(records, config, bootstrap_iterations):
         }
         if successful:
             summary = aggregate_records(successful, config)
+            row["selection_score"] = successful[0].get("selection_score")
             low, high = bootstrap_mean_ci(
                 [record["utility"] for record in successful],
                 seed=seed,
@@ -67,6 +68,7 @@ def summarize_candidates(records, config, bootstrap_iterations):
             row["mean_utility_ci_low"] = low
             row["mean_utility_ci_high"] = high
             row["family_mean_utility"] = json.dumps(summary["family_mean_utility"], sort_keys=True)
+            row["component_mean"] = json.dumps(summary["component_mean"], sort_keys=True)
         rows.append(row)
     return rows
 
@@ -115,6 +117,34 @@ def aggregate_method_seeds(method_rows):
             "mean_cvar20_across_seeds": float(cvars.mean()),
             "mean_worst_family_across_seeds": float(worst.mean()),
             "mean_failure_rate_across_seeds": float(np.mean([row["total_failure_rate"] for row in seeds])),
+        })
+    return rows
+
+
+def surrogate_calibration(candidate_rows):
+    """Measure whether pre-simulation scores rank simulator outcomes correctly."""
+    grouped = defaultdict(list)
+    for row in candidate_rows:
+        if row.get("selection_score") is not None and "mean_utility" in row:
+            grouped[row["method"]].append(row)
+    rows = []
+    for method, candidates in sorted(grouped.items()):
+        predicted = np.asarray([row["selection_score"] for row in candidates], dtype=float)
+        actual = np.asarray([row["mean_utility"] for row in candidates], dtype=float)
+        pearson = float("nan")
+        spearman = float("nan")
+        if len(candidates) >= 2 and predicted.std() > 0 and actual.std() > 0:
+            pearson = float(np.corrcoef(predicted, actual)[0, 1])
+            predicted_rank = np.argsort(np.argsort(predicted))
+            actual_rank = np.argsort(np.argsort(actual))
+            spearman = float(np.corrcoef(predicted_rank, actual_rank)[0, 1])
+        rows.append({
+            "method": method,
+            "num_candidates": len(candidates),
+            "predicted_actual_pearson": pearson,
+            "predicted_actual_spearman": spearman,
+            "mean_selection_score": float(predicted.mean()),
+            "mean_simulator_utility": float(actual.mean()),
         })
     return rows
 
@@ -170,10 +200,12 @@ def main():
     candidate_rows = summarize_candidates(records, config, args.bootstrap_iterations)
     method_rows = summarize_methods(candidate_rows)
     method_aggregate_rows = aggregate_method_seeds(method_rows)
+    calibration_rows = surrogate_calibration(candidate_rows)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     write_csv(args.output_dir / "candidate_summary.csv", candidate_rows)
     write_csv(args.output_dir / "method_summary.csv", method_rows)
     write_csv(args.output_dir / "method_aggregate.csv", method_aggregate_rows)
+    write_csv(args.output_dir / "surrogate_calibration.csv", calibration_rows)
     plot_method_summary(method_rows, args.output_dir / "method_comparison.png")
     summary = {
         "records": [str(path.resolve()) for path in args.records],
@@ -182,6 +214,7 @@ def main():
         "candidate_rows": candidate_rows,
         "method_rows": method_rows,
         "method_aggregate_rows": method_aggregate_rows,
+        "surrogate_calibration_rows": calibration_rows,
     }
     (args.output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"[SUMMARY] {args.output_dir.resolve()}")

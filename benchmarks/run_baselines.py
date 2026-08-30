@@ -50,6 +50,14 @@ def main():
     parser.add_argument("--cma_generations", type=int, default=100)
     parser.add_argument("--cma_popsize", type=int, default=32)
     parser.add_argument("--cma_sigma", type=float, default=0.5)
+    parser.add_argument("--diffusion_checkpoint", type=Path, default=None)
+    parser.add_argument("--diffusion_num_samples", type=int, default=256)
+    parser.add_argument("--diffusion_batch_size", type=int, default=256)
+    parser.add_argument("--diffusion_inference_steps", type=int, default=20)
+    parser.add_argument("--dgdm_guidance_scale", type=float, default=0.1)
+    parser.add_argument("--target_contacts", type=float, default=0.8)
+    parser.add_argument("--target_disturbance", type=float, default=0.8)
+    parser.add_argument("--target_angular_span", type=float, default=0.8)
     parser.add_argument(
         "--random_pool_size", type=int, default=256,
         help="Feasible samples proposed before surrogate ranking in random_search.",
@@ -79,7 +87,10 @@ def main():
         else [int(value) for value in config["evaluation"]["method_seeds"]]
     )
     methods = {value.strip() for value in args.methods.split(",") if value.strip()}
-    allowed_methods = {"reference", "random", "random_search", "retrieval", "adam", "cma_es"}
+    allowed_methods = {
+        "reference", "random", "random_search", "retrieval", "adam", "cma_es",
+        "conditional_diffusion", "dgdm",
+    }
     unknown_methods = methods - allowed_methods
     if unknown_methods:
         raise ValueError(f"Unknown --methods values: {sorted(unknown_methods)}")
@@ -201,6 +212,58 @@ def main():
                         "model_evaluations": result.model_evaluations,
                         "target_scenario_ids": result.target_scenario_ids,
                         "selection_rule": "surrogate_mean_utility",
+                    },
+                )
+                candidate_files.append(path)
+
+    diffusion_methods = methods.intersection({"conditional_diffusion", "dgdm"})
+    if diffusion_methods:
+        if args.diffusion_checkpoint is None:
+            raise ValueError("--diffusion_checkpoint is required for diffusion methods")
+        if args.dynamics_checkpoint is None:
+            raise ValueError("--dynamics_checkpoint is required to rank diffusion candidates")
+        from benchmarks.baselines.diffusion_search import diffusion_search, load_diffusion
+
+        if not search_methods:
+            surrogate = load_surrogate(args.dynamics_checkpoint, device=args.device)
+        diffusion_model = load_diffusion(
+            args.diffusion_checkpoint, device=args.device,
+            num_inference_steps=args.diffusion_inference_steps,
+        )
+        for seed in seeds:
+            for method in sorted(diffusion_methods):
+                guidance_scale = 0.0 if method == "conditional_diffusion" else args.dgdm_guidance_scale
+                result = diffusion_search(
+                    diffusion_model, surrogate, config, budget,
+                    num_samples=args.diffusion_num_samples, seed=seed,
+                    batch_size=args.diffusion_batch_size, guidance_scale=guidance_scale,
+                    num_inference_steps=args.diffusion_inference_steps,
+                    target_contacts=args.target_contacts,
+                    target_disturbance=args.target_disturbance,
+                    target_angular_span=args.target_angular_span,
+                    scenario_id=args.target_scenario_id, family=args.target_family,
+                    generalist=args.generalist, device=args.device,
+                )
+                path = candidate_dir / f"{method}_s{seed}.npz"
+                save_candidates(
+                    path, result.designs, method, seed=seed, scores=result.scores,
+                    metadata={
+                        "diffusion_checkpoint": str(args.diffusion_checkpoint.resolve()),
+                        "dynamics_checkpoint": str(args.dynamics_checkpoint.resolve()),
+                        "guidance_scale": guidance_scale,
+                        "num_samples": args.diffusion_num_samples,
+                        "num_inference_steps": args.diffusion_inference_steps,
+                        "model_evaluations": result.model_evaluations,
+                        "target_scenario_ids": result.target_scenario_ids,
+                        "selection_rule": "surrogate_benchmark_utility",
+                        "proposal_conditioning": (
+                            "scenario_set_centroid" if len(result.target_scenario_ids) > 1
+                            else "exact_scenario"
+                        ),
+                        "guidance_aggregation": (
+                            "mean_over_target_scenarios" if guidance_scale > 0
+                            else "none"
+                        ),
                     },
                 )
                 candidate_files.append(path)

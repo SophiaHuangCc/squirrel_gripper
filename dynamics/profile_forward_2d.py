@@ -43,8 +43,8 @@ class ProfileForward2DModel(nn.Module):
     def __init__(
         self,
         W=256,
-        task_ch=2,
-        design_ch=15,
+        task_ch=3,
+        design_ch=16,
         init_ch=3,
         output_ch=3,
     ):
@@ -55,7 +55,7 @@ class ProfileForward2DModel(nn.Module):
         self.angle_embedder = ApproachAngleEmbedder(multires=4)
         angle_embed_dim = 1 + 2 * 4  # 9
 
-        task_input_dim = angle_embed_dim + 1  # embedded angle + cyl_radius
+        task_input_dim = 2 * angle_embed_dim + 1
 
         self.time_embed_dim = W
         self.time_encoder = nn.Sequential(
@@ -81,10 +81,12 @@ class ProfileForward2DModel(nn.Module):
 
     def forward(self, task_params, design_params, init_config, timesteps):
         approach_angle = task_params[:, 0:1]
-        cyl_radius = task_params[:, 1:2]
+        landing_approach_angle = task_params[:, 1:2]
+        cyl_radius = task_params[:, 2:3]
 
         approach_embed = self.angle_embedder.embed(approach_angle)
-        x_task = torch.cat([approach_embed, cyl_radius], dim=-1)
+        landing_approach_embed = self.angle_embedder.embed(landing_approach_angle)
+        x_task = torch.cat([approach_embed, landing_approach_embed, cyl_radius], dim=-1)
 
         time_emb = self.time_encoder(
             timestep_embedding(timesteps, self.W // 2)
