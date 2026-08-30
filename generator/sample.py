@@ -27,7 +27,7 @@ def parse_args():
     parser.add_argument("--num_train_timesteps", type=int, default=100)
     parser.add_argument("--num_inference_steps", type=int, default=20)
     parser.add_argument("--guidance_scale", type=float, default=0.0)
-    parser.add_argument("--guidance_objective", type=str, default="disturbance_contact_span_speed")
+    parser.add_argument("--guidance_objective", type=str, default="disturbance_contact_span")
     parser.add_argument("--top_k", type=int, default=16)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda")
@@ -40,7 +40,6 @@ def parse_args():
     parser.add_argument("--target_contacts", type=float, default=0.6)
     parser.add_argument("--target_disturbance", type=float, default=0.8)
     parser.add_argument("--target_angular_span", type=float, default=0.8)
-    parser.add_argument("--target_curl_speed", type=float, default=0.8)
     return parser.parse_args()
 
 
@@ -51,7 +50,7 @@ def load_diffusion(args, device):
     bounds = DesignBounds.from_npz(bounds_path) if os.path.exists(bounds_path) else DesignBounds.defaults()
     unet = ConditionalUnet1D(
         input_dim=1,
-        global_cond_dim=9,
+        global_cond_dim=8,
         down_dims=[128, 256],
         diffusion_step_embed_dim=32,
     )
@@ -79,7 +78,7 @@ def load_diffusion(args, device):
 def load_dynamics(path, device):
     if path is None:
         return None
-    model = ProfileForward2DModel(W=256, task_ch=2, design_ch=12, init_ch=3, output_ch=4).to(device)
+    model = ProfileForward2DModel(W=256, task_ch=2, design_ch=15, init_ch=3, output_ch=3).to(device)
     model.load_state_dict(torch.load(path, map_location=device))
     model.eval()
     for param in model.parameters():
@@ -91,20 +90,14 @@ def objective_from_pred(pred, objective):
     contacts = pred[:, 0]
     disturbance = pred[:, 1]
     angular_span = pred[:, 2]
-    curl_speed = pred[:, 3] if pred.shape[-1] > 3 else np.zeros_like(contacts)
     if objective == "disturbance":
         return disturbance
     if objective == "contact":
         return contacts
     if objective == "angular_span":
         return angular_span
-    if objective == "curl_speed":
-        return curl_speed
     if objective == "disturbance_contact_span":
         return disturbance + 0.1 * contacts + 0.5 * angular_span
-    if objective == "disturbance_contact_span_speed":
-        gate = 1.0 / (1.0 + np.exp(-(contacts - 0.3) / 0.05))
-        return disturbance + 0.1 * contacts + 0.5 * angular_span + 0.1 * curl_speed * gate
     raise ValueError(f"Unknown objective: {objective}")
 
 
@@ -135,7 +128,6 @@ def main():
             target_contacts=args.target_contacts,
             target_disturbance=args.target_disturbance,
             target_angular_span=args.target_angular_span,
-            target_curl_speed=args.target_curl_speed,
             device=device,
         )
         out = diffusion.sample(

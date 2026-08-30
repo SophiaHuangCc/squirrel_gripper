@@ -1,0 +1,61 @@
+[DISCRETIZATION] n_elements explicitly set: 100
+[CROSS-SECTION] circular: radius=13.00mm
+[V_FROM_LINKS] computed vertebra node indices: [ 4 32 68] from link_lengths(cm)=[0.427623, 3.4105, 3.40436, 3.45429] and joint_lengths(cm)=[0.507985 1.0668   2.96388 ]
+[JOINT 1] length=0.457 cm | center=0.682 cm | start=0.457 cm (node 3) | end=0.914 cm (node 6)
+[VISUALIZATION] Drawing red joint spans at nodes: [(3, 6), (29, 36), (58, 77)]
+[JOINTS] joint_softness ratios = [0.049207 0.048419 0.002189]
+[SOFT JOINTS] element size = 1.52 mm | joint lengths (elements) = [3, 7, 19] = [0.46, 1.07, 2.89] cm
+[CONTACT] Physical stiffness estimate based on E and element size: 1.52e+04 N/m
+
+==== RUNNING ====
+E=2.00e+07  G=7.14e+06  density=843.0  tension=2.67  cyl_radius=0.030
+contact: k=4000.0 nu=30.0 mu=0.8 vel_damp=90
+[MODE] finger_only=False landing_motion=True landing_mode=prescribed
+[CONTACT SETUP] cyl_radius=0.030000 contact_radius=0.013000 threshold=0.043000
+damping_constant=1.0
+>>> MODE: Dynamic Approach at 45.0 degrees
+>>> LANDING MOTION: start height offset = +0.040 m
+[SOFT JOINTS] using mode 'from_links' at nodes: [ 4 32 68]
+[SOFT JOINTS] multipliers: [0.049207 0.048419 0.002189]
+[SOFT JOINTS] stiffness mode: bending_only
+>>> LANDING MOTION (prescribed): base downward drop speed=0.080 m/s over 0.040 m
+>>> PRESCRIBED LANDING: position prescribed, orientation free for ankle motion
+[TENDON] distal tendon anchor disabled; final stretch_next uses legacy zero segment
+>>> LANDING MOTION: skipping BodyWeightForcing on proximal nodes
+[CONTACT SETUP] registering RodCylinderContact center=[ 0.025  0.    -0.03 ] axis(d3)=[0. 1. 0.]
+Final time of simulation is :  2.0000000002060245
+final_contact_force shape: (101,)
+Final Base Position: [-0.03078055  0.         -0.04252691]
+Final Tip Position: [0.06179172 0.         0.07442863]
+Final Joint Positions: [[-0.02786496  0.         -0.03718004]
+ [-0.00734613  0.          0.00018843]
+ [ 0.02221639  0.          0.04596379]]
+[METRICS] Contact Points: 3; Body Mass: 0.50 N
+[CONTACT DEBUG] total_contact_node_hits_over_all_frames=198
+[CONTACT DEBUG] min_distance_to_cylinder_axis=0.042813 (radius=0.030000)
+[CURL] time=0.2333s speed_score=0.8833 threshold=4 peak=5 hold_frames=7
+[CONTACT] First contact frame=7  t=0.2333s
+[CONTACT] Max normal force over all frames: 0.749067 N
+[CONTACT] Max overlap over all frames: 0.000187 m
+[CONTACT] Wrote /Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/from_links_smoke/generated_verification/finger_0/contact_log_20260827_221502_opt_0.csv
+
+[CONTACT] Starting contact + disturbance checks for: /Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/from_links_smoke/generated_verification/finger_0/contact_log_20260827_221502_opt_0.csv
+[CONTACT METRIC] Form closure condition NOT met (angular span <= 180°)
+
+[CONTACT METRICS]
+  Contacts: 3
+  Angular span: 4.1°
+  Total normal force: 0.891045 N
+  Max normal force: 0.368552 N
+  Total friction force: 0.712836 N
+  Contact count match with geometry-based metric: Yes
+Saved 2D contact plot to: /Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/from_links_smoke/generated_verification/finger_0/contact_plot_20260827_221502_opt_0.png
+[CONTACT] 2D contact plot saved to: /Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/from_links_smoke/generated_verification/finger_0/contact_plot_20260827_221502_opt_0.png
+
+[DISTURBANCE STABILITY CHECK]
+  Disturbance resistance score (directional): 0.494
+[DISTURBANCE] Force visualization saved: /Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/from_links_smoke/generated_verification/finger_0/disturbance_force_drag_left_20260827_221502_opt_0.png
+[DISTURBANCE] Force visualization saved: /Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/from_links_smoke/generated_verification/finger_0/disturbance_force_drag_right_20260827_221502_opt_0.png
+[DISTURBANCE] Force visualization saved: /Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/from_links_smoke/generated_verification/finger_0/disturbance_force_drag_down_20260827_221502_opt_0.png
+Archive Complete: /Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/from_links_smoke/generated_verification/finger_0/master_log_20260827_221502_opt_0.npz
+[OK] saved /Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/from_links_smoke/generated_verification/finger_0/output_20260827_221502_opt_0.mp4

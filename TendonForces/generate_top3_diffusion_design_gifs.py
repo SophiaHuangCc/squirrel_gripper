@@ -90,8 +90,6 @@ def build_caption(folder: Path, metrics: Dict[str, float]) -> str:
         ("contacts", "num_contacts"),
         ("disturbance", "disturbance_resistance_score"),
         ("angular span", "angular_span"),
-        ("curl time", "curl_time"),
-        ("curl speed", "curl_speed_score"),
         ("combined", "combined_score"),
     ]:
         if key in metrics:
@@ -108,8 +106,6 @@ def print_ranked_results(entries: List[Tuple[float, Path, Dict[str, float]]], ou
             ("contacts", "num_contacts"),
             ("disturbance", "disturbance_resistance_score"),
             ("angular span", "angular_span"),
-            ("curl time", "curl_time"),
-            ("curl speed", "curl_speed_score"),
             ("combined", "combined_score"),
         ]:
             if key in metrics:

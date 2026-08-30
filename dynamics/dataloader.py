@@ -10,15 +10,9 @@ class DynamicsDataset(Dataset):
     def __init__(
         self,
         dataset_dir,
-        curl_contact_ratio=0.8,
-        curl_hold_time=0.2,
-        curl_min_contacts=3,
         **kwargs,
     ):
         self.dataset_dir = os.path.abspath(dataset_dir)
-        self.curl_contact_ratio = float(curl_contact_ratio)
-        self.curl_hold_time = float(curl_hold_time)
-        self.curl_min_contacts = int(curl_min_contacts)
         # self.files = glob.glob(os.path.join(self.dataset_dir, "*.npz"), recursive=True)
         self.files = sorted(
             glob.glob(os.path.join(self.dataset_dir, "**", "*.npz"), recursive=True)
@@ -141,51 +135,43 @@ class DynamicsDataset(Dataset):
 
         return link_lengths.astype(np.float32)
 
-    def _derive_curl_speed_score(self, data, base_radius):
-        """Backfill curl speed from trajectories in archives created before this metric."""
-        if "curl_speed_score" in data:
-            return float(np.clip(self._get_scalar(data, "curl_speed_score", 0.0), 0.0, 1.0))
+    def _get_from_links_geometry(self, data, base_length, n_elements):
+        """Read the explicit free-link/joint geometry, with legacy fallback."""
+        link_key = "arg_link_lengths" if "arg_link_lengths" in data else "link_lengths"
+        joint_key = "arg_joint_lengths" if "arg_joint_lengths" in data else "joint_lengths"
+        v_mode = ""
+        if "arg_v_mode" in data:
+            v_mode = str(np.asarray(data["arg_v_mode"]).reshape(-1)[0])
 
-        final_time = self._get_scalar(data, "arg_final_time", 4.0)
-        if final_time <= 0.0 or "position" not in data or "cyl_position" not in data:
-            return 0.0
+        if link_key in data and joint_key in data:
+            links_cm = self._get_array(data, link_key, default=[])
+            joints_cm = self._get_array(data, joint_key, default=[])
+            if links_cm.size == 4 and joints_cm.size in {1, 3}:
+                if joints_cm.size == 1:
+                    joints_cm = np.repeat(joints_cm, 3)
+                links = links_cm.astype(np.float32) * 1e-2
+                joints = joints_cm.astype(np.float32) * 1e-2
+                total = float(links.sum() + joints.sum())
+                if not np.isclose(total, base_length, rtol=0.0, atol=max(1e-5, base_length / n_elements)):
+                    raise ValueError(
+                        f"Invalid from_links geometry: links + joints = {total:.6f} m, "
+                        f"base_length = {base_length:.6f} m"
+                    )
+                return links, joints
 
-        positions = np.asarray(data["position"])
-        if positions.ndim != 3 or positions.shape[1] < 3:
-            return 0.0
+        if v_mode == "from_links":
+            raise ValueError("from_links sample is missing four link lengths and three joint lengths")
 
-        center = np.asarray(data["cyl_position"]).reshape(3, -1)[:, 0]
-        cyl_radius = self._get_scalar(data, "cyl_radius", 0.015)
-        dx = positions[:, 0, :] - center[0]
-        dz = positions[:, 2, :] - center[2]
-        radial_dist = np.sqrt(dx ** 2 + dz ** 2)
-        contact_counts = np.sum(
-            radial_dist < (cyl_radius + float(base_radius)), axis=1
-        )
-
-        peak_contacts = int(contact_counts.max()) if contact_counts.size else 0
-        threshold = max(
-            self.curl_min_contacts,
-            int(np.ceil(self.curl_contact_ratio * peak_contacts)),
-        )
-        if peak_contacts < threshold:
-            return 0.0
-
-        if "time" in data:
-            times = np.asarray(data["time"], dtype=float).reshape(-1)
-        else:
-            times = np.linspace(0.0, final_time, len(contact_counts))
-        if len(times) != len(contact_counts):
-            return 0.0
-
-        dt = float(np.median(np.diff(times))) if len(times) > 1 else final_time
-        hold_frames = max(1, int(np.ceil(self.curl_hold_time / max(dt, 1e-12))))
-        meets = contact_counts >= threshold
-        for frame_idx in range(0, len(meets) - hold_frames + 1):
-            if np.all(meets[frame_idx:frame_idx + hold_frames]):
-                curl_time = float(times[frame_idx])
-                return 1.0 - float(np.clip(curl_time / final_time, 0.0, 1.0))
-        return 0.0
+        positions = self._get_array(data, "vertebra_nodes", default=[30, 46, 62])
+        links = self._compute_link_lengths_from_joint_positions(positions, base_length, n_elements)
+        # Legacy archives used an 8-element softened window.
+        joints = np.full(3, 8.0 * base_length / n_elements, dtype=np.float32)
+        # Legacy link spacing includes joint material. Convert it to free lengths.
+        links = links.copy()
+        links[0] -= 0.5 * joints[0]
+        links[-1] -= 0.5 * joints[-1]
+        links[1:-1] -= 0.5 * (joints[:-1] + joints[1:])
+        return np.maximum(links, 1e-6), joints
 
     def __getitem__(self, idx):
         with np.load(self.files[idx], allow_pickle=True) as data:
@@ -204,12 +190,21 @@ class DynamicsDataset(Dataset):
             ####################################################################
             # 2. DESIGN PARAMETERS
             ####################################################################
-            # joint stiffness
+            # Joint stiffness ratios. New datasets specify physical joint E.
             joint_softness = self._get_array(
                 data,
                 "joint_softness",
                 default=[0.001, 0.001, 0.001]
             )
+            joint_e_key = "arg_joint_E" if "arg_joint_E" in data else "joint_E"
+            if joint_e_key in data:
+                joint_e = self._get_array(data, joint_e_key)
+                if joint_e.size == 1:
+                    joint_e = np.repeat(joint_e, 3)
+                if np.all(joint_e <= 1000.0):
+                    joint_e = joint_e * 1e6
+                base_e = self._get_scalar(data, "arg_E", self._get_scalar(data, "E", 6.74e6))
+                joint_softness = joint_e / base_e
 
             # base geometry
             base_radius = self._get_scalar(data, "base_radius", 0.005)
@@ -218,25 +213,15 @@ class DynamicsDataset(Dataset):
             ankle_wrap_radius = self._get_scalar(data, "arg_ankle_wrap_radius", 0.005)
             ankle_stiffness = self._get_scalar(data, "arg_ankle_stiffness", 500.0)
 
-            # link lengths from joint_positions
-            joint_positions = self._get_array(
-                data,
-                "vertebra_nodes",
-                default=[30, 46, 62]
-            )
-
-            # need n_elements to convert index spacing -> physical spacing
             n_elements = int(round(self._get_scalar(data, "n_elements", 100.0)))
-
-            link_lengths = self._compute_link_lengths_from_joint_positions(
-                joint_positions=joint_positions,
-                base_length=base_length,
-                n_elements=n_elements
+            link_lengths, joint_lengths = self._get_from_links_geometry(
+                data, base_length=base_length, n_elements=n_elements
             )
 
             design_params_np = np.concatenate([
                 joint_softness.astype(np.float32) / 0.001,      # e.g. 3 values
                 link_lengths.astype(np.float32) / 0.3,         # e.g. 4 values
+                joint_lengths.astype(np.float32) / 0.05,       # 3 finite joints
                 np.asarray([
                     base_radius / 0.02,
                     base_length / 0.2,
@@ -268,7 +253,6 @@ class DynamicsDataset(Dataset):
             num_contacts = self._get_scalar(data, "num_contacts", 0.0)
             disturbance_score = self._get_scalar(data, "disturbance_resistance_score", 0.0)
             angular_span = self._get_scalar(data, "angular_span", 0.0)
-            curl_speed_score = self._derive_curl_speed_score(data, base_radius)
 
             num_contacts_norm = np.log1p(num_contacts) / np.log1p(n_elements)
             angular_span_norm = np.clip(angular_span / 180.0, 0.0, 1.0)
@@ -279,7 +263,7 @@ class DynamicsDataset(Dataset):
             # )
 
             target_metrics = torch.tensor(
-                [num_contacts_norm, disturbance_score, angular_span_norm, curl_speed_score],
+                [num_contacts_norm, disturbance_score, angular_span_norm],
                 dtype=torch.float32
             )
 

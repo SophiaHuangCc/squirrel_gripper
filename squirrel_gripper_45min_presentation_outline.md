@@ -288,7 +288,6 @@ Metrics extracted from each run:
 - Number of contacts
 - Disturbance resistance score
 - Angular contact span
-- Curl speed / curl time
 
 Visual:
 
@@ -349,7 +348,6 @@ Each simulation archive contains:
 - Rod positions/directors over time
 - Contact history
 - Scalar performance metrics
-- Curl completion time and curl speed score
 
 Code:
 
@@ -358,24 +356,6 @@ Code:
 
 ---
 
-### 17. Curl speed metric
-
-Definition:
-
-```text
-curl_time = earliest time contact_count ≥ threshold for hold_time
-curl_speed_score = 1 - curl_time / final_time
-```
-
-Threshold:
-
-```text
-max(curl_min_contacts, ceil(curl_contact_ratio × peak_contacts))
-```
-
-Default:
-
-- `curl_contact_ratio = 0.8`
 - `curl_hold_time = 0.2 s`
 - `curl_min_contacts = 3`
 
@@ -414,7 +394,7 @@ task_params + design_params + init_config
 Output:
 
 ```text
-[contact_norm, disturbance_score, angular_span_norm, curl_speed_score]
+[contact_norm, disturbance_score, angular_span_norm]
 ```
 
 ---
@@ -465,7 +445,7 @@ Why this matters:
 
 Loss:
 
-- Mean squared error over four metrics.
+- Mean squared error over three metrics.
 
 Targets:
 
@@ -473,7 +453,6 @@ Targets:
 contact_norm
 disturbance_score
 angular_span_norm
-curl_speed_score
 ```
 
 Code:
@@ -525,7 +504,7 @@ Transition:
 Objective examples:
 
 ```text
-disturbance + 0.1 contact + 0.5 angular_span + curl_speed term
+disturbance + 0.1 contact + 0.5 angular_span
 ```
 
 Methods:
@@ -648,10 +627,10 @@ Show:
 
 Suggested table:
 
-| Candidate | Contacts | Disturbance | Angular span | Curl speed | Stable? |
-|---|---:|---:|---:|---:|---|
-| top-1 | ... | ... | ... | ... | yes |
-| top-2 | ... | ... | ... | ... | yes |
+| Candidate | Contacts | Disturbance | Angular span | Stable? |
+|---|---:|---:|---:|---|
+| top-1 | ... | ... | ... | yes |
+| top-2 | ... | ... | ... | yes |
 
 ---
 
@@ -957,4 +936,3 @@ The clean research narrative is:
 6. Verify physically.
 7. Diagnose mismatch.
 8. Establish validated mode and future stability-aware training.
-

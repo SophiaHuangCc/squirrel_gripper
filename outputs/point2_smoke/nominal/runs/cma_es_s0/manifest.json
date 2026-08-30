@@ -1,0 +1,80 @@
+{
+  "config": "/Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/benchmarks/scenarios_v1.json",
+  "candidate_source": "/Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/point2_smoke/nominal/candidates/cma_es_s0.npz",
+  "method": "cma_es",
+  "seed": 0,
+  "num_candidates": 1,
+  "num_scenarios": 1,
+  "num_rollouts": 1,
+  "proposal_metadata": {
+    "dynamics_checkpoint": "/Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/point2_smoke/dynamics/best.pt",
+    "model_evaluations": 64,
+    "selection_rule": "surrogate_mean_utility",
+    "target_scenario_ids": [
+      "nominal:00"
+    ]
+  },
+  "jobs": [
+    {
+      "run_id": "cma_es_s0_cma_es_s0_000_nominal-00_992ab254e0",
+      "method": "cma_es",
+      "seed": 0,
+      "candidate_id": "cma_es_s0_000",
+      "selection_score": 1.3360373973846436,
+      "design_params": [
+        0.026847803965210915,
+        0.03970814868807793,
+        0.040217652916908264,
+        0.08268524706363678,
+        0.036845531314611435,
+        0.050100453197956085,
+        0.03147553652524948,
+        0.01748284325003624,
+        0.01460330095142126,
+        0.02457534149289131,
+        0.011694708839058876,
+        0.2577682435512543,
+        15.174691200256348,
+        0.024238090962171555,
+        484.98541259765625
+      ],
+      "scenario_id": "nominal:00",
+      "family": "nominal",
+      "scenario": {
+        "scenario_id": "nominal:00",
+        "family": "nominal",
+        "params": {
+          "E": 6740000.0,
+          "damping": 0.1,
+          "n_elements": 0,
+          "final_time": 2.0,
+          "k_contact": 500.0,
+          "nu_contact": 20.0,
+          "mu_contact": 0.8,
+          "vel_damp_contact": 30,
+          "poisson_nu": 0.49,
+          "v_mass": 0.04,
+          "cross_section": "rect",
+          "base_width": 0.03,
+          "landing_motion": true,
+          "landing_mode": "prescribed",
+          "landing_speed": 0.0,
+          "body_mass": 3.0,
+          "joint_stiffness_mode": "bending_only",
+          "v_mode": "from_links",
+          "distal_tendon_anchor": "tip",
+          "max_tension": 30.0,
+          "prescribed_stop_at_contact": true,
+          "prescribed_contact_margin": -0.005,
+          "continuous_disturbance_metric": true,
+          "approach_deg": 45.0,
+          "landing_approach_deg": 45.0,
+          "cyl_rad": 0.025,
+          "initial_x_gap": 0.12,
+          "landing_height": 0.04
+        }
+      },
+      "run_dir": "/Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/point2_smoke/nominal/runs/cma_es_s0/runs/cma_es_s0_cma_es_s0_000_nominal-00_992ab254e0"
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "joint_softness": [
+    0.04920722171664238,
+    0.04841917008161545,
+    0.0021885796450078487
+  ],
+  "joint_softness_str": "0.049207,0.048419,0.002189",
+  "link_lengths": [
+    0.004276229999959469,
+    0.03410504385828972,
+    0.034043602645397186,
+    0.03454286977648735
+  ],
+  "link_lengths_str": "0.427623,3.4105,3.40436,3.45429",
+  "joint_lengths": [
+    0.005079845432192087,
+    0.010667955502867699,
+    0.02963878959417343
+  ],
+  "joint_lengths_str": "0.507985,1.0668,2.96388",
+  "v_mode": "from_links",
+  "v_list": [
+    4,
+    32,
+    68
+  ],
+  "v_list_str": "4,32,68",
+  "base_rad": 0.013000000268220901,
+  "base_len": 0.15235434472560883,
+  "tension": 2.6731905937194824,
+  "ankle_wrap_radius": 0.01507070567458868,
+  "ankle_stiffness": 550.2105712890625,
+  "approach_deg": 45.0,
+  "cyl_rad": 0.029999999329447746,
+  "sim_params": {
+    "E": 20000000.0,
+    "damping": 1.0,
+    "n_elements": 100,
+    "final_time": 2.0,
+    "k_contact": 4000.0,
+    "max_penetration_warn": 0.002,
+    "nu_contact": 30.0,
+    "mu_contact": 0.8,
+    "vel_damp_contact": 90,
+    "poisson_nu": 0.4,
+    "v_mass": 0.002,
+    "body_mass": 0.5,
+    "joint_stiffness_mode": "bending_only",
+    "distal_tendon_anchor": "none",
+    "distal_tendon_anchor_node": -1,
+    "joint_lengths": null,
+    "landing_speed": 0.0,
+    "landing_height": 0.04,
+    "initial_x_gap": 0.06,
+    "landing_approach_deg": 30.0,
+    "prescribed_stop_at_contact": true,
+    "prescribed_contact_margin": -0.005,
+    "min_tension": 0.1,
+    "max_tension": 30.0,
+    "disturbance_force_mag": 5.0,
+    "disturbance_base_nodes": 5,
+    "disturbance_steps": 100,
+    "disturbance_dt_scale": 1.0,
+    "continuous_disturbance_metric": false
+  }
+}

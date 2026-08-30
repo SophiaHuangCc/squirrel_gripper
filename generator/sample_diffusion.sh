@@ -6,7 +6,7 @@ python generator/sample.py \
     --batch_size 256 \
     --num_inference_steps 20 \
     --guidance_scale 0.0 \
-    --guidance_objective "disturbance_contact_span_speed" \
+    --guidance_objective "disturbance_contact_span" \
     --approach_deg 45.0 \
     --cyl_rad 0.03 \
     --landing_height 0.04 \
@@ -15,5 +15,3 @@ python generator/sample.py \
     --target_contacts 0.6 \
     --target_disturbance 0.8 \
     --target_angular_span 0.8 \
-    --target_curl_speed 0.8
-

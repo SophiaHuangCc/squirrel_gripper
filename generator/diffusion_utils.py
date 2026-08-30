@@ -113,7 +113,7 @@ class ConditionalUnet1D(nn.Module):
     Input shape:  (B, horizon, input_dim)
     Output shape: (B, horizon, input_dim)
 
-    For this project, horizon=12 design parameters and input_dim=1.
+    For this project, horizon=15 design parameters and input_dim=1.
     The condition is usually:
       [task_params(2), init_config(3), desired_metrics(4)] -> 9D
     """
@@ -186,6 +186,7 @@ class ConditionalUnet1D(nn.Module):
         timestep: torch.Tensor,
         global_cond: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        input_horizon = sample.shape[-2]
         sample = sample.moveaxis(-1, -2)
         if timestep.ndim == 0:
             timestep = timestep[None].to(sample.device)
@@ -213,5 +214,7 @@ class ConditionalUnet1D(nn.Module):
             x = upsample(x)
 
         x = self.final_conv(x)
+        # Strided down/up-sampling rounds odd horizons up (15 -> 16). The
+        # denoiser must predict exactly one value for every input design field.
+        x = x[..., :input_horizon]
         return x.moveaxis(-1, -2)
-

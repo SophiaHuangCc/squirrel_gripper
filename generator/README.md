@@ -5,14 +5,15 @@ This folder adapts the DGDM `generator` pattern to this project.
 The generator learns a conditional design prior:
 
 ```text
-task params + init config + desired metrics  --->  diffusion model  --->  12D finger design
+task params + init config + desired metrics  --->  diffusion model  --->  15D From Links design
 ```
 
-The 12D design is:
+The 15D design is:
 
 ```text
 [3 joint softness values,
- 4 link lengths,
+ 4 free-link lengths,
+ 3 finite joint lengths,
  base radius,
  base length,
  tension,
@@ -30,7 +31,7 @@ The 12D design is:
   - Wraps `dynamics.dataloader.DynamicsDataset`.
   - Reuses the exact same data parsing as dynamics-model training.
   - Converts the model-normalized design vector back to physical units, then maps it to `[-1, 1]` for diffusion.
-  - Projects generated link lengths so they sum to `base_length`.
+  - Projects generated free links so links plus joint lengths sum to `base_length`.
 
 - `diffusion.py`
   - Main diffusion module.
@@ -79,4 +80,3 @@ Start with `--guidance_scale 0.0`. After unguided samples look reasonable, try s
 ```
 
 The generated `top_design_params` are physical design parameters, matching the style of the optimization output.
-

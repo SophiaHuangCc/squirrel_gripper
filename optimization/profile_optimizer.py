@@ -33,23 +33,26 @@ def make_initial_state(
     device,
     init_joint_softness=(0.003, 0.003, 0.003),
     init_link_lengths=(0.06, 0.056, 0.044, 0.04),
+    init_joint_lengths=(0.02, 0.02, 0.02),
     init_base_radius=0.01025,
     init_base_length=0.20,
     init_tension=3.0,
     init_ankle_wrap_radius=0.02,
     init_ankle_stiffness=500.0,
     joint_soft_min=0.0005,
-    joint_soft_max=0.005,
+    joint_soft_max=0.05,
     link_min=0.02,
-    link_max=0.10,
+    link_max=0.13,
+    joint_length_min=0.005,
+    joint_length_max=0.03,
     base_radius_min=0.01025,
     base_radius_max=0.013,
     base_length_min=0.15,
-    base_length_max=0.25,
+    base_length_max=0.30,
     tension_min=1.0,
-    tension_max=6.0,
+    tension_max=30.0,
     ankle_wrap_min=0.015,
-    ankle_wrap_max=0.025,
+    ankle_wrap_max=0.035,
     ankle_stiff_min=300.0,
     ankle_stiff_max=700.0,
     init_approach_deg=45.0,
@@ -57,7 +60,7 @@ def make_initial_state(
     approach_deg_max=90.0
 ):
     """
-    Create batch_size copies of a raw 13D optimizer state.
+    Create batch_size copies of a raw 16D From Links optimizer state.
 
     This mirrors the reference file's random state initialization, but starts from
     a known physical finger design instead of random gripper points.
@@ -69,6 +72,9 @@ def make_initial_state(
 
     for x in init_link_lengths:
         raw.append(inverse_sigmoid_from_range(x, link_min, link_max))
+
+    for x in init_joint_lengths:
+        raw.append(inverse_sigmoid_from_range(x, joint_length_min, joint_length_max))
 
     raw.append(inverse_sigmoid_from_range(init_base_radius, base_radius_min, base_radius_max))
     raw.append(inverse_sigmoid_from_range(init_base_length, base_length_min, base_length_max))
@@ -86,11 +92,16 @@ def make_initial_state(
     return torch.from_numpy(init_state).float().to(device)
 
 
-def link_lengths_to_v_list(link_lengths, base_length, n_elements=100):
+def link_lengths_to_v_list(link_lengths, joint_lengths, base_length, n_elements=100):
     """Convert 4 link lengths into 3 vertebra node indices."""
     link_lengths = np.asarray(link_lengths, dtype=np.float32).reshape(-1)
-    cum = np.cumsum(link_lengths[:-1])
-    joints = np.round(cum / float(base_length) * n_elements).astype(int)
+    cursor = 0.0
+    centers = []
+    for link, joint in zip(link_lengths[:-1], joint_lengths):
+        cursor += float(link) + 0.5 * float(joint)
+        centers.append(cursor)
+        cursor += 0.5 * float(joint)
+    joints = np.round(np.asarray(centers) / float(base_length) * n_elements).astype(int)
     joints = np.clip(joints, 1, n_elements - 1)
     return joints.tolist()
 
@@ -98,21 +109,28 @@ def link_lengths_to_v_list(link_lengths, base_length, n_elements=100):
 def design_to_dict(design_params, n_elements=100):
     """Convert one optimized physical design vector into finger.py-friendly values."""
     d = design_params.detach().cpu().numpy().reshape(-1)
+    if d.size != 15:
+        raise ValueError(f"Expected a 15D From Links design, got {d.size} values")
 
     joint_softness = d[0:3]
     link_lengths = d[3:7]
-    base_radius = float(d[7])
-    base_length = float(d[8])
-    tension = float(d[9])
-    ankle_wrap_radius = float(d[10])
-    ankle_stiffness = float(d[11])
+    joint_lengths = d[7:10]
+    base_radius = float(d[10])
+    base_length = float(d[11])
+    tension = float(d[12])
+    ankle_wrap_radius = float(d[13])
+    ankle_stiffness = float(d[14])
 
-    v_list = link_lengths_to_v_list(link_lengths, base_length, n_elements=n_elements)
+    v_list = link_lengths_to_v_list(link_lengths, joint_lengths, base_length, n_elements=n_elements)
 
     return {
         "joint_softness": joint_softness.tolist(),
         "joint_softness_str": ",".join([f"{x:.6f}" for x in joint_softness]),
         "link_lengths": link_lengths.tolist(),
+        "link_lengths_str": ",".join([f"{100*x:.6g}" for x in link_lengths]),
+        "joint_lengths": joint_lengths.tolist(),
+        "joint_lengths_str": ",".join([f"{100*x:.6g}" for x in joint_lengths]),
+        "v_mode": "from_links",
         "v_list": v_list,
         "v_list_str": ",".join([str(x) for x in v_list]),
         "base_rad": base_radius,
@@ -129,17 +147,10 @@ def pred_to_objective_np(
     contact_weight=0.1,
     disturbance_weight=1.0,
     angular_span_weight=0.5,
-    curl_speed_weight=0.1,
-    curl_contact_gate=0.3,
-    curl_gate_temperature=0.05,
 ):
     contacts = pred[:, 0]
     disturbance = pred[:, 1]
     span = pred[:, 2]
-    curl_speed = pred[:, 3]
-    quality_gate = 1.0 / (
-        1.0 + np.exp(-(contacts - curl_contact_gate) / curl_gate_temperature)
-    )
 
     if opt_obj == "disturbance":
         return disturbance_weight * disturbance
@@ -153,16 +164,6 @@ def pred_to_objective_np(
         return disturbance_weight * disturbance + angular_span_weight * span
     if opt_obj == "disturbance_contact_span":
         return disturbance_weight * disturbance + contact_weight * contacts + angular_span_weight * span
-    if opt_obj == "curl_speed":
-        return curl_speed
-    if opt_obj == "disturbance_contact_span_speed":
-        quality = (
-            disturbance_weight * disturbance
-            + contact_weight * contacts
-            + angular_span_weight * span
-        )
-        return quality + curl_speed_weight * curl_speed * quality_gate
-
     raise ValueError(f"Unknown opt_obj: {opt_obj}")
 
 
@@ -178,7 +179,7 @@ class ProfileOptimizerModel(nn.Module):
         num_epochs: int = 1000,
         learning_rate: float = 1e-4,
         opt_obj: str = "disturbance",
-        input_dim: int = 13, # 12 for the design parameters + 1 for the task parameter
+        input_dim: int = 16, # 15 From Links design parameters + approach
         num_points: int = 1,
         grid_size: int = 1,
         seed: int = 0,
@@ -194,27 +195,27 @@ class ProfileOptimizerModel(nn.Module):
         disturbance_weight: float = 1.0,
         reg_weight: float = 0.0,
         angular_span_weight: float = 0.0,
-        curl_speed_weight: float = 0.1,
-        curl_contact_gate: float = 0.3,
-        curl_gate_temperature: float = 0.05,
         # physical bounds
         joint_soft_min: float = 0.0005,
-        joint_soft_max: float = 0.005,
+        joint_soft_max: float = 0.05,
         link_min: float = 0.02,
-        link_max: float = 0.10,
+        link_max: float = 0.13,
+        joint_length_min: float = 0.005,
+        joint_length_max: float = 0.03,
         base_radius_min: float = 0.01025,
         base_radius_max: float = 0.013,
         base_length_min: float = 0.15,
-        base_length_max: float = 0.25,
+        base_length_max: float = 0.30,
         tension_min: float = 1.0,
-        tension_max: float = 6.0,
+        tension_max: float = 30.0,
         ankle_wrap_min: float = 0.015,
-        ankle_wrap_max: float = 0.025,
+        ankle_wrap_max: float = 0.035,
         ankle_stiff_min: float = 300.0,
         ankle_stiff_max: float = 700.0,
         # initialization
         init_joint_softness=(0.003, 0.003, 0.003),
         init_link_lengths=(0.06, 0.056, 0.044, 0.04),
+        init_joint_lengths=(0.02, 0.02, 0.02),
         init_base_radius: float = 0.01025,
         init_base_length: float = 0.20,
         init_tension: float = 3.0,
@@ -241,14 +242,13 @@ class ProfileOptimizerModel(nn.Module):
         self.disturbance_weight = disturbance_weight
         self.reg_weight = reg_weight
         self.angular_span_weight = angular_span_weight
-        self.curl_speed_weight = curl_speed_weight
-        self.curl_contact_gate = curl_contact_gate
-        self.curl_gate_temperature = curl_gate_temperature
 
         self.joint_soft_min = joint_soft_min
         self.joint_soft_max = joint_soft_max
         self.link_min = link_min
         self.link_max = link_max
+        self.joint_length_min = joint_length_min
+        self.joint_length_max = joint_length_max
         self.base_radius_min = base_radius_min
         self.base_radius_max = base_radius_max
         self.base_length_min = base_length_min
@@ -282,6 +282,7 @@ class ProfileOptimizerModel(nn.Module):
             device=device,
             init_joint_softness=init_joint_softness,
             init_link_lengths=init_link_lengths,
+            init_joint_lengths=init_joint_lengths,
             init_base_radius=init_base_radius,
             init_base_length=init_base_length,
             init_tension=init_tension,
@@ -291,6 +292,8 @@ class ProfileOptimizerModel(nn.Module):
             joint_soft_max=joint_soft_max,
             link_min=link_min,
             link_max=link_max,
+            joint_length_min=joint_length_min,
+            joint_length_max=joint_length_max,
             base_radius_min=base_radius_min,
             base_radius_max=base_radius_max,
             base_length_min=base_length_min,
@@ -318,19 +321,22 @@ class ProfileOptimizerModel(nn.Module):
         joint_softness = sigmoid_to_range(x[:, 0:3], self.joint_soft_min, self.joint_soft_max)
 
         raw_links = sigmoid_to_range(x[:, 3:7], self.link_min, self.link_max)
-        base_length = sigmoid_to_range(x[:, 8:9], self.base_length_min, self.base_length_max)
-        link_lengths = raw_links / torch.sum(raw_links, dim=-1, keepdim=True) * base_length
+        joint_lengths = sigmoid_to_range(x[:, 7:10], self.joint_length_min, self.joint_length_max)
+        base_length = sigmoid_to_range(x[:, 11:12], self.base_length_min, self.base_length_max)
+        available = (base_length - joint_lengths.sum(dim=-1, keepdim=True)).clamp_min(1e-6)
+        link_lengths = raw_links / torch.sum(raw_links, dim=-1, keepdim=True) * available
 
-        base_radius = sigmoid_to_range(x[:, 7:8], self.base_radius_min, self.base_radius_max)
-        tension = sigmoid_to_range(x[:, 9:10], self.tension_min, self.tension_max)
-        ankle_wrap_radius = sigmoid_to_range(x[:, 10:11], self.ankle_wrap_min, self.ankle_wrap_max)
-        ankle_stiffness = sigmoid_to_range(x[:, 11:12], self.ankle_stiff_min, self.ankle_stiff_max)
+        base_radius = sigmoid_to_range(x[:, 10:11], self.base_radius_min, self.base_radius_max)
+        tension = sigmoid_to_range(x[:, 12:13], self.tension_min, self.tension_max)
+        ankle_wrap_radius = sigmoid_to_range(x[:, 13:14], self.ankle_wrap_min, self.ankle_wrap_max)
+        ankle_stiffness = sigmoid_to_range(x[:, 14:15], self.ankle_stiff_min, self.ankle_stiff_max)
 
-        approach_deg = sigmoid_to_range(x[:, 12:13], self.approach_deg_min, self.approach_deg_max)
+        approach_deg = sigmoid_to_range(x[:, 15:16], self.approach_deg_min, self.approach_deg_max)
 
         design_params = torch.cat([
             joint_softness,
             link_lengths,
+            joint_lengths,
             base_radius,
             base_length,
             tension,
@@ -353,11 +359,12 @@ class ProfileOptimizerModel(nn.Module):
         design_norm = torch.cat([
             design_params[:, 0:3] / 0.001,   # joint_softness
             design_params[:, 3:7] / 0.3,    # link_lengths
-            design_params[:, 7:8] / 0.02,   # base_radius
-            design_params[:, 8:9] / 0.2,    # base_length
-            design_params[:, 9:10] / 10.0,    # tension
-            design_params[:, 10:11] / 0.025, # ankle_wrap_radius
-            design_params[:, 11:12] / 1000.0, # ankle_stiffness
+            design_params[:, 7:10] / 0.05,  # joint_lengths
+            design_params[:, 10:11] / 0.02, # base_radius
+            design_params[:, 11:12] / 0.2,  # base_length
+            design_params[:, 12:13] / 10.0, # tension
+            design_params[:, 13:14] / 0.025,# ankle_wrap_radius
+            design_params[:, 14:15] / 1000.0,# ankle_stiffness
         ], dim=-1)
 
         init_norm = torch.cat([
@@ -396,15 +403,10 @@ class ProfileOptimizerModel(nn.Module):
         logits[:, 0] = normalized contacts
         logits[:, 1] = disturbance resistance score
         logits[:, 2] = normalized angular span
-        logits[:, 3] = curl speed score (1 - normalized curl time)
         """
         pred_contacts = logits[:, 0]
         pred_disturbance = logits[:, 1]
         pred_angular_span = logits[:, 2]
-        pred_curl_speed = logits[:, 3]
-        quality_gate = torch.sigmoid(
-            (pred_contacts - self.curl_contact_gate) / self.curl_gate_temperature
-        )
 
         if self.opt_obj == "disturbance":
             objective = self.disturbance_weight * pred_disturbance
@@ -429,18 +431,6 @@ class ProfileOptimizerModel(nn.Module):
                 self.disturbance_weight * pred_disturbance
                 + self.contact_weight * pred_contacts
                 + self.angular_span_weight * pred_angular_span
-            )
-        elif self.opt_obj == "curl_speed":
-            objective = pred_curl_speed
-        elif self.opt_obj == "disturbance_contact_span_speed":
-            quality = (
-                self.disturbance_weight * pred_disturbance
-                + self.contact_weight * pred_contacts
-                + self.angular_span_weight * pred_angular_span
-            )
-            objective = (
-                quality
-                + self.curl_speed_weight * pred_curl_speed * quality_gate
             )
         else:
             raise ValueError("opt obj not supported")
@@ -490,7 +480,7 @@ class ProfileOptimizer():
         num_epochs: int = 1000,
         learning_rate: float = 1e-4,
         opt_obj: str = "disturbance",
-        input_dim: int = 13,
+        input_dim: int = 16,
         num_points: int = 1,
         grid_size: int = 1,
         object_vertices: Optional[torch.Tensor] = None,
@@ -550,9 +540,6 @@ class ProfileOptimizer():
                 contact_weight=self.model.contact_weight,
                 disturbance_weight=self.model.disturbance_weight,
                 angular_span_weight=self.model.angular_span_weight,
-                curl_speed_weight=self.model.curl_speed_weight,
-                curl_contact_gate=self.model.curl_contact_gate,
-                curl_gate_temperature=self.model.curl_gate_temperature,
             )
 
             wandb.log({
@@ -562,7 +549,6 @@ class ProfileOptimizer():
                 f"{self.opt_obj}/pred_contacts_mean": float(np.mean(pred_now[:, 0])),
                 f"{self.opt_obj}/pred_disturbance_mean": float(np.mean(pred_now[:, 1])),
                 f"{self.opt_obj}/pred_angular_span_mean": float(np.mean(pred_now[:, 2])),
-                f"{self.opt_obj}/pred_curl_speed_mean": float(np.mean(pred_now[:, 3])),
                 f"{self.opt_obj}/raw_delta": float((self.model.state.detach() - state0).abs().max().item()),
             }, step=self.wandb_step_offset + i)
 
@@ -579,9 +565,6 @@ class ProfileOptimizer():
             self.model.contact_weight,
             self.model.disturbance_weight,
             self.model.angular_span_weight,
-            self.model.curl_speed_weight,
-            self.model.curl_contact_gate,
-            self.model.curl_gate_temperature,
         )
 
         score1 = pred_to_objective_np(
@@ -590,9 +573,6 @@ class ProfileOptimizer():
             self.model.contact_weight,
             self.model.disturbance_weight,
             self.model.angular_span_weight,
-            self.model.curl_speed_weight,
-            self.model.curl_contact_gate,
-            self.model.curl_gate_temperature,
         )
 
         wandb.log({
@@ -622,7 +602,10 @@ class ProfileOptimizer():
 # Optional CMA-ES optimizer wrapper: minimal analog of ProfileOptimizerES
 # -----------------------------------------------------------------------------
 
-import cma
+try:
+    import cma
+except ImportError:  # Adam optimization does not require the optional CMA package.
+    cma = None
 class ProfileOptimizerES():
     def __init__(
         self,
@@ -631,7 +614,7 @@ class ProfileOptimizerES():
         num_epochs: int = 1000,
         learning_rate: float = 1e-4,
         opt_obj: str = "disturbance",
-        input_dim: int = 13,
+        input_dim: int = 16,
         num_points: int = 1,
         grid_size: int = 1,
         object_vertices: Optional[torch.Tensor] = None,
@@ -649,7 +632,7 @@ class ProfileOptimizerES():
         if batch_size != 1:
             raise ValueError(
                 "CMA-ES expects batch_size=1 so each population member is one "
-                "13D finger. Use cma_popsize for parallel candidate count."
+                "16D From Links finger. Use cma_popsize for parallel candidate count."
             )
         if cma_sigma <= 0.0:
             raise ValueError("cma_sigma must be > 0")
@@ -678,7 +661,7 @@ class ProfileOptimizerES():
         # physical start angle is exactly init_approach_deg. Clip all raw
         # coordinates to a finite trust region to avoid sigmoid saturation.
         x0 = self.model.state.detach().view(-1).cpu().numpy().copy()
-        x0[12] = inverse_sigmoid_from_range(
+        x0[15] = inverse_sigmoid_from_range(
             self.model.init_approach_deg,
             self.model.approach_deg_min,
             self.model.approach_deg_max,
@@ -750,9 +733,6 @@ class ProfileOptimizerES():
                     contact_weight=self.model.contact_weight,
                     disturbance_weight=self.model.disturbance_weight,
                     angular_span_weight=self.model.angular_span_weight,
-                    curl_speed_weight=self.model.curl_speed_weight,
-                    curl_contact_gate=self.model.curl_contact_gate,
-                    curl_gate_temperature=self.model.curl_gate_temperature,
                 )
 
                 wandb.log({
@@ -763,7 +743,6 @@ class ProfileOptimizerES():
                     f"{self.opt_obj}/es_pred_contacts_mean": float(np.mean(pred_now[:, 0])),
                     f"{self.opt_obj}/es_pred_disturbance_mean": float(np.mean(pred_now[:, 1])),
                     f"{self.opt_obj}/es_pred_angular_span_mean": float(np.mean(pred_now[:, 2])),
-                    f"{self.opt_obj}/es_pred_curl_speed_mean": float(np.mean(pred_now[:, 3])),
                     f"{self.opt_obj}/es_best_approach_deg": approach_now,
                 }, step=self.wandb_step_offset + i)
 
@@ -796,9 +775,6 @@ class ProfileOptimizerES():
             self.model.contact_weight,
             self.model.disturbance_weight,
             self.model.angular_span_weight,
-            self.model.curl_speed_weight,
-            self.model.curl_contact_gate,
-            self.model.curl_gate_temperature,
         )
 
         score1 = pred_to_objective_np(
@@ -807,9 +783,6 @@ class ProfileOptimizerES():
             self.model.contact_weight,
             self.model.disturbance_weight,
             self.model.angular_span_weight,
-            self.model.curl_speed_weight,
-            self.model.curl_contact_gate,
-            self.model.curl_gate_temperature,
         )
 
         wandb.log({

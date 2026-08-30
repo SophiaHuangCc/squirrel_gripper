@@ -26,7 +26,7 @@ def add_finger_runtime_args(parser):
     parser.add_argument(
         "--joint_stiffness_mode",
         choices=["full_material", "bending_only"],
-        default="full_material",
+        default="bending_only",
     )
     parser.add_argument(
         "--distal_tendon_anchor",
@@ -34,7 +34,10 @@ def add_finger_runtime_args(parser):
         default="none",
     )
     parser.add_argument("--distal_tendon_anchor_node", type=int, default=-1)
-    parser.add_argument("--joint_lengths", type=str, default="")
+    parser.add_argument(
+        "--joint_lengths", type=str, default=None,
+        help="Legacy override only; optimized From Links joint lengths are used by default.",
+    )
     parser.add_argument("--landing_speed", type=float, default=0.0)
     parser.add_argument("--landing_height", type=float, default=0.04)
     parser.add_argument("--initial_x_gap", type=float, default=0.06)
@@ -93,7 +96,6 @@ def objective_score(pred_metrics, objective):
     contacts = pred_metrics[:, 0]
     disturbance = pred_metrics[:, 1]
     angular_span = pred_metrics[:, 2]
-    curl_speed = pred_metrics[:, 3]
 
     if objective == "disturbance":
         return disturbance
@@ -107,11 +109,6 @@ def objective_score(pred_metrics, objective):
         return disturbance + 0.5 * angular_span
     elif objective == "disturbance_contact_span":
         return disturbance + 0.1 * contacts + 0.5 * angular_span
-    elif objective == "curl_speed":
-        return curl_speed
-    elif objective == "disturbance_contact_span_speed":
-        gate = 1.0 / (1.0 + np.exp(-(contacts - 0.3) / 0.05))
-        return disturbance + 0.1 * contacts + 0.5 * angular_span + 0.1 * curl_speed * gate
     else:
         raise ValueError(f"Unknown objective: {objective}")
 
@@ -195,7 +192,7 @@ def main():
     parser.add_argument(
         "--objectives",
         type=str,
-        default="disturbance,disturbance_contact,contact,angular_span,disturbance_span,disturbance_contact_span,curl_speed,disturbance_contact_span_speed",
+        default="disturbance,disturbance_contact,contact,angular_span,disturbance_span,disturbance_contact_span",
     )
 
     args = parser.parse_args()

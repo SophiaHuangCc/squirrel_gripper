@@ -10,10 +10,15 @@ class Trainer:
     def __init__(self, args):
         self.args = args
 
-        if torch.backends.mps.is_available():
+        requested = getattr(args, "device", "cuda")
+        if requested == "cpu":
+            self.device = torch.device("cpu")
+        elif requested == "mps" and torch.backends.mps.is_available():
             self.device = torch.device("mps")
-        elif torch.cuda.is_available():
+        elif requested == "cuda" and torch.cuda.is_available():
             self.device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            self.device = torch.device("mps")
         else:
             self.device = torch.device("cpu")
         print(f"Using device: {self.device}")
@@ -22,20 +27,19 @@ class Trainer:
         """
         Inputs:
           - task_params   : [approach_angle, cylinder_radius]
-          - design_params : [joint_stiffnesses, link_lengths, finger_radius,
+          - design_params : [joint_stiffnesses, link_lengths, joint_lengths, finger_radius,
                              finger_length, prebend_tension, ankle_radius,
                              ankle_stiffness]
           - init_config   : [drop_height, landing_speed, initial_x_gap]
 
         Output:
-          - [num_contacts, disturbance_resistance_score, angular_span,
-             curl_speed_score]
+          - [num_contacts, disturbance_resistance_score, angular_span]
         """
 
         self.task_dim = getattr(self.args, "task_dim", 2)
-        self.design_dim = getattr(self.args, "design_dim", 12)
+        self.design_dim = getattr(self.args, "design_dim", 15)
         self.init_dim = getattr(self.args, "init_dim", 3)
-        self.output_dim = getattr(self.args, "output_dim", 4)
+        self.output_dim = getattr(self.args, "output_dim", 3)
         self.hidden_dim = getattr(self.args, "hidden_dim", 256)
 
         # diffusion-style settings

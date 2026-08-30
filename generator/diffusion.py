@@ -53,7 +53,7 @@ class SquirrelDesignDiffusion(nn.Module):
     Squirrel-finger adaptation of DGDM's diffusion generator.
 
     Training learns p(design | task, init, desired_metrics).
-    Sampling starts from Gaussian noise and denoises into a 12D physical design.
+    Sampling starts from Gaussian noise and denoises into a 15D From Links design.
     """
 
     def __init__(
@@ -119,21 +119,14 @@ class SquirrelDesignDiffusion(nn.Module):
         contacts = pred[:, 0]
         disturbance = pred[:, 1]
         angular_span = pred[:, 2]
-        curl_speed = pred[:, 3] if pred.shape[-1] > 3 else torch.zeros_like(contacts)
-
         if objective == "disturbance":
             score = disturbance
         elif objective == "contact":
             score = contacts
         elif objective == "angular_span":
             score = angular_span
-        elif objective == "curl_speed":
-            score = curl_speed
         elif objective == "disturbance_contact_span":
             score = disturbance + 0.1 * contacts + 0.5 * angular_span
-        elif objective == "disturbance_contact_span_speed":
-            gate = torch.sigmoid((contacts - 0.3) / 0.05)
-            score = disturbance + 0.1 * contacts + 0.5 * angular_span + 0.1 * curl_speed * gate
         else:
             raise ValueError(f"Unknown guidance objective: {objective}")
         return score
@@ -144,7 +137,7 @@ class SquirrelDesignDiffusion(nn.Module):
         cond: torch.Tensor,
         dynamics_model: Optional[nn.Module] = None,
         guidance_scale: float = 0.0,
-        guidance_objective: str = "disturbance_contact_span_speed",
+        guidance_objective: str = "disturbance_contact_span",
         generator: Optional[torch.Generator] = None,
     ) -> Dict[str, torch.Tensor]:
         """
@@ -207,7 +200,6 @@ def make_condition_batch(
     target_contacts: float = 0.6,
     target_disturbance: float = 0.8,
     target_angular_span: float = 0.8,
-    target_curl_speed: float = 0.8,
     device: torch.device = torch.device("cpu"),
 ) -> torch.Tensor:
     task = torch.tensor(
@@ -221,7 +213,7 @@ def make_condition_batch(
         device=device,
     ).repeat(batch_size, 1)
     metrics = torch.tensor(
-        [[target_contacts, target_disturbance, target_angular_span, target_curl_speed]],
+        [[target_contacts, target_disturbance, target_angular_span]],
         dtype=torch.float32,
         device=device,
     ).repeat(batch_size, 1)

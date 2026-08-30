@@ -17,6 +17,9 @@ DESIGN_NAMES = [
     "link_length_1",
     "link_length_2",
     "link_length_3",
+    "joint_length_0",
+    "joint_length_1",
+    "joint_length_2",
     "base_radius",
     "base_length",
     "tension",
@@ -25,7 +28,7 @@ DESIGN_NAMES = [
 ]
 
 DESIGN_MODEL_SCALES = torch.tensor(
-    [0.001, 0.001, 0.001, 0.3, 0.3, 0.3, 0.3, 0.02, 0.2, 10.0, 0.025, 1000.0],
+    [0.001, 0.001, 0.001, 0.3, 0.3, 0.3, 0.3, 0.05, 0.05, 0.05, 0.02, 0.2, 10.0, 0.025, 1000.0],
     dtype=torch.float32,
 )
 
@@ -41,11 +44,11 @@ class DesignBounds:
     def defaults(cls) -> "DesignBounds":
         return cls(
             lo=torch.tensor(
-                [0.0005, 0.0005, 0.0005, 0.02, 0.02, 0.02, 0.02, 0.01025, 0.15, 1.0, 0.015, 300.0],
+                [0.0005, 0.0005, 0.0005, 0.01, 0.01, 0.01, 0.01, 0.005, 0.005, 0.005, 0.01025, 0.15, 1.0, 0.015, 300.0],
                 dtype=torch.float32,
             ),
             hi=torch.tensor(
-                [0.005, 0.005, 0.005, 0.10, 0.10, 0.10, 0.10, 0.013, 0.25, 6.0, 0.025, 700.0],
+                [0.05, 0.05, 0.05, 0.13, 0.10, 0.10, 0.10, 0.03, 0.03, 0.03, 0.013, 0.30, 30.0, 0.035, 700.0],
                 dtype=torch.float32,
             ),
         )
@@ -53,10 +56,16 @@ class DesignBounds:
     @classmethod
     def from_npz(cls, path: str) -> "DesignBounds":
         data = np.load(path)
-        return cls(
+        bounds = cls(
             lo=torch.from_numpy(data["design_lo"].astype(np.float32)),
             hi=torch.from_numpy(data["design_hi"].astype(np.float32)),
         )
+        if bounds.lo.numel() != len(DESIGN_NAMES):
+            raise ValueError(
+                f"{path} contains {bounds.lo.numel()}D legacy bounds; expected "
+                f"{len(DESIGN_NAMES)}D From Links bounds. Retrain the generator."
+            )
+        return bounds
 
     def save(self, path: str) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -95,22 +104,24 @@ def diffusion_to_physical(design_unit: torch.Tensor, bounds: DesignBounds) -> to
 
 def project_physical_design(design_physical: torch.Tensor, bounds: DesignBounds) -> torch.Tensor:
     """
-    Clamp generated designs and make link lengths sum to base_length.
+    Clamp designs and make free link lengths plus joint lengths sum to base_length.
 
     Your simulator expects physically consistent vertebra locations. The dataset
-    link lengths always sum to base_length; raw diffusion samples may not, so
-    this projection removes one common source of unstable/generated nonsense.
+    free links plus finite joints always sum to base_length; raw diffusion
+    samples may not, so this projection restores a valid From Links geometry.
     """
     lo = bounds.lo.to(design_physical.device)
     hi = bounds.hi.to(design_physical.device)
     design = torch.clamp(design_physical, lo, hi)
 
     links = design[..., 3:7]
-    base_length = design[..., 8:9]
+    joints = design[..., 7:10]
+    base_length = design[..., 11:12]
     link_lo = lo[3:7]
     link_hi = hi[3:7]
     links = torch.clamp(links, link_lo, link_hi)
-    links = links / links.sum(dim=-1, keepdim=True).clamp_min(1e-12) * base_length
+    available_link_length = (base_length - joints.sum(dim=-1, keepdim=True)).clamp_min(1e-6)
+    links = links / links.sum(dim=-1, keepdim=True).clamp_min(1e-12) * available_link_length
     design = torch.cat([design[..., :3], links, design[..., 7:]], dim=-1)
     return design
 
@@ -125,7 +136,7 @@ def build_condition(
     Create the global condition vector.
 
     The condition is intentionally small and matches your trained dynamics model:
-    task_params(2), init_config(3), desired_metrics(4).
+    task_params(2), init_config(3), desired_metrics(3).
 
     metric_mask can zero out unknown metric targets. By default all target
     metrics are used.
@@ -142,25 +153,17 @@ class SquirrelDiffusionDataset(Dataset):
 
     It reuses DynamicsDataset so diffusion and the dynamics model see the exact
     same parsing conventions. Returned sample:
-      design_unit: (12, 1), normalized to [-1, 1]
-      cond:        (9,), task/init/target metric condition
+      design_unit: (15, 1), normalized to [-1, 1]
+      cond:        (8,), task/init/target metric condition
     """
 
     def __init__(
         self,
         dataset_dir: str,
         bounds: Optional[DesignBounds] = None,
-        curl_contact_ratio: float = 0.8,
-        curl_hold_time: float = 0.2,
-        curl_min_contacts: int = 3,
         metric_mask: Optional[Iterable[float]] = None,
     ):
-        self.base = DynamicsDataset(
-            dataset_dir=dataset_dir,
-            curl_contact_ratio=curl_contact_ratio,
-            curl_hold_time=curl_hold_time,
-            curl_min_contacts=curl_min_contacts,
-        )
+        self.base = DynamicsDataset(dataset_dir=dataset_dir)
         self.bounds = bounds or DesignBounds.defaults()
         self.metric_mask = metric_mask
 
@@ -184,4 +187,3 @@ class SquirrelDiffusionDataset(Dataset):
             "init_config": item["init_config"].float(),
             "target_metrics": item["target_metrics"].float(),
         }
-

@@ -104,8 +104,6 @@ def build_caption_text(folder: Path, metrics: Dict[str, float]) -> str:
     add_line("contacts", "num_contacts")
     add_line("disturbance", "disturbance_resistance_score")
     add_line("angular span", "angular_span")
-    add_line("curl time", "curl_time")
-    add_line("curl speed", "curl_speed_score")
     add_line("combined", "combined_score")
     add_line("tension", "tension")
     return "\n".join(lines)

@@ -1,0 +1,89 @@
+{
+  "config": "/Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/benchmarks/scenarios_v1.json",
+  "candidate_source": "/Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/point2_smoke/nominal/candidates/retrieval_s0.npz",
+  "method": "retrieval",
+  "seed": 0,
+  "num_candidates": 1,
+  "num_scenarios": 1,
+  "num_rollouts": 1,
+  "proposal_metadata": {
+    "generalist": false,
+    "observed_utilities": [
+      0.566127359867096,
+      0.7910244077444076,
+      0.7755554854869842,
+      0.6087852373719216
+    ],
+    "sources": [
+      "/Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/TendonForces/runs/exp27/train/master_log_20260826_175914_T12.5_CR0.025_XG0.1_LH0.02_LA45.0_BL0.25_BT0.015_A45.0_Glongbase_25cm_JE0.2-0.16-0.12_LL10-2.5-3-3.5_JL2-2-2_20260826_175911_758293.npz",
+      "/Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/TendonForces/runs/exp27/train/master_log_20260826_175914_T14.7_CR0.035_XG0.1_LH0.06_LA45.0_BL0.2_BT0.018_A45.0_Glongbase_20cm_JE0.15-0.12-0.09_LL7.5-1.8-2.2-2.5_JL2-2-2_20260826_175911_758299.npz",
+      "/Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/TendonForces/runs/exp27/train/master_log_20260826_175914_T20.0_CR0.025_XG0.06_LH0.02_LA45.0_BL0.3_BT0.018_A45.0_Glongbase_30cm_JE0.08-0.06-0.04_LL13-3-3.5-4.5_JL2-2-2_20260826_175911_758806.npz",
+      "/Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/TendonForces/runs/exp27/train/master_log_20260826_175914_T25.0_CR0.025_XG0.15_LH0.02_LA30.0_BL0.15_BT0.02_A65.0_Gshort_longbase_15cm_JE0.08-0.06-0.04_LL4.8-1.2-1.3-1.7_JL2-2-2_20260826_175911_760079.npz"
+    ],
+    "target_family": null,
+    "target_scenario_id": null
+  },
+  "jobs": [
+    {
+      "run_id": "retrieval_s0_retrieval_s0_000_nominal-00_d95f2e454f",
+      "method": "retrieval",
+      "seed": 0,
+      "candidate_id": "retrieval_s0_000",
+      "selection_score": -0.22360678017139435,
+      "design_params": [
+        0.029673591256141663,
+        0.02373887225985527,
+        0.017804155126214027,
+        0.10000000149011612,
+        0.02500000037252903,
+        0.029999999329447746,
+        0.03500000014901161,
+        0.019999999552965164,
+        0.019999999552965164,
+        0.019999999552965164,
+        0.009999999776482582,
+        0.25,
+        12.5,
+        0.030000001192092896,
+        500.0
+      ],
+      "scenario_id": "nominal:00",
+      "family": "nominal",
+      "scenario": {
+        "scenario_id": "nominal:00",
+        "family": "nominal",
+        "params": {
+          "E": 6740000.0,
+          "damping": 0.1,
+          "n_elements": 0,
+          "final_time": 2.0,
+          "k_contact": 500.0,
+          "nu_contact": 20.0,
+          "mu_contact": 0.8,
+          "vel_damp_contact": 30,
+          "poisson_nu": 0.49,
+          "v_mass": 0.04,
+          "cross_section": "rect",
+          "base_width": 0.03,
+          "landing_motion": true,
+          "landing_mode": "prescribed",
+          "landing_speed": 0.0,
+          "body_mass": 3.0,
+          "joint_stiffness_mode": "bending_only",
+          "v_mode": "from_links",
+          "distal_tendon_anchor": "tip",
+          "max_tension": 30.0,
+          "prescribed_stop_at_contact": true,
+          "prescribed_contact_margin": -0.005,
+          "continuous_disturbance_metric": true,
+          "approach_deg": 45.0,
+          "landing_approach_deg": 45.0,
+          "cyl_rad": 0.025,
+          "initial_x_gap": 0.12,
+          "landing_height": 0.04
+        }
+      },
+      "run_dir": "/Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/point2_smoke/nominal/runs/retrieval_s0/runs/retrieval_s0_retrieval_s0_000_nominal-00_d95f2e454f"
+    }
+  ]
+}

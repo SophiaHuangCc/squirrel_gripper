@@ -726,18 +726,6 @@ def main():
     parser.add_argument("--damping", type=float, default=0.8, help="Internal damping constant")
     parser.add_argument("--n_elements", type=int, default=0, help="Number of rod elements (0 = auto: 1000 per meter of base_len)")
     parser.add_argument("--final_time", type=float, default=4.0, help="Total simulation time in seconds")
-    parser.add_argument(
-        "--curl_contact_ratio", type=float, default=0.8,
-        help="Fraction of the trajectory's peak contact count required for curl completion.",
-    )
-    parser.add_argument(
-        "--curl_hold_time", type=float, default=0.2,
-        help="Seconds that the curl contact threshold must remain satisfied.",
-    )
-    parser.add_argument(
-        "--curl_min_contacts", type=int, default=3,
-        help="Minimum useful contacts required before curl completion can be declared.",
-    )
     # cylinder and contact params
     parser.add_argument(
         "--finger_only",
@@ -762,7 +750,7 @@ def main():
         help="Warn if measured overlap exceeds this value (m).",
     )
     # finger arguments
-    parser.add_argument("--base_len", type=float, default=0.10, help="Finger length in meters")
+    parser.add_argument("--base_len", type=float, default=0.20, help="Finger length in meters")
     parser.add_argument("--base_rad", type=float, default=0.005, help="Finger radius in meters")
     # Cross-section: circular (default) or rectangular.
     parser.add_argument(
@@ -799,7 +787,7 @@ def main():
     parser.add_argument(
         "--joint_stiffness_mode",
         choices=["full_material", "bending_only"],
-        default="full_material",
+        default="bending_only",
         help=(
             "full_material scales bending, twist, shear, and axial stiffness "
             "in each joint region; bending_only reproduces the legacy dataset "
@@ -809,13 +797,13 @@ def main():
     parser.add_argument(
         "--joint_lengths",
         type=str,
-        default="",
+        default="2.0,2.0,2.0",
         help=(
             "Comma-separated per-joint lengths in centimeters (one per joint). "
             "The softened region for each joint spans this length, centered on "
             "the vertebra node. For trapezoidal joints that shrink toward the "
             "tip, pass decreasing values (e.g. '2.4,1.6,0.8'). A single value "
-            "applies to all joints. Empty = legacy fixed 8-element window."
+            "applies to all joints. Defaults to three 2 cm joints for From Links."
         ),
     )
     parser.add_argument(
@@ -829,7 +817,7 @@ def main():
         ),
     )
     # vertebra selector: 'uniform' or 'manual'
-    parser.add_argument("--v_mode", type=str, default="uniform", 
+    parser.add_argument("--v_mode", type=str, default="from_links",
                         choices=["uniform", "manual", "from_links"], 
                         help="How to place vertebrae: 'uniform' uses linspace, 'manual' uses v_list, 'from_links' derives v_list from --link_lengths and --joint_lengths")
     # Manual list input (passed as a string of comma-separated integers)
@@ -838,7 +826,7 @@ def main():
     parser.add_argument(
         "--link_lengths",
         type=str,
-        default="",
+        default="6.6,2.0,2.4,3.0",
         help=(
             "Comma-separated link lengths in centimeters (one per link). "
             "Used with --v_mode from_links to compute vertebra node indices at joint centers."
@@ -2269,37 +2257,8 @@ def main():
                     float(cyl_radius),
                 ])
 
-    # Curl completion is the first time a useful fraction of peak contact is
-    # sustained, rather than a one-frame contact spike.
     contact_counts = np.asarray(contact_counts, dtype=np.int32)
-    peak_contacts = int(contact_counts.max()) if contact_counts.size else 0
-    curl_contact_threshold = max(
-        int(args.curl_min_contacts),
-        int(np.ceil(float(args.curl_contact_ratio) * peak_contacts)),
-    )
-    hold_frames = max(1, int(np.ceil(float(args.curl_hold_time) / dt_saved)))
-    curl_frame = None
-    if peak_contacts >= curl_contact_threshold:
-        meets_threshold = contact_counts >= curl_contact_threshold
-        for frame_idx in range(0, len(meets_threshold) - hold_frames + 1):
-            if np.all(meets_threshold[frame_idx:frame_idx + hold_frames]):
-                curl_frame = frame_idx
-                break
-
-    curl_time = final_time if curl_frame is None else float(curl_frame * dt_saved)
-    curl_time_norm = float(np.clip(curl_time / final_time, 0.0, 1.0))
-    curl_speed_score = 1.0 - curl_time_norm
     data_to_save["contact_counts"] = contact_counts
-    data_to_save["curl_time"] = np.array([curl_time])
-    data_to_save["curl_time_norm"] = np.array([curl_time_norm])
-    data_to_save["curl_speed_score"] = np.array([curl_speed_score])
-    data_to_save["curl_peak_contacts"] = np.array([peak_contacts])
-    data_to_save["curl_contact_threshold"] = np.array([curl_contact_threshold])
-    data_to_save["curl_hold_frames"] = np.array([hold_frames])
-    print(
-        f"[CURL] time={curl_time:.4f}s speed_score={curl_speed_score:.4f} "
-        f"threshold={curl_contact_threshold} peak={peak_contacts} hold_frames={hold_frames}"
-    )
 
     if first_contact_frame is None:
         print("[CONTACT] No contact in any saved frame. (Likely cylinder too far, too small, or axis mismatch.)")

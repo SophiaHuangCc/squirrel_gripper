@@ -98,8 +98,6 @@ def load_metrics(path: Path) -> GraspExample:
         num_contacts = scalar_from_npz(data, ["num_contacts"], 0.0)
         angular_span = scalar_from_npz(data, ["angular_span"], 0.0)
         disturbance = scalar_from_npz(data, ["disturbance_resistance_score"], 0.0)
-        curl_speed = scalar_from_npz(data, ["curl_speed_score"], 0.0)
-        curl_time = scalar_from_npz(data, ["curl_time"], float("nan"))
         approach_deg = scalar_from_npz(data, ["arg_approach_deg", "approach_deg"], 45.0)
         cyl_radius = scalar_from_npz(data, ["cyl_radius", "arg_cyl_rad"], 0.03)
 
@@ -120,8 +118,6 @@ def load_metrics(path: Path) -> GraspExample:
             "angular_span_norm": span_norm,
             "disturbance_resistance_score": disturbance,
             "disturbance_norm": disturbance_norm,
-            "curl_speed_score": curl_speed,
-            "curl_time": curl_time,
             "n_elements": n_elements,
             "approach_deg": approach_deg,
             "cyl_radius": cyl_radius,
@@ -396,7 +392,7 @@ def write_summaries(output_dir: Path, good: GraspExample, bad: GraspExample) -> 
 
 def print_metric_ranges(examples: Sequence[GraspExample]) -> None:
     print("[METRIC RANGES]")
-    for key in ["num_contacts", "angular_span", "disturbance_resistance_score", "curl_speed_score"]:
+    for key in ["num_contacts", "angular_span", "disturbance_resistance_score"]:
         arr = np.asarray([ex.metrics[key] for ex in examples], dtype=float)
         print(
             f"  {key}: min={np.nanmin(arr):.4g}, "

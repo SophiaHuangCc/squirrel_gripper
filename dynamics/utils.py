@@ -8,46 +8,63 @@ def sigmoid_to_range(x, lo, hi):
     return lo + (hi - lo) * torch.sigmoid(x)
 
 
-def link_lengths_to_v_list(link_lengths, base_length, n_elements=100):
+def link_lengths_to_v_list(link_lengths, joint_lengths=None, base_length=None, n_elements=100):
     """
     Convert 4 physical link lengths into 3 vertebra node indices.
     """
     link_lengths = np.asarray(link_lengths, dtype=np.float32).reshape(-1)
-    cum = np.cumsum(link_lengths[:-1])
-    joints = np.round(cum / float(base_length) * n_elements).astype(int)
+    if base_length is None:  # backwards-compatible positional call
+        base_length = joint_lengths
+        joint_lengths = np.zeros(len(link_lengths) - 1, dtype=np.float32)
+    joint_lengths = np.asarray(joint_lengths, dtype=np.float32).reshape(-1)
+    centers = []
+    cursor = 0.0
+    for link, joint in zip(link_lengths[:-1], joint_lengths):
+        cursor += float(link) + 0.5 * float(joint)
+        centers.append(cursor)
+        cursor += 0.5 * float(joint)
+    joints = np.round(np.asarray(centers) / float(base_length) * n_elements).astype(int)
     joints = np.clip(joints, 1, n_elements - 1)
     return joints.tolist()
 
 
 def design_to_dict(design_params, task_params=None, n_elements=100):
     """
-    Convert one 12D physical design vector into finger.py-friendly args.
+    Convert one 15D physical From Links design vector into finger.py args.
 
     design_params:
       [0:3]  joint_softness
       [3:7]  link_lengths
-      [7]    base_radius
-      [8]    base_length
-      [9]    tension
-      [10]   ankle_wrap_radius
-      [11]   ankle_stiffness
+      [7:10] joint_lengths
+      [10]   base_radius
+      [11]   base_length
+      [12]   tension
+      [13]   ankle_wrap_radius
+      [14]   ankle_stiffness
 
     task_params:
       [0] approach_deg
       [1] cyl_radius
     """
     d = np.asarray(design_params, dtype=np.float32).reshape(-1)
+    if d.size != 15:
+        raise ValueError(
+            f"Expected a 15D From Links design, got {d.size} values. "
+            "Legacy 12D checkpoints/candidates must be retrained or regenerated."
+        )
 
     joint_softness = d[0:3]
     link_lengths = d[3:7]
-    base_radius = float(d[7])
-    base_length = float(d[8])
-    tension = float(d[9])
-    ankle_wrap_radius = float(d[10])
-    ankle_stiffness = float(d[11])
+    joint_lengths = d[7:10]
+    base_radius = float(d[10])
+    base_length = float(d[11])
+    tension = float(d[12])
+    ankle_wrap_radius = float(d[13])
+    ankle_stiffness = float(d[14])
 
     v_list = link_lengths_to_v_list(
         link_lengths=link_lengths,
+        joint_lengths=joint_lengths,
         base_length=base_length,
         n_elements=n_elements,
     )
@@ -56,6 +73,10 @@ def design_to_dict(design_params, task_params=None, n_elements=100):
         "joint_softness": joint_softness.tolist(),
         "joint_softness_str": ",".join([f"{x:.6f}" for x in joint_softness]),
         "link_lengths": link_lengths.tolist(),
+        "link_lengths_str": ",".join([f"{100*x:.6g}" for x in link_lengths]),
+        "joint_lengths": joint_lengths.tolist(),
+        "joint_lengths_str": ",".join([f"{100*x:.6g}" for x in joint_lengths]),
+        "v_mode": "from_links",
         "v_list": v_list,
         "v_list_str": ",".join([str(x) for x in v_list]),
         "base_rad": base_radius,
@@ -77,11 +98,9 @@ def finger_forward(raw_params, args):
     """
     Convert raw optimizer params into:
       task_params   : (B, 2)  = [approach_deg, cyl_rad]
-      design_params : (B, 12)
+      design_params : (B, 15)
 
-    raw_params is 13D:
-      [0:12] design raw params
-      [12]   approach angle raw param
+    raw_params is 16D: 15 design parameters plus approach angle.
     """
     if raw_params.dim() == 1:
         raw_params = raw_params.unsqueeze(0)
@@ -101,34 +120,35 @@ def finger_forward(raw_params, args):
     )
 
     base_radius = sigmoid_to_range(
-        x[:, 7:8],
+        x[:, 10:11],
         args.base_radius_min,
         args.base_radius_max,
     )
 
     base_length = sigmoid_to_range(
-        x[:, 8:9],
+        x[:, 11:12],
         args.base_length_min,
         args.base_length_max,
     )
 
-    # Make 4 links sum to base_length.
-    link_lengths = raw_links / torch.sum(raw_links, dim=-1, keepdim=True) * base_length
+    joint_lengths = sigmoid_to_range(x[:, 7:10], args.joint_length_min, args.joint_length_max)
+    available = (base_length - joint_lengths.sum(dim=-1, keepdim=True)).clamp_min(1e-6)
+    link_lengths = raw_links / torch.sum(raw_links, dim=-1, keepdim=True) * available
 
     tension = sigmoid_to_range(
-        x[:, 9:10],
+        x[:, 12:13],
         args.tension_min,
         args.tension_max,
     )
 
     ankle_wrap_radius = sigmoid_to_range(
-        x[:, 10:11],
+        x[:, 13:14],
         args.ankle_wrap_min,
         args.ankle_wrap_max,
     )
 
     ankle_stiffness = sigmoid_to_range(
-        x[:, 11:12],
+        x[:, 14:15],
         args.ankle_stiff_min,
         args.ankle_stiff_max,
     )
@@ -137,6 +157,7 @@ def finger_forward(raw_params, args):
         [
             joint_softness,
             link_lengths,
+            joint_lengths,
             base_radius,
             base_length,
             tension,
@@ -147,7 +168,7 @@ def finger_forward(raw_params, args):
     )
 
     approach_deg = sigmoid_to_range(
-        x[:, 12:13],
+        x[:, 15:16],
         args.approach_deg_min,
         args.approach_deg_max,
     )
@@ -205,6 +226,8 @@ def save_finger(design_params, save_finger_dir, args, task_params=None):
         task_params=np.asarray([]) if task_params_one is None else task_params_one,
         joint_softness=np.asarray(design_dict["joint_softness"]),
         link_lengths=np.asarray(design_dict["link_lengths"]),
+        joint_lengths=np.asarray(design_dict["joint_lengths"]),
+        v_mode=np.asarray(["from_links"]),
         v_list=np.asarray(design_dict["v_list"]),
         base_rad=np.asarray([design_dict["base_rad"]]),
         base_len=np.asarray([design_dict["base_len"]]),

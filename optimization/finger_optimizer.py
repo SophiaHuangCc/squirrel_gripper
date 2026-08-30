@@ -43,7 +43,7 @@ def optimize_fingers(args, model, random_idx=80000):
     if args.load_initialization:
         print('loading initialization')
         initial_data = np.load(os.path.join(args.data_dir, '%d.npz' % random_idx), allow_pickle=True)
-        params_np = initial_data['raw_params']   # should be 13D if using approach optimization
+        params_np = initial_data['raw_params']   # 16D with From Links geometry and approach
         params = nn.Parameter(torch.Tensor(params_np).cuda(), requires_grad=True)
     else:
         print('using random initialization')
@@ -91,7 +91,7 @@ def optimize_fingers(args, model, random_idx=80000):
     for i in tqdm(range(args.num_epochs)):
         # finger_forward now returns:
         # task_params   = [approach_deg, cyl_rad]
-        # design_params = 12D physical design vector
+        # design_params = 15D physical From Links design vector
         task_params, design_params = finger_forward(params, args)
 
         pred = model(
@@ -104,10 +104,6 @@ def optimize_fingers(args, model, random_idx=80000):
         pred_contacts = pred[0, 0]
         pred_disturbance = pred[0, 1]
         pred_angular_span = pred[0, 2]
-        pred_curl_speed = pred[0, 3]
-        curl_quality_gate = torch.sigmoid(
-            (pred_contacts - args.curl_contact_gate) / args.curl_gate_temperature
-        )
 
         if args.optimization_loss == 'disturbance':
             loss = -pred_disturbance
@@ -133,20 +129,6 @@ def optimize_fingers(args, model, random_idx=80000):
                 + args.contact_weight * pred_contacts
                 + args.angular_span_weight * pred_angular_span
             )
-        elif args.optimization_loss == 'curl_speed':
-            loss = -pred_curl_speed
-
-        elif args.optimization_loss == 'disturbance_contact_span_speed':
-            quality = (
-                args.disturbance_weight * pred_disturbance
-                + args.contact_weight * pred_contacts
-                + args.angular_span_weight * pred_angular_span
-            )
-            loss = -(
-                quality
-                + args.curl_speed_weight * pred_curl_speed * curl_quality_gate
-            )
-
         else:
             raise ValueError('optimization loss not supported')
 
@@ -158,7 +140,6 @@ def optimize_fingers(args, model, random_idx=80000):
             'pred_contacts': pred_contacts.detach().cpu().item(),
             'pred_disturbance': pred_disturbance.detach().cpu().item(),
             'pred_angular_span': pred_angular_span.detach().cpu().item(),
-            'pred_curl_speed': pred_curl_speed.detach().cpu().item(),
             'opt_approach_deg': task_params[0, 0].detach().cpu().item(),
         })
 
@@ -188,7 +169,6 @@ def optimize_fingers(args, model, random_idx=80000):
             'Pred contacts:', pred_contacts.detach().cpu().item(),
             'Pred disturbance:', pred_disturbance.detach().cpu().item(),
             'Pred angular span:', pred_angular_span.detach().cpu().item(),
-            'Pred curl speed:', pred_curl_speed.detach().cpu().item(),
             'Optimized approach_deg:', task_params[0, 0].detach().cpu().item(),
         )
 
@@ -289,17 +269,19 @@ if __name__ == '__main__':
     if not hasattr(args, 'model_type'):
         args.model_type = 'profile_forward'
     if not hasattr(args, 'design_dim'):
-        args.design_dim = 13
+        args.design_dim = 15
+    if not hasattr(args, 'optimizer_dim'):
+        args.optimizer_dim = 16
     if not hasattr(args, 'task_dim'):
         args.task_dim = 2
     if not hasattr(args, 'init_dim'):
         args.init_dim = 3
     if not hasattr(args, 'output_dim'):
-        args.output_dim = 4
+        args.output_dim = 3
     if not hasattr(args, 'hidden_dim'):
         args.hidden_dim = 256
     if not hasattr(args, 'design_dim'):
-        args.design_dim = 13
+        args.design_dim = 15
 
     if not hasattr(args, 'finger_sample'):
         args.finger_sample = 'uniform'
@@ -327,12 +309,6 @@ if __name__ == '__main__':
         args.reg_weight = 0.0
     if not hasattr(args, 'angular_span_weight'):
         args.angular_span_weight = 0.5
-    if not hasattr(args, 'curl_speed_weight'):
-        args.curl_speed_weight = 0.1
-    if not hasattr(args, 'curl_contact_gate'):
-        args.curl_contact_gate = 0.3
-    if not hasattr(args, 'curl_gate_temperature'):
-        args.curl_gate_temperature = 0.05
 
     if not hasattr(args, 'approach_deg'):
         args.approach_deg = 45.0
@@ -350,6 +326,19 @@ if __name__ == '__main__':
         args.landing_speed = 0.0
     if not hasattr(args, 'initial_x_gap'):
         args.initial_x_gap = 0.06
+    defaults = {
+        'joint_soft_min': 0.0005, 'joint_soft_max': 0.05,
+        'link_min': 0.01, 'link_max': 0.13,
+        'joint_length_min': 0.005, 'joint_length_max': 0.03,
+        'base_radius_min': 0.01025, 'base_radius_max': 0.013,
+        'base_length_min': 0.15, 'base_length_max': 0.30,
+        'tension_min': 1.0, 'tension_max': 30.0,
+        'ankle_wrap_min': 0.015, 'ankle_wrap_max': 0.035,
+        'ankle_stiff_min': 300.0, 'ankle_stiff_max': 700.0,
+    }
+    for name, value in defaults.items():
+        if not hasattr(args, name):
+            setattr(args, name, value)
     if not hasattr(args, 'object_name'):
         args.object_name = 'cylinder'
     if not hasattr(args, 'device_id'):

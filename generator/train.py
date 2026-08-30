@@ -32,9 +32,6 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--save_every", type=int, default=25)
-    parser.add_argument("--curl_contact_ratio", type=float, default=0.8)
-    parser.add_argument("--curl_hold_time", type=float, default=0.2)
-    parser.add_argument("--curl_min_contacts", type=int, default=3)
     return parser.parse_args()
 
 
@@ -77,9 +74,6 @@ def main():
     dataset = SquirrelDiffusionDataset(
         dataset_dir=args.data_dir,
         bounds=bounds,
-        curl_contact_ratio=args.curl_contact_ratio,
-        curl_hold_time=args.curl_hold_time,
-        curl_min_contacts=args.curl_min_contacts,
     )
     val_len = max(1, int(len(dataset) * args.val_ratio))
     train_len = len(dataset) - val_len
@@ -105,7 +99,7 @@ def main():
 
     unet = ConditionalUnet1D(
         input_dim=1,
-        global_cond_dim=9,
+        global_cond_dim=8,
         down_dims=[128, 256],
         diffusion_step_embed_dim=32,
     )

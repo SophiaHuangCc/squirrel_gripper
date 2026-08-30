@@ -4,6 +4,10 @@ This repository simulates a tendon-driven squirrel finger, trains a neural
 surrogate of the simulation, optimizes finger designs through that surrogate,
 and verifies the strongest predicted candidates in the full simulator.
 
+For the controlled multi-scenario evaluation protocol and a plain-language
+explanation of designs, candidates, methods, and scenarios, see
+[`benchmarks/README.md`](benchmarks/README.md).
+
 The current workflow is:
 
 ```text
@@ -11,15 +15,15 @@ PyElastica simulations
         ↓
 train/test .npz dataset
         ↓
-4-output surrogate model
+3-output surrogate model
         ↓
 Adam or CMA-ES profile optimization
         ↓
 top-k full-simulation verification
 ```
 
-The active grasp metrics are contact count, disturbance resistance, angular
-contact span, and curl speed.
+The active grasp metrics are contact count, disturbance resistance, and angular
+contact span.
 
 ## Repository layout
 
@@ -28,7 +32,7 @@ contact span, and curl speed.
 - `TendonForces/parallel_runner_ray.py`: current randomized train/test dataset
   generator.
 - `dynamics/dataloader.py`: converts simulation archives into normalized model
-  inputs and four training targets.
+  inputs and three training targets.
 - `dynamics/main.py`: surrogate training and validation.
 - `dynamics/profile_forward_2d.py`: forward surrogate network.
 - `optimization/profile_optimization.py`: optimizes finger parameters against
@@ -37,6 +41,8 @@ contact span, and curl speed.
   objective definitions.
 - `optimization/evaluate_optimized_candidates.py`: selects predicted top-k
   designs and reruns them in `finger.py`.
+- `benchmarks/`: evaluates every fixed candidate design on the same versioned
+  scenario suite and produces candidate- and method-level comparisons.
 
 Run the commands below from the repository root, the directory containing
 `TendonForces`, `dynamics`, and `optimization`.
@@ -123,9 +129,8 @@ summary CSV, and scalar metrics but skips MP4, PNG/JPG, and interactive
 visualization generation.
 
 Each simulation archive contains the sampled physical parameters, complete
-time-dependent rod state, contact information, and final metrics. New archives
-also contain `contact_counts`, `curl_time`, `curl_time_norm`, and
-`curl_speed_score`.
+time-dependent rod state, contact information, final metrics, and the
+per-frame `contact_counts` history.
 
 ### Run one simulation
 
@@ -209,7 +214,7 @@ The surrogate receives 17 scalar values divided into three groups.
 | 1 | Landing speed | `speed / 1.0` |
 | 2 | Initial horizontal gap | `gap / 0.10` |
 
-### Predicted targets: 4 values
+### Predicted targets: 3 values
 
 The output ordering is fixed and must remain consistent between the dataset,
 checkpoint, and optimizer:
@@ -219,25 +224,10 @@ checkpoint, and optimizer:
 | 0 | `contact_norm` | `log(1 + num_contacts) / log(1 + n_elements)` |
 | 1 | `disturbance_score` | Mean directional resistance score from the simulated disturbances |
 | 2 | `angular_span_norm` | `clip(angular_span_degrees / 180, 0, 1)` |
-| 3 | `curl_speed_score` | `1 - clip(curl_time / final_time, 0, 1)` |
-
-`curl_time` is the earliest time at which contact count remains at or above
-
-```text
-max(curl_min_contacts, ceil(curl_contact_ratio × peak_contacts))
-```
-
-for at least `curl_hold_time`. The defaults are three contacts, an 80% peak
-ratio, and a 0.2-second hold. A trajectory that never meets the condition gets
-`curl_time = final_time` and `curl_speed_score = 0`.
-
-Older full `master_log_*.npz` archives do not need to be regenerated. If the
-curl fields are absent, `dynamics/dataloader.py` reconstructs the contact-count
-history from the saved rod positions and cylinder geometry.
 
 ## 3. Train the surrogate
 
-This is the command used for the current four-output training run:
+Train the three-output dynamics model with:
 
 ```bash
 python dynamics/main.py \
@@ -252,17 +242,13 @@ python dynamics/main.py \
   --patience 10 \
   --val_step 5 \
   --save_ckpt_step 500 \
-  --output_dim 4 \
-  --use_design_noise \
-  --curl_contact_ratio 0.8 \
-  --curl_hold_time 0.2 \
-  --curl_min_contacts 3
+  --output_dim 3 \
+  --use_design_noise
 ```
 
-`--output_dim 4` is required for curl-aware training and optimization.
-Three-output checkpoints from before curl speed was added are incompatible.
+Four-output checkpoints are intentionally incompatible and must be retrained.
 
-Training minimizes unweighted mean squared error over the four normalized
+Training minimizes unweighted mean squared error over the three normalized
 targets. Validation also reports per-output MAE, RMSE, R², Spearman
 correlation, and top-k ranking quality to W&B.
 
@@ -273,9 +259,8 @@ Checkpoint behavior:
 - `checkpoints/latest.pt` is a periodic training snapshot. It is newer in wall
   time but is not necessarily better on validation data.
 
-Because the model now predicts four outputs, its total loss cannot be compared
-directly to an older three-output model without evaluating both on the same
-targets and metric definition.
+The current three-output model is not checkpoint-compatible with earlier
+four-output experiments.
 
 To validate a checkpoint, note that the current validation entry point creates
 a model but does not automatically load `--checkpoint_path`; checkpoint-only
@@ -284,17 +269,14 @@ before relying on `--mode validate`.
 
 ## 4. Optimize finger profiles
 
-Run Adam optimization with the best four-output checkpoint:
+Run Adam optimization with the best three-output checkpoint:
 
 ```bash
 python optimization/profile_optimization.py \
   --checkpoint_path /home/real/Desktop/SquirrelGripper/ws/squirrel_gripper/checkpoints/best.pt \
   --num_epochs 100 \
   --batch_size 16 \
-  --output_dim 4 \
-  --curl_speed_weight 0.1 \
-  --curl_contact_gate 0.3 \
-  --curl_gate_temperature 0.05
+  --output_dim 3
 ```
 
 Run CMA-ES:
@@ -304,7 +286,7 @@ python optimization/profile_optimization.py \
   --checkpoint_path /home/real/Desktop/SquirrelGripper/ws/squirrel_gripper/checkpoints/best.pt \
   --num_epochs 100 \
   --batch_size 1 \
-  --output_dim 4 \
+  --output_dim 3 \
   --use_es
 ```
 
@@ -324,20 +306,9 @@ The script currently optimizes all of these objectives sequentially:
 | `angular_span_surrogate_only` | `0.5 S` |
 | `disturbance_span_surrogate_only` | `D + 0.5 S` |
 | `disturbance_contact_span_surrogate_only` | `D + 0.1 C + 0.5 S` |
-| `curl_speed_surrogate_only` | `V` |
-| `disturbance_contact_span_speed_surrogate_only` | `D + 0.1 C + 0.5 S + 0.1 V G(C)` |
 
-Here `C`, `D`, `S`, and `V` are predicted normalized contact, disturbance,
-angular span, and curl-speed outputs. The smooth quality gate is
-
-```text
-G(C) = sigmoid((C - curl_contact_gate) / curl_gate_temperature)
-```
-
-With the defaults, the speed reward is suppressed for predicted low-contact
-grasps. `curl_speed` alone is useful diagnostically, but the combined
-`disturbance_contact_span_speed` objective is the safer design objective
-because it retains grasp quality.
+Here `C`, `D`, and `S` are predicted normalized contact, disturbance, and
+angular-span outputs.
 
 ### Optimized variables and bounds
 
@@ -397,14 +368,14 @@ python optimization/evaluate_optimized_candidates.py \
   --output_dir optimization/runs/exp12/sim_verification \
   --top_k 3 \
   --num_cpus 3 \
-  --objectives disturbance_contact_span_speed,curl_speed
+  --objectives disturbance_contact_span
 ```
 
 Replace `exp12` with the optimization directory printed as `[OPT RUN DIR]`.
 If `--output_dir` is omitted, it defaults to
 `<optimization_dir>/sim_verification`.
 
-If `--objectives` is omitted, the evaluator processes all eight objectives.
+If `--objectives` is omitted, the evaluator processes all six objectives.
 For each requested objective it:
 
 1. Loads `<objective>_surrogate_only/optimized_candidates.npz`.
@@ -433,14 +404,12 @@ predicted metrics, and predicted objective scores.
 
 `verification_results.npz` contains those predictions together with the
 full-simulation metric dictionaries and paths. Important verified fields are
-`num_contacts`, `disturbance_resistance_score`, `angular_span`, `curl_time`,
-and `curl_speed_score`.
+`num_contacts`, `disturbance_resistance_score`, and `angular_span`.
 
 ## Current implementation notes
 
 - Always use `best.pt` unless intentionally inspecting a later training
-  snapshot. Both `best.pt` and `latest.pt` from the new run contain the fourth
-  curl output.
+  snapshot. New checkpoints contain exactly three outputs.
 - The correct filename is `latest.pt`, not `lastest.pt`.
 - `profile_optimization.py` currently forces CUDA with `.cuda()`.
 - `profile_optimization.py` currently ignores the requested `--save_dir` and

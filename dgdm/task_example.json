@@ -1,0 +1,17 @@
+{
+  "scenarios": [
+    [0.25, 0.4, 0.4, 0.0, 0.6, 0.5, 1.0],
+    [0.50, 0.6, 0.4, 0.0, 0.6, 0.5, 1.0],
+    [0.75, 0.8, 0.4, 0.0, 0.6, 0.5, 1.0]
+  ],
+  "scenario_weights": [0.25, 0.5, 0.25],
+  "target": {
+    "loss": "mse",
+    "channels": {
+      "contact_fraction": {"target": 0.6, "weight": 1.0},
+      "drag_left_contact_fraction": {"target": 0.6, "weight": 2.0},
+      "drag_right_contact_fraction": {"target": 0.6, "weight": 2.0},
+      "drag_down_contact_fraction": {"target": 0.6, "weight": 2.0}
+    }
+  }
+}

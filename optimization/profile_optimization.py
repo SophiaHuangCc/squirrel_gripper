@@ -82,21 +82,6 @@ def get_best_ids_all_metrics(objectives, opt_obj="disturbance"):
                 [objective["combined_score"] for objective in objectives]
             ),
         }
-    elif opt_obj == "curl_speed":
-        best_ids = {
-            "curl_speed_score": np.argmax(
-                [objective["curl_speed_score"] for objective in objectives]
-            ),
-        }
-    elif opt_obj == "disturbance_contact_span_speed":
-        best_ids = {
-            "combined_score": np.argmax(
-                [objective["combined_score"] for objective in objectives]
-            ),
-            "curl_speed_score": np.argmax(
-                [objective["curl_speed_score"] for objective in objectives]
-            ),
-        }
     else:
         raise ValueError("opt obj not supported")
 
@@ -122,8 +107,14 @@ def make_exp_dir(base_dir):
     
 
 def optimization(args):
-    input_spline_dim = 13   # 12 design params + 1 optimizable approach_deg
+    input_spline_dim = 16   # 15 From Links design params + approach_deg
     num_spline_points = 1
+    if args.device == "cuda" and torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif args.device == "mps" and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
 
     profile_model = ProfileForward2DModel(
         W=args.hidden_dim,
@@ -131,10 +122,10 @@ def optimization(args):
         design_ch=args.design_dim,
         init_ch=args.init_dim,
         output_ch=args.output_dim,
-    ).cuda()
+    ).to(device)
 
     print("loading profile network checkpoint from", args.checkpoint_path)
-    profile_model.load_state_dict(torch.load(args.checkpoint_path))
+    profile_model.load_state_dict(torch.load(args.checkpoint_path, map_location=device))
 
     for param in profile_model.parameters():
         param.requires_grad = False
@@ -154,8 +145,6 @@ def optimization(args):
         "angular_span",
         "disturbance_span",
         "disturbance_contact_span",
-        "curl_speed",
-        "disturbance_contact_span_speed",
     }
     unknown_objectives = set(objective_list) - supported_objectives
     if not objective_list or unknown_objectives:
@@ -176,7 +165,7 @@ def optimization(args):
         else:
             optimizer_cls = ProfileOptimizer
 
-        # One CMA individual should represent one 13D finger. CMA's population
+        # One CMA individual represents one 16D From Links finger.
         # supplies the multiple candidates. Passing the training/Adam batch size
         # here previously produced a coupled (batch_size * 13)-D search whose
         # loss was the mean over many fingers.
@@ -200,7 +189,7 @@ def optimization(args):
             grid_size=args.grid_size,
             object_vertices=None,
             seed=args.seed,
-            device=torch.device("cuda:0"),
+            device=device,
 
             approach_deg=args.approach_deg,
             cyl_radius=args.cyl_rad,
@@ -212,14 +201,13 @@ def optimization(args):
             disturbance_weight=args.disturbance_weight,
             reg_weight=args.reg_weight,
             angular_span_weight=args.angular_span_weight,
-            curl_speed_weight=args.curl_speed_weight,
-            curl_contact_gate=args.curl_contact_gate,
-            curl_gate_temperature=args.curl_gate_temperature,
 
             joint_soft_min=args.joint_soft_min,
             joint_soft_max=args.joint_soft_max,
             link_min=args.link_min,
             link_max=args.link_max,
+            joint_length_min=args.joint_length_min,
+            joint_length_max=args.joint_length_max,
             base_radius_min=args.base_radius_min,
             base_radius_max=args.base_radius_max,
             base_length_min=args.base_length_min,
@@ -233,6 +221,7 @@ def optimization(args):
 
             init_joint_softness=args.init_joint_softness,
             init_link_lengths=args.init_link_lengths,
+            init_joint_lengths=args.init_joint_lengths,
             init_base_radius=args.init_base_radius,
             init_base_length=args.init_base_length,
             init_tension=args.init_tension,
@@ -316,11 +305,11 @@ if __name__ == "__main__":
     if not hasattr(args, "task_dim"):
         args.task_dim = 2
     if not hasattr(args, "design_dim"):
-        args.design_dim = 12
+        args.design_dim = 15
     if not hasattr(args, "init_dim"):
         args.init_dim = 3
     if not hasattr(args, "output_dim"):
-        args.output_dim = 4
+        args.output_dim = 3
 
     if not hasattr(args, "batch_size"):
         args.batch_size = 16
@@ -360,21 +349,19 @@ if __name__ == "__main__":
         args.reg_weight = 0.0
     if not hasattr(args, "angular_span_weight"):
         args.angular_span_weight = 0.5
-    if not hasattr(args, "curl_speed_weight"):
-        args.curl_speed_weight = 0.1
-    if not hasattr(args, "curl_contact_gate"):
-        args.curl_contact_gate = 0.3
-    if not hasattr(args, "curl_gate_temperature"):
-        args.curl_gate_temperature = 0.05
 
     if not hasattr(args, "joint_soft_min"):
         args.joint_soft_min = 0.0005
     if not hasattr(args, "joint_soft_max"):
-        args.joint_soft_max = 0.005
+        args.joint_soft_max = 0.05
     if not hasattr(args, "link_min"):
         args.link_min = 0.02
     if not hasattr(args, "link_max"):
-        args.link_max = 0.10
+        args.link_max = 0.13
+    if not hasattr(args, "joint_length_min"):
+        args.joint_length_min = 0.005
+    if not hasattr(args, "joint_length_max"):
+        args.joint_length_max = 0.03
     if not hasattr(args, "base_radius_min"):
         args.base_radius_min = 0.01025
     if not hasattr(args, "base_radius_max"):
@@ -382,15 +369,15 @@ if __name__ == "__main__":
     if not hasattr(args, "base_length_min"):
         args.base_length_min = 0.15
     if not hasattr(args, "base_length_max"):
-        args.base_length_max = 0.25
+        args.base_length_max = 0.30
     if not hasattr(args, "tension_min"):
         args.tension_min = 1.0
     if not hasattr(args, "tension_max"):
-        args.tension_max = 6.0
+        args.tension_max = 30.0
     if not hasattr(args, "ankle_wrap_min"):
         args.ankle_wrap_min = 0.015
     if not hasattr(args, "ankle_wrap_max"):
-        args.ankle_wrap_max = 0.025
+        args.ankle_wrap_max = 0.035
     if not hasattr(args, "ankle_stiff_min"):
         args.ankle_stiff_min = 300.0
     if not hasattr(args, "ankle_stiff_max"):
@@ -399,7 +386,9 @@ if __name__ == "__main__":
     if not hasattr(args, "init_joint_softness"):
         args.init_joint_softness = [0.003, 0.003, 0.003]
     if not hasattr(args, "init_link_lengths"):
-        args.init_link_lengths = [0.06, 0.056, 0.044, 0.04]
+        args.init_link_lengths = [0.066, 0.02, 0.024, 0.03]
+    if not hasattr(args, "init_joint_lengths"):
+        args.init_joint_lengths = [0.02, 0.02, 0.02]
     if not hasattr(args, "init_base_radius"):
         args.init_base_radius = 0.01025
     if not hasattr(args, "init_base_length"):

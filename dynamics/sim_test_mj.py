@@ -40,12 +40,6 @@ def read_metric_from_npz(npz_path):
             "angular_span": float(
                 np.asarray(data.get("angular_span", [0.0])).reshape(-1)[0]
             ),
-            "curl_time": float(
-                np.asarray(data.get("curl_time", [np.inf])).reshape(-1)[0]
-            ),
-            "curl_speed_score": float(
-                np.asarray(data.get("curl_speed_score", [0.0])).reshape(-1)[0]
-            ),
             "n_elements": float(
                 np.asarray(data.get("n_elements", [100.0])).reshape(-1)[0]
             ),
@@ -99,8 +93,9 @@ def sim_test(
         "python3", "finger.py",
         "--approach_deg", str(approach_deg),
         "--cyl_rad", str(cyl_rad),
-        "--v_mode", "manual",
-        "--v_list", design["v_list_str"],
+        "--v_mode", "from_links",
+        "--link_lengths", design["link_lengths_str"],
+        "--joint_lengths", design["joint_lengths_str"],
         "--joint_softness", design["joint_softness_str"],
         "--base_rad", str(design["base_rad"]),
         "--base_len", str(design["base_len"]),

@@ -44,7 +44,7 @@ class ProfileForward2DModel(nn.Module):
         self,
         W=256,
         task_ch=2,
-        design_ch=12,
+        design_ch=15,
         init_ch=3,
         output_ch=3,
     ):

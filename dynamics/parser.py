@@ -17,8 +17,13 @@ def parse():
     # Model Hyperparameters
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--learning_rate", type=float, default=1e-4, help="Optimizer-only learning rate")
     parser.add_argument("--num_epochs", type=int, default=100)
     parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--hidden_dim", type=int, default=256)
+    parser.add_argument("--task_dim", type=int, default=2)
+    parser.add_argument("--design_dim", type=int, default=15)
+    parser.add_argument("--init_dim", type=int, default=3)
     parser.add_argument("--patience", type=int, default=10, help="Early stopping patience")
     
     # Architecture Specifics
@@ -39,7 +44,7 @@ def parse():
         "--cma_popsize",
         type=int,
         default=32,
-        help="Number of 13D candidate fingers evaluated per CMA-ES generation.",
+        help="Number of 16D From Links candidate fingers evaluated per CMA-ES generation.",
     )
     parser.add_argument(
         "--cma_raw_bound",
@@ -66,26 +71,10 @@ def parse():
         type=str,
         default=(
             "disturbance,disturbance_contact,contact,angular_span,"
-            "disturbance_span,disturbance_contact_span,curl_speed,"
-            "disturbance_contact_span_speed"
+            "disturbance_span,disturbance_contact_span"
         ),
         help="Comma-separated objectives to run in profile optimization.",
     )
-    parser.add_argument("--output_dim", type=int, default=4)
-    parser.add_argument("--curl_contact_ratio", type=float, default=0.8)
-    parser.add_argument("--curl_hold_time", type=float, default=0.2)
-    parser.add_argument("--curl_min_contacts", type=int, default=3)
-    parser.add_argument(
-        "--curl_speed_weight", type=float, default=0.1,
-        help="Weight of the gated curl-speed reward in the combined optimization objective.",
-    )
-    parser.add_argument(
-        "--curl_contact_gate", type=float, default=0.3,
-        help="Normalized predicted contact score at the midpoint of the speed quality gate.",
-    )
-    parser.add_argument(
-        "--curl_gate_temperature", type=float, default=0.05,
-        help="Softness of the predicted-contact gate applied to curl speed.",
-    )
+    parser.add_argument("--output_dim", type=int, default=3)
 
     return parser.parse_args()

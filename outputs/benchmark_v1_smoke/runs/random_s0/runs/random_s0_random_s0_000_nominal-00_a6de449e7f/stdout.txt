@@ -1,0 +1,58 @@
+[DISCRETIZATION] n_elements auto-set from base_length: 120 (1/mm resolution)
+[CROSS-SECTION] rectangular: width(y)=30.00mm thickness(z)=20.52mm | forward-curl I2=2.159e-08 (x2.483 vs circ), lateral I1=4.616e-08 (x5.309 vs circ) | contact_radius=10.26mm
+[V_FROM_LINKS] computed vertebra node indices: [10 39 90] from link_lengths(cm)=[1.83289, 4.10615, 7.68006, 4.62404] and joint_lengths(cm)=[0.541319 2.53318  2.78189 ]
+[JOINT 1] length=0.602 cm | center=2.104 cm | start=1.807 cm (node 9) | end=2.410 cm (node 12)
+[VISUALIZATION] Drawing red joint spans at nodes: [(9, 12), (32, 45), (83, 97)]
+[JOINTS] joint_softness ratios = [0.009395 0.001732 0.000604]
+[SOFT JOINTS] element size = 2.01 mm | joint lengths (elements) = [3, 13, 14] = [0.6, 2.61, 2.81] cm
+[CONTACT] Physical stiffness estimate based on E and element size: 6.77e+03 N/m
+
+==== RUNNING ====
+E=6.74e+06  G=2.26e+06  density=843.0  tension=25.86  cyl_radius=0.025
+contact: k=500.0 nu=20.0 mu=0.8 vel_damp=30
+[MODE] finger_only=False landing_motion=True landing_mode=prescribed
+[CONTACT SETUP] cyl_radius=0.025000 contact_radius=0.010258 threshold=0.035258
+damping_constant=0.1
+>>> MODE: Dynamic Approach at 45.0 degrees
+>>> LANDING MOTION: start height offset = +0.040 m
+[SOFT JOINTS] using mode 'from_links' at nodes: [10 39 90]
+[SOFT JOINTS] multipliers: [0.009395 0.001732 0.000604]
+[SOFT JOINTS] stiffness mode: bending_only
+>>> LANDING MOTION (prescribed): base downward drop speed=0.080 m/s over 0.040 m
+>>> PRESCRIBED LANDING: position prescribed, orientation free for ankle motion
+[TENDON] distal tendon anchor node: 120
+>>> LANDING MOTION: skipping BodyWeightForcing on proximal nodes
+[CONTACT SETUP] registering RodCylinderContact center=[ 0.025  0.    -0.03 ] axis(d3)=[0. 1. 0.]
+Final time of simulation is :  2.000000000035811
+final_contact_force shape: (121,)
+Final Base Position: [-0.05008309  0.         -0.04533643]
+Final Tip Position: [-0.02658873  0.         -0.09580122]
+Final Joint Positions: [[-0.03724231  0.         -0.06062749]
+ [ 0.00218269  0.         -0.08068002]
+ [-0.05578379  0.         -0.07854337]]
+[METRICS] Contact Points: 0; Body Mass: 3.00 N
+[CONTACT DEBUG] total_contact_node_hits_over_all_frames=145
+[CONTACT DEBUG] min_distance_to_cylinder_axis=0.031344 (radius=0.025000)
+[CURL] time=2.0000s speed_score=0.0000 threshold=8 peak=9 hold_frames=7
+[CONTACT] First contact frame=2  t=0.0667s
+[CONTACT] Max normal force over all frames: 1.282191 N
+[CONTACT] Max overlap over all frames: 0.003913 m
+[CONTACT WARNING] Large penetration detected. overlap=0.003913 m > warn=0.002000 m. Consider increasing --k_contact/--nu_contact, reducing --tension, or using --landing_mode force_driven.
+[CONTACT WARNING] Prescribed landing enforces a kinematic base path; this can still drive penetration under high tendon load.
+[CONTACT] Wrote /Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/benchmark_v1_smoke/runs/random_s0/runs/random_s0_random_s0_000_nominal-00_a6de449e7f/contact_log_20260829_000504_random_s0_random_s0_000_nominal-00_a6de449e7f.csv
+
+[CONTACT] Starting contact + disturbance checks for: /Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/benchmark_v1_smoke/runs/random_s0/runs/random_s0_random_s0_000_nominal-00_a6de449e7f/contact_log_20260829_000504_random_s0_random_s0_000_nominal-00_a6de449e7f.csv
+[CONTACT METRIC] Form closure condition NOT met (angular span <= 180°)
+
+[CONTACT METRICS]
+  Contacts: 1
+  Angular span: 0.0°
+  Total normal force: 0.096474 N
+  Max normal force: 0.096474 N
+  Total friction force: 0.077179 N
+  Contact count match with geometry-based metric: No
+
+[DISTURBANCE STABILITY CHECK]
+  Disturbance resistance score (directional): 0.500
+Archive Complete: /Users/sophiahuang/Desktop/SquirrelGripper/sg_ws/outputs/benchmark_v1_smoke/runs/random_s0/runs/random_s0_random_s0_000_nominal-00_a6de449e7f/master_log_20260829_000504_random_s0_random_s0_000_nominal-00_a6de449e7f.npz
+[DATA ONLY] Numeric logs saved; skipped all video and image generation.
