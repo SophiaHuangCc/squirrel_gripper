@@ -131,12 +131,22 @@ python generator/train.py \
   --num_inference_steps 20 \
   --learning_rate 1e-4 \
   --val_ratio 0.05 \
+  --patience 30 \
+  --min_delta 1e-5 \
   --save_every 25 \
+  --wandb_project squirrel-gripper-diffusion \
+  --wandb_mode online \
   --seed 0
 ```
 
 Both `conditional_diffusion` and `dgdm` use this same diffusion checkpoint.
 DGDM additionally uses the dynamics checkpoint during denoising.
+Diffusion training logs train/validation loss, learning rate, best validation
+loss, and early-stopping state to the separate `squirrel-gripper-diffusion`
+W&B project. Here, 500 is a maximum epoch budget; training stops earlier after
+30 epochs without a validation-loss decrease greater than `1e-5`. Set
+`--patience 0` to disable early stopping or `--wandb_mode offline` when the lab
+machine has no network.
 
 ### 4. Candidate-generation smoke test
 
