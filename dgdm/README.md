@@ -12,7 +12,7 @@ python dgdm/generate.py --prior dgdm/runs/prior/last.pt \
   --dynamics dgdm/runs/dynamics/best.pt --task dgdm/task_example.json
 ```
 
-Scenario columns are normalized `[approach_angle/90, cylinder_radius/0.05,
+Scenario columns are normalized `[approach_angle/90, landing_approach_angle/90, cylinder_radius/0.05,
 landing_height/0.10, landing_speed, initial_x_gap/0.10, friction, body_mass]`.
 Profile channel names are stored in every dynamics checkpoint. Archives lacking a
 signal use a zero training mask for that signal. This makes partial legacy data safe,

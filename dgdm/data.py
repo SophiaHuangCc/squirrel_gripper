@@ -96,7 +96,8 @@ def extract_scenario(z) -> np.ndarray:
     """Task-independent initial condition/object description used by dynamics only."""
     return np.asarray(
         [
-            _scalar(z, ("arg_approach_deg", "arg_landing_approach_deg")) / 90.0,
+            _scalar(z, ("arg_approach_deg",)) / 90.0,
+            _scalar(z, ("arg_landing_approach_deg",)) / 90.0,
             _scalar(z, ("cyl_radius", "arg_cyl_rad"), 0.015) / 0.05,
             _scalar(z, ("arg_landing_height",)) / 0.10,
             _scalar(z, ("arg_landing_speed",)),

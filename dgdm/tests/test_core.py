@@ -9,8 +9,8 @@ from dgdm.models import InteractionProfileModel, masked_profile_loss
 class DGDMCoreTest(unittest.TestCase):
     def test_profile_gradient_aggregates_scenarios(self):
         model = InteractionProfileModel(profile_steps=8, channels=len(PROFILE_CHANNELS), width=16)
-        designs = torch.randn(3, 15, requires_grad=True)
-        scenarios = ScenarioBatch(torch.zeros(4, 7), torch.tensor([1.0, 2.0, 3.0, 4.0]))
+        designs = torch.randn(3, 16, requires_grad=True)
+        scenarios = ScenarioBatch(torch.zeros(4, 8), torch.tensor([1.0, 2.0, 3.0, 4.0]))
         target = ProfileTarget.from_dict({"channels": {"contact_fraction": 0.5}}, steps=8)
         score = aggregate_profile_score(model, designs, scenarios, target)
         self.assertEqual(tuple(score.shape), (3,))

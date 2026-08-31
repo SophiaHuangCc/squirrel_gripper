@@ -8,7 +8,7 @@ from torch import nn
 class InteractionProfileModel(nn.Module):
     """Predicts an entire interaction trajectory from design and initial condition."""
 
-    def __init__(self, design_dim=15, scenario_dim=7, channels=18, profile_steps=32, width=256):
+    def __init__(self, design_dim=16, scenario_dim=8, channels=18, profile_steps=32, width=256):
         super().__init__()
         self.channels = int(channels)
         self.profile_steps = int(profile_steps)

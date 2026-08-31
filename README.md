@@ -247,6 +247,39 @@ Final tables and plots are written under `$BENCHMARK_DIR/summary/`, including
 `method_summary.csv`, `method_aggregate.csv`, `surrogate_calibration.csv`, and
 `method_comparison.png`.
 
+### 7. Render the best seed from each method
+
+After a completed benchmark, select each method's seed/candidate with the
+highest full-simulator mean utility and rerun the nominal scene with PyElastica
+video rendering enabled:
+
+```bash
+python -m benchmarks.render_best \
+  --benchmark_dir "$BENCHMARK_DIR" \
+  --scenario_ids nominal:00 \
+  --num_workers 1 \
+  --timeout 1800
+```
+
+The command reads `summary/method_summary.csv`; it does not use the surrogate
+score to decide the best seed. Rendered files are stored under
+`$BENCHMARK_DIR/best_seed_visualizations/runs/` in one directory per method.
+
+Available options on the same command are:
+
+- `--methods reference,adam,cma_es,conditional_diffusion,dgdm` renders only a
+  chosen method subset.
+- `--scenario_ids nominal:00,orientation:02,branch_offset:02` renders several
+  representative scenes. Pass `--scenario_ids ""` to render all 28 labeled
+  cells, which is expensive and usually unnecessary for qualitative figures.
+- `--dry_run` verifies candidate selection and generated PyElastica commands
+  without running the simulations.
+- `--output_dir PATH` changes the visualization output location.
+
+Selecting the best seed using benchmark utility is appropriate for qualitative
+visualization, but it is an oracle choice and must not replace the across-seed
+statistics in the quantitative method comparison.
+
 > **Current versus legacy paths:** the workflow above is the authoritative
 > 3-task/16-design benchmark pipeline. The standalone optimization notes below
 > document older scripts and checkpoint layouts; do not mix their legacy
