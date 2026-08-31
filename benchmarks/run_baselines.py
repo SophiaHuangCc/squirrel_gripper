@@ -1,8 +1,12 @@
 """Generate common baseline candidates and optionally run the simulation suite."""
 
 import argparse
+import csv
+import json
+import statistics
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from benchmarks.baselines.random_search import sample_feasible_designs
@@ -12,7 +16,21 @@ from benchmarks.baselines.surrogate_search import (
     adam_search, cma_es_search, load_surrogate, rank_designs, select_target_cells,
 )
 from benchmarks.candidates import load_candidates, save_candidates
-from benchmarks.protocol import DEFAULT_CONFIG, load_config
+from benchmarks.protocol import DEFAULT_CONFIG, expand_core_scenarios, load_config
+
+
+UTILITY_PROFILES = {
+    "contact_only": {
+        "disturbance_resistance_score": 0.0,
+        "contact_coverage_norm": 1.0,
+        "angular_span_norm": 0.0,
+    },
+    "disturbance_only": {
+        "disturbance_resistance_score": 1.0,
+        "contact_coverage_norm": 0.0,
+        "angular_span_norm": 0.0,
+    },
+}
 
 
 def parse_adapter(spec):
@@ -25,6 +43,82 @@ def parse_adapter(spec):
 def run_checked(command):
     print("[RUN]", " ".join(str(part) for part in command))
     subprocess.run(command, check=True)
+
+
+def replace_cli_option(argv, flag, value):
+    argv = list(argv)
+    if flag in argv:
+        index = argv.index(flag)
+        if index + 1 >= len(argv):
+            raise ValueError(f"{flag} is missing its value")
+        argv[index + 1] = str(value)
+    else:
+        argv.extend([flag, str(value)])
+    return argv
+
+
+def apply_utility_override(config, profile, custom_weights):
+    if profile != "combined" and custom_weights is not None:
+        raise ValueError("Choose either --utility_profile or --utility_weights, not both")
+    if custom_weights is not None:
+        values = [float(value) for value in custom_weights.split(",") if value.strip()]
+        if len(values) != 3:
+            raise ValueError("--utility_weights must be D,C,A")
+        if any(value < 0 for value in values) or abs(sum(values) - 1.0) > 1e-6:
+            raise ValueError("utility weights must be nonnegative and sum to 1")
+        weights = {
+            "disturbance_resistance_score": values[0],
+            "contact_coverage_norm": values[1],
+            "angular_span_norm": values[2],
+        }
+    elif profile in UTILITY_PROFILES:
+        weights = UTILITY_PROFILES[profile]
+    else:
+        weights = config["evaluation"]["utility_weights"]
+    config["evaluation"]["utility_weights"] = dict(weights)
+    config["evaluation"]["utility_profile"] = profile if custom_weights is None else "custom"
+    return weights
+
+
+def write_specialist_sweep_summary(output_dir, sweep_rows):
+    rows = []
+    for sweep in sweep_rows:
+        path = Path(sweep["output_dir"]) / "summary" / "method_summary.csv"
+        if not path.exists():
+            continue
+        with open(path, newline="", encoding="utf-8") as stream:
+            for row in csv.DictReader(stream):
+                rows.append({
+                    "target_scenario_id": sweep["scenario_id"],
+                    "target_approach_deg": sweep["params"]["approach_deg"],
+                    "target_cyl_rad": sweep["params"]["cyl_rad"],
+                    **row,
+                })
+    if not rows:
+        return
+    fields = list(rows[0])
+    with open(output_dir / "specialist_method_summary.csv", "w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row["method"], []).append(row)
+    aggregate = []
+    for method, method_rows in sorted(grouped.items()):
+        values = [float(row["best_mean_utility"]) for row in method_rows]
+        aggregate.append({
+            "method": method,
+            "num_target_seed_rows": len(values),
+            "num_specialist_targets": len({row["target_scenario_id"] for row in method_rows}),
+            "num_method_seeds": len({row["seed"] for row in method_rows}),
+            "mean_target_utility": sum(values) / len(values),
+            "std_target_utility": statistics.pstdev(values),
+        })
+    with open(output_dir / "specialist_method_aggregate.csv", "w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(aggregate[0]))
+        writer.writeheader()
+        writer.writerows(aggregate)
 
 
 def main():
@@ -45,12 +139,26 @@ def main():
         "--generalist", action="store_true",
         help="Optimize mean surrogate utility over all core scenarios.",
     )
+    parser.add_argument(
+        "--utility_profile",
+        choices=("combined", "contact_only", "disturbance_only"),
+        default="combined",
+        help="Selection and evaluation objective; combined uses the config weights.",
+    )
+    parser.add_argument(
+        "--utility_weights", type=str, default=None, metavar="D,C,A",
+        help="Custom nonnegative disturbance, contact, angular weights summing to one.",
+    )
     parser.add_argument("--adam_steps", type=int, default=300)
     parser.add_argument("--adam_lr", type=float, default=0.03)
     parser.add_argument("--cma_generations", type=int, default=100)
     parser.add_argument("--cma_popsize", type=int, default=32)
     parser.add_argument("--cma_sigma", type=float, default=0.5)
     parser.add_argument("--diffusion_checkpoint", type=Path, default=None)
+    parser.add_argument(
+        "--unconditional_diffusion_checkpoint", type=Path, default=None,
+        help="Checkpoint trained with generator/train.py --conditioning unconditional.",
+    )
     parser.add_argument("--diffusion_num_samples", type=int, default=256)
     parser.add_argument("--diffusion_batch_size", type=int, default=256)
     parser.add_argument("--diffusion_inference_steps", type=int, default=20)
@@ -72,6 +180,13 @@ def main():
     )
     parser.add_argument("--run_benchmark", action="store_true")
     parser.add_argument("--benchmark_top_k", type=int, default=1)
+    parser.add_argument(
+        "--evaluation_scope", choices=("auto", "target", "all"), default="auto",
+        help=(
+            "auto evaluates a specialist only on its selection target and a generalist on all cells; "
+            "target always evaluates selection cells; all measures transfer over the complete grid"
+        ),
+    )
     parser.add_argument("--families", type=str, default="")
     parser.add_argument("--num_workers", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=1800.0)
@@ -79,7 +194,62 @@ def main():
     parser.add_argument("--dry_run", action="store_true")
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    source_config = args.config.resolve()
+    config = load_config(source_config)
+    weights = apply_utility_override(config, args.utility_profile, args.utility_weights)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    effective_config = args.output_dir / "effective_config.json"
+    effective_config.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    args.config = effective_config.resolve()
+    print(f"[UTILITY] D={weights['disturbance_resistance_score']:.3f} "
+          f"C={weights['contact_coverage_norm']:.3f} A={weights['angular_span_norm']:.3f}")
+    print(f"[CONFIG] source={source_config} effective={args.config}")
+
+    if args.target_scenario_id == "all":
+        if args.generalist or args.target_family is not None:
+            raise ValueError("--target_scenario_id all cannot be combined with another target mode")
+        cells = expand_core_scenarios(config)
+        sweep_root = args.output_dir / "specialists"
+        sweep_rows = []
+        for cell in cells:
+            scenario_id = cell["scenario_id"]
+            cell_dir = sweep_root / scenario_id.replace(":", "-")
+            child_argv = list(sys.argv[1:])
+            child_argv = replace_cli_option(child_argv, "--output_dir", cell_dir)
+            child_argv = replace_cli_option(child_argv, "--config", args.config)
+            child_argv = replace_cli_option(child_argv, "--target_scenario_id", scenario_id)
+            run_checked([sys.executable, "-m", "benchmarks.run_baselines", *child_argv])
+            sweep_rows.append({
+                "scenario_id": scenario_id,
+                "params": cell["params"],
+                "output_dir": str(cell_dir.resolve()),
+            })
+        (args.output_dir / "specialist_sweep.json").write_text(
+            json.dumps({
+                "source_config": str(source_config),
+                "effective_config": str(args.config),
+                "utility_weights": weights,
+                "num_specialist_targets": len(cells),
+                "specialists": sweep_rows,
+            }, indent=2),
+            encoding="utf-8",
+        )
+        if args.run_benchmark and not args.dry_run:
+            write_specialist_sweep_summary(args.output_dir, sweep_rows)
+        print(f"[SPECIALIST SWEEP] completed {len(cells)} targets under {sweep_root}")
+        return
+    if sum((args.target_scenario_id is not None, args.target_family is not None, args.generalist)) > 1:
+        raise ValueError("Choose only one of --target_scenario_id, --target_family, or --generalist")
+    if int(config.get("schema_version", 1)) >= 2 and (
+        args.target_family is not None or args.retrieval_family is not None
+    ):
+        raise ValueError(
+            "Family specialists are not part of the V2 approach/radius protocol. "
+            "Use --target_scenario_id for a specialist or --generalist for the complete grid."
+        )
+    selected_target_cells = select_target_cells(
+        config, args.target_scenario_id, args.target_family, args.generalist
+    )
     budget = args.candidate_budget or int(config["evaluation"]["candidate_budget"])
     seeds = (
         [int(value) for value in args.seeds.split(",") if value.strip()]
@@ -89,30 +259,43 @@ def main():
     methods = {value.strip() for value in args.methods.split(",") if value.strip()}
     allowed_methods = {
         "reference", "random", "random_search", "retrieval", "adam", "cma_es",
-        "conditional_diffusion", "dgdm",
+        "conditional_diffusion", "dgdm", "unconditional_diffusion", "unconditional_dgdm",
     }
     unknown_methods = methods - allowed_methods
     if unknown_methods:
         raise ValueError(f"Unknown --methods values: {sorted(unknown_methods)}")
-    if sum((args.target_scenario_id is not None, args.target_family is not None, args.generalist)) > 1:
-        raise ValueError("Choose only one of --target_scenario_id, --target_family, or --generalist")
-    args.output_dir.mkdir(parents=True, exist_ok=True)
     candidate_dir = args.output_dir / "candidates"
     candidate_dir.mkdir(exist_ok=True)
     candidate_files = []
+    proposal_times = []
+
+    def record_proposal_time(method, seed, started, path):
+        elapsed = time.perf_counter() - started
+        proposal_times.append({
+            "method": method,
+            "seed": int(seed),
+            "proposal_elapsed_seconds": elapsed,
+            "candidate_file": str(path.resolve()),
+        })
+        return elapsed
 
     if "reference" in methods:
+        started = time.perf_counter()
         path = candidate_dir / "reference_s0.npz"
         save_candidates(path, reference_design(), "reference", seed=0, candidate_ids=["manufactured_runsh"])
         candidate_files.append(path)
+        record_proposal_time("reference", 0, started, path)
 
     if "random" in methods:
         for seed in seeds:
+            started = time.perf_counter()
             path = candidate_dir / f"random_s{seed}.npz"
             save_candidates(path, sample_feasible_designs(budget, seed), "random", seed=seed)
             candidate_files.append(path)
+            record_proposal_time("random", seed, started, path)
 
     if "retrieval" in methods:
+        started = time.perf_counter()
         if args.retrieval_data_dir is None:
             raise ValueError("--retrieval_data_dir is required when retrieval is enabled")
         selected = retrieve(
@@ -137,6 +320,7 @@ def main():
             },
         )
         candidate_files.append(path)
+        record_proposal_time("retrieval", 0, started, path)
 
     search_methods = methods.intersection({"random_search", "adam", "cma_es"})
     if search_methods:
@@ -160,6 +344,7 @@ def main():
             cma_generations = max(1, args.surrogate_eval_budget // (effective_popsize * target_count))
         for seed in seeds:
             if "random_search" in search_methods:
+                started = time.perf_counter()
                 pool_size = max(random_pool_size, budget)
                 pool = sample_feasible_designs(pool_size, seed)
                 result = rank_designs(
@@ -176,10 +361,13 @@ def main():
                         "model_evaluations": result.model_evaluations,
                         "target_scenario_ids": result.target_scenario_ids,
                         "selection_rule": "surrogate_mean_utility",
+                        "proposal_elapsed_seconds": time.perf_counter() - started,
                     },
                 )
                 candidate_files.append(path)
+                record_proposal_time("random_search", seed, started, path)
             if "adam" in search_methods:
+                started = time.perf_counter()
                 result = adam_search(
                     surrogate, config, budget, seed,
                     num_steps=adam_steps, learning_rate=args.adam_lr,
@@ -194,10 +382,13 @@ def main():
                         "model_evaluations": result.model_evaluations,
                         "target_scenario_ids": result.target_scenario_ids,
                         "selection_rule": "surrogate_mean_utility",
+                        "proposal_elapsed_seconds": time.perf_counter() - started,
                     },
                 )
                 candidate_files.append(path)
+                record_proposal_time("adam", seed, started, path)
             if "cma_es" in search_methods:
+                started = time.perf_counter()
                 result = cma_es_search(
                     surrogate, config, budget, seed,
                     num_generations=cma_generations, popsize=args.cma_popsize,
@@ -212,29 +403,60 @@ def main():
                         "model_evaluations": result.model_evaluations,
                         "target_scenario_ids": result.target_scenario_ids,
                         "selection_rule": "surrogate_mean_utility",
+                        "proposal_elapsed_seconds": time.perf_counter() - started,
                     },
                 )
                 candidate_files.append(path)
+                record_proposal_time("cma_es", seed, started, path)
 
-    diffusion_methods = methods.intersection({"conditional_diffusion", "dgdm"})
+    diffusion_methods = methods.intersection({
+        "conditional_diffusion", "dgdm", "unconditional_diffusion", "unconditional_dgdm",
+    })
     if diffusion_methods:
-        if args.diffusion_checkpoint is None:
-            raise ValueError("--diffusion_checkpoint is required for diffusion methods")
+        conditional_methods = diffusion_methods.intersection({"conditional_diffusion", "dgdm"})
+        unconditional_methods = diffusion_methods.intersection({
+            "unconditional_diffusion", "unconditional_dgdm",
+        })
+        if conditional_methods and args.diffusion_checkpoint is None:
+            raise ValueError("--diffusion_checkpoint is required for conditional diffusion methods")
+        if unconditional_methods and args.unconditional_diffusion_checkpoint is None:
+            raise ValueError(
+                "--unconditional_diffusion_checkpoint is required for unconditional diffusion methods"
+            )
         if args.dynamics_checkpoint is None:
             raise ValueError("--dynamics_checkpoint is required to rank diffusion candidates")
         from benchmarks.baselines.diffusion_search import diffusion_search, load_diffusion
 
         if not search_methods:
             surrogate = load_surrogate(args.dynamics_checkpoint, device=args.device)
-        diffusion_model = load_diffusion(
-            args.diffusion_checkpoint, device=args.device,
-            num_inference_steps=args.diffusion_inference_steps,
-        )
+        diffusion_models = {}
+        if conditional_methods:
+            diffusion_models["conditional"] = load_diffusion(
+                args.diffusion_checkpoint, device=args.device,
+                num_inference_steps=args.diffusion_inference_steps,
+                expected_conditioning="conditional",
+            )
+        if unconditional_methods:
+            diffusion_models["unconditional"] = load_diffusion(
+                args.unconditional_diffusion_checkpoint, device=args.device,
+                num_inference_steps=args.diffusion_inference_steps,
+                expected_conditioning="unconditional",
+            )
         for seed in seeds:
             for method in sorted(diffusion_methods):
-                guidance_scale = 0.0 if method == "conditional_diffusion" else args.dgdm_guidance_scale
+                started = time.perf_counter()
+                conditioning_mode = (
+                    "unconditional" if method.startswith("unconditional_") else "conditional"
+                )
+                guided = method in {"dgdm", "unconditional_dgdm"}
+                guidance_scale = args.dgdm_guidance_scale if guided else 0.0
+                checkpoint_path = (
+                    args.unconditional_diffusion_checkpoint
+                    if conditioning_mode == "unconditional"
+                    else args.diffusion_checkpoint
+                )
                 result = diffusion_search(
-                    diffusion_model, surrogate, config, budget,
+                    diffusion_models[conditioning_mode], surrogate, config, budget,
                     num_samples=args.diffusion_num_samples, seed=seed,
                     batch_size=args.diffusion_batch_size, guidance_scale=guidance_scale,
                     num_inference_steps=args.diffusion_inference_steps,
@@ -248,7 +470,8 @@ def main():
                 save_candidates(
                     path, result.designs, method, seed=seed, scores=result.scores,
                     metadata={
-                        "diffusion_checkpoint": str(args.diffusion_checkpoint.resolve()),
+                        "diffusion_checkpoint": str(checkpoint_path.resolve()),
+                        "conditioning_mode": conditioning_mode,
                         "dynamics_checkpoint": str(args.dynamics_checkpoint.resolve()),
                         "guidance_scale": guidance_scale,
                         "num_samples": args.diffusion_num_samples,
@@ -257,18 +480,22 @@ def main():
                         "target_scenario_ids": result.target_scenario_ids,
                         "selection_rule": "surrogate_benchmark_utility",
                         "proposal_conditioning": (
-                            "scenario_set_centroid" if len(result.target_scenario_ids) > 1
-                            else "exact_scenario"
+                            "none" if conditioning_mode == "unconditional" else
+                            ("scenario_set_centroid" if len(result.target_scenario_ids) > 1
+                             else "exact_scenario")
                         ),
                         "guidance_aggregation": (
                             "mean_over_target_scenarios" if guidance_scale > 0
                             else "none"
                         ),
+                        "proposal_elapsed_seconds": time.perf_counter() - started,
                     },
                 )
                 candidate_files.append(path)
+                record_proposal_time(method, seed, started, path)
 
     for spec in args.adapt:
+        started = time.perf_counter()
         method, source = parse_adapter(spec)
         adapted = load_candidates(source, method=method, top_k=budget)
         path = candidate_dir / f"{method}_s{adapted['seed']}.npz"
@@ -278,12 +505,18 @@ def main():
             metadata={"adapted_from": str(source.resolve())},
         )
         candidate_files.append(path)
+        record_proposal_time(method, adapted["seed"], started, path)
 
     if not candidate_files:
         raise ValueError("No candidate files were generated")
     print("[CANDIDATES]")
     for path in candidate_files:
         print(path.resolve())
+    if proposal_times:
+        with open(args.output_dir / "proposal_times.csv", "w", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(proposal_times[0]))
+            writer.writeheader()
+            writer.writerows(proposal_times)
     if not args.run_benchmark:
         return
 
@@ -302,6 +535,13 @@ def main():
         ]
         if args.families:
             command.extend(["--families", args.families])
+        if args.evaluation_scope == "target" or (
+            args.evaluation_scope == "auto" and not args.generalist
+        ):
+            command.extend([
+                "--scenario_ids",
+                ",".join(cell["scenario_id"] for cell in selected_target_cells),
+            ])
         if args.render:
             command.append("--render")
         if args.dry_run:

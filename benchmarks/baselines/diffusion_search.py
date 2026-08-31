@@ -1,4 +1,4 @@
-"""Seeded conditional-diffusion and dynamics-guided proposal baselines."""
+"""Seeded conditional/unconditional diffusion and dynamics-guided baselines."""
 
 from pathlib import Path
 
@@ -12,10 +12,18 @@ from generator.diffusion import SquirrelDesignDiffusion, make_condition_batch
 from generator.diffusion_utils import ConditionalUnet1D
 
 
-def load_diffusion(checkpoint_path, device="cpu", num_inference_steps=20):
+def load_diffusion(
+    checkpoint_path, device="cpu", num_inference_steps=20, expected_conditioning=None,
+):
     checkpoint_path = Path(checkpoint_path)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     checkpoint_args = checkpoint.get("args", {})
+    conditioning_mode = checkpoint_args.get("conditioning", "conditional")
+    if expected_conditioning is not None and conditioning_mode != expected_conditioning:
+        raise ValueError(
+            f"Diffusion checkpoint {checkpoint_path} is {conditioning_mode!r}, but "
+            f"{expected_conditioning!r} conditioning was requested. Train/use the matching checkpoint."
+        )
     bounds_path = checkpoint_path.parent / "design_bounds.npz"
     bounds = DesignBounds.from_npz(str(bounds_path)) if bounds_path.exists() else DesignBounds.defaults()
     network = ConditionalUnet1D(
@@ -29,6 +37,7 @@ def load_diffusion(checkpoint_path, device="cpu", num_inference_steps=20):
     model = SquirrelDesignDiffusion(
         noise_pred_net=network, noise_scheduler=scheduler, bounds=bounds,
         num_inference_steps=num_inference_steps,
+        conditioning_mode=conditioning_mode,
     ).to(device)
     model.load_state_dict(checkpoint.get("model", checkpoint), strict=False)
     if "ema" in checkpoint:
@@ -95,6 +104,7 @@ def diffusion_search(
             generator=generator,
             guidance_task_params=guidance_task if guidance_scale > 0 else None,
             guidance_init_config=guidance_init if guidance_scale > 0 else None,
+            guidance_weights=config["evaluation"]["utility_weights"],
         )
         generated.append(output["design_physical"].detach().cpu().numpy())
         remaining -= current

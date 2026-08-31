@@ -8,7 +8,7 @@ import statistics
 from pathlib import Path
 
 
-DEFAULT_CONFIG = Path(__file__).with_name("scenarios_v1.json")
+DEFAULT_CONFIG = Path(__file__).with_name("scenarios_v2.json")
 
 
 def load_config(path=DEFAULT_CONFIG):
@@ -76,6 +76,13 @@ def aggregate_records(records, config):
         name: sum(normalized_metrics(record["metrics"])[name] for record in scored) / len(scored)
         for name in component_names
     }
+    raw_metric_means = {
+        "num_contacts": sum(float(record["metrics"]["num_contacts"]) for record in scored) / len(scored),
+        "disturbance_resistance_score": sum(
+            float(record["metrics"]["disturbance_resistance_score"]) for record in scored
+        ) / len(scored),
+        "angular_span_deg": sum(float(record["metrics"]["angular_span"]) for record in scored) / len(scored),
+    }
     return {
         "num_rollouts": len(values),
         "mean_utility": sum(values) / len(values),
@@ -86,6 +93,7 @@ def aggregate_records(records, config):
         "worst_family_utility": min(family_means.values()),
         "family_mean_utility": family_means,
         "component_mean": component_means,
+        "raw_metric_mean": raw_metric_means,
     }
 
 

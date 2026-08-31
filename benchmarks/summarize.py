@@ -69,6 +69,10 @@ def summarize_candidates(records, config, bootstrap_iterations):
             row["mean_utility_ci_high"] = high
             row["family_mean_utility"] = json.dumps(summary["family_mean_utility"], sort_keys=True)
             row["component_mean"] = json.dumps(summary["component_mean"], sort_keys=True)
+            row["mean_num_contacts"] = summary["raw_metric_mean"]["num_contacts"]
+            row["mean_disturbance_resistance"] = summary["raw_metric_mean"]["disturbance_resistance_score"]
+            row["mean_angular_span_deg"] = summary["raw_metric_mean"]["angular_span_deg"]
+            row["raw_metric_mean"] = json.dumps(summary["raw_metric_mean"], sort_keys=True)
         rows.append(row)
     return rows
 
@@ -91,6 +95,9 @@ def summarize_methods(candidate_rows):
                 "best_cvar20_utility": best["cvar20_utility"],
                 "best_worst_family_utility": best["worst_family_utility"],
                 "candidate_mean_utility": float(np.mean([x["mean_utility"] for x in candidates])),
+                "best_mean_num_contacts": best["mean_num_contacts"],
+                "best_mean_disturbance_resistance": best["mean_disturbance_resistance"],
+                "best_mean_angular_span_deg": best["mean_angular_span_deg"],
                 "total_failure_rate": float(
                     sum(x["failure_rate"] * x["rollouts_total"] for x in candidates)
                     / sum(x["rollouts_total"] for x in candidates)

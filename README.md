@@ -117,7 +117,7 @@ python dynamics/main.py \
 Use `$DYNAMICS_DIR/best.pt` for candidate selection. Checkpoints from the old
 2-task/15-design contract are incompatible and must not be reused.
 
-### 3. Train conditional diffusion
+### 3. Train conditional and unconditional diffusion
 
 ```bash
 python generator/train.py \
@@ -139,8 +139,47 @@ python generator/train.py \
   --seed 0
 ```
 
-Both `conditional_diffusion` and `dgdm` use this same diffusion checkpoint.
-DGDM additionally uses the dynamics checkpoint during denoising.
+The command above trains conditional diffusion (the default). Train the
+task-agnostic prior for the DGDM ablation into a separate directory:
+
+```bash
+export UNCONDITIONAL_DIFFUSION_DIR="$PROJECT_DIR/outputs/from_links_v2/unconditional_diffusion"
+
+python generator/train.py \
+  --conditioning unconditional \
+  --device cuda \
+  --data_dir "$DATASET_DIR/train" \
+  --save_dir "$UNCONDITIONAL_DIFFUSION_DIR" \
+  --batch_size 256 \
+  --num_workers 8 \
+  --num_epochs 500 \
+  --num_train_timesteps 100 \
+  --num_inference_steps 20 \
+  --learning_rate 1e-4 \
+  --val_ratio 0.05 \
+  --patience 30 \
+  --min_delta 1e-5 \
+  --save_every 25 \
+  --wandb_project squirrel-gripper-unconditional-diffusion \
+  --wandb_mode online \
+  --seed 0
+```
+
+The four diffusion methods form a 2 x 2 ablation:
+
+| Method | Prior | Dynamics gradient during denoising |
+| --- | --- | --- |
+| `unconditional_diffusion` | task-agnostic | no |
+| `unconditional_dgdm` | task-agnostic | yes |
+| `conditional_diffusion` | task-conditioned | no |
+| `dgdm` | task-conditioned | yes |
+
+`conditional_diffusion` and `dgdm` use `$DIFFUSION_DIR/best.pt`;
+`unconditional_diffusion` and `unconditional_dgdm` use
+`$UNCONDITIONAL_DIFFUSION_DIR/best.pt`. Both guided methods additionally use
+the dynamics checkpoint during denoising. All diffusion proposals are finally
+ranked by the same dynamics surrogate, ensuring the same candidate-selection
+protocol.
 Diffusion training logs train/validation loss, learning rate, best validation
 loss, and early-stopping state to the separate `squirrel-gripper-diffusion`
 W&B project. Here, 500 is a maximum epoch budget; training stops earlier after
@@ -156,12 +195,13 @@ not start the expensive PyElastica scenario rollouts:
 ```bash
 python -m benchmarks.run_baselines \
   --output_dir "${BENCHMARK_DIR}_smoke" \
-  --methods reference,random,random_search,retrieval,adam,cma_es,conditional_diffusion,dgdm \
+  --methods reference,random,random_search,retrieval,adam,cma_es,unconditional_diffusion,unconditional_dgdm,conditional_diffusion,dgdm \
   --candidate_budget 2 \
   --seeds 0 \
   --retrieval_data_dir "$DATASET_DIR/train" \
   --dynamics_checkpoint "$DYNAMICS_DIR/best.pt" \
   --diffusion_checkpoint "$DIFFUSION_DIR/best.pt" \
+  --unconditional_diffusion_checkpoint "$UNCONDITIONAL_DIFFUSION_DIR/best.pt" \
   --device cuda \
   --random_pool_size 32 \
   --adam_steps 10 \
@@ -180,18 +220,46 @@ an option on this command, not a separate benchmark protocol.
 
 ### 5. Choose the design-selection protocol
 
+Choose the scenario grid first. The full V2 grid is the default; the compact
+grid uses the training-supported minimum, center, and maximum of each retained
+environment variable:
+
+```bash
+# Full 5 x 5 grid (25 cells)
+export BENCHMARK_CONFIG="$PROJECT_DIR/benchmarks/scenarios_v2.json"
+
+# Or compact 3 x 3 grid (9 cells)
+export BENCHMARK_CONFIG="$PROJECT_DIR/benchmarks/scenarios_v2_compact.json"
+```
+
+Both configs use the primary utility
+`U = 0.55 disturbance + 0.35 contact + 0.10 angular span`. Family specialists
+are not part of V2; use an exact cell or the complete-grid generalist.
+
+Objective ablations use `--utility_profile combined`, `contact_only`, or
+`disturbance_only`. The first uses the config weights; the other two use
+`(D,C,A)=(0,1,0)` and `(1,0,0)`. A custom profile can instead be supplied as
+`--utility_weights D,C,A`; values must be nonnegative and sum to one. Every run
+saves the resolved weights in `effective_config.json`.
+
 Set `TARGET_ARGS` once before the full command:
 
 | Protocol | Setting | Meaning |
 | --- | --- | --- |
-| Default nominal specialist | `TARGET_ARGS=()` | Select for `nominal:00` |
-| Exact-cell specialist | `TARGET_ARGS=(--target_scenario_id orientation:08)` | Select for one named cell |
-| Family specialist | `TARGET_ARGS=(--target_family orientation)` | Select for mean utility over one family |
-| Generalist | `TARGET_ARGS=(--generalist)` | Select for mean utility over all 28 labeled cells |
+| Default center specialist | `TARGET_ARGS=()` | Select for `approach_radius:12` = 45° and 0.025 m |
+| Exact-cell specialist | `TARGET_ARGS=(--target_scenario_id approach_radius:04)` | Select for one named angle/radius cell |
+| Generalist | `TARGET_ARGS=(--generalist)` | Select for mean utility over all 25 cells |
 
-These options are mutually exclusive. In every case, `--run_benchmark`
-evaluates the selected frozen top-1 design on the common 28-cell suite. Thus a
-specialist is selected on its target but still receives the full transfer test.
+These options are mutually exclusive. With the default `--evaluation_scope
+auto`, an exact specialist is evaluated only on its target cell, while a
+generalist is evaluated over the complete 25-cell grid. Add
+`--evaluation_scope all` only when a specialist transfer study is desired.
+Use `TARGET_ARGS=(--target_scenario_id all)` to run one independent exact
+specialist experiment for every cell in the selected 9- or 25-cell grid. The
+outputs are separated under `specialists/`; after real simulations complete,
+`specialist_method_summary.csv` and `specialist_method_aggregate.csv` combine
+the per-target results without treating different specialist fingers as one
+design.
 
 ### 6. Run the full selected protocol
 
@@ -201,12 +269,14 @@ family, or generalist experiments:
 ```bash
 python -m benchmarks.run_baselines \
   --output_dir "$BENCHMARK_DIR" \
-  --methods reference,random,random_search,retrieval,adam,cma_es,conditional_diffusion,dgdm \
+  --config "$BENCHMARK_CONFIG" \
+  --methods reference,random,random_search,retrieval,adam,cma_es,unconditional_diffusion,unconditional_dgdm,conditional_diffusion,dgdm \
   --candidate_budget 16 \
   --seeds 0,1,2,3,4 \
   --retrieval_data_dir "$DATASET_DIR/train" \
   --dynamics_checkpoint "$DYNAMICS_DIR/best.pt" \
   --diffusion_checkpoint "$DIFFUSION_DIR/best.pt" \
+  --unconditional_diffusion_checkpoint "$UNCONDITIONAL_DIFFUSION_DIR/best.pt" \
   --device cuda \
   --random_pool_size 256 \
   --adam_steps 300 \
@@ -231,21 +301,72 @@ mistaken for resumable copies of another experiment. For example, append
 
 Useful options on this single command are:
 
-- `--families orientation,branch_offset` limits the *simulation evaluation*
-  suite; it does not change which conditions select the candidate.
+- `--evaluation_scope auto` evaluates a specialist on its target and a
+  generalist on all 25 cells. `all` explicitly requests specialist transfer.
 - `--benchmark_top_k K` evaluates multiple candidates and is an oracle
   diagnostic. Keep `1` for the primary deployable comparison.
 - `--render` enables simulator videos. Without it, benchmark runs disable video
   generation to save time and storage.
 - `--surrogate_eval_budget N` overrides method-specific search lengths to
   approximately equalize surrogate evaluations. Record the chosen value when
-  using it; its effect depends on whether the target contains 1, 9, or 28 cells.
+  using it; its effect depends on whether the target contains 1 or 25 cells.
 - `--dgdm_guidance_scale` should be selected on validation scenarios and then
   frozen before the final test run.
 
 Final tables and plots are written under `$BENCHMARK_DIR/summary/`, including
 `method_summary.csv`, `method_aggregate.csv`, `surrogate_calibration.csv`, and
 `method_comparison.png`.
+Candidate-generation wall time for every method and seed is written to
+`proposal_times.csv`. This excludes shared checkpoint loading and PyElastica;
+each simulator record separately stores `elapsed_seconds`.
+
+For the primary compact specialist study (nine targets, ten seeds, and the
+three pre-registered objectives), one shell block runs all three profiles. It
+creates a separate output tree for every profile and, within each tree, one
+specialist directory per scenario:
+
+```bash
+export BENCHMARK_CONFIG="$PROJECT_DIR/benchmarks/scenarios_v2_compact.json"
+export STUDY_DIR="$PROJECT_DIR/outputs/from_links_v2/nine_scenario_objectives"
+export UNCONDITIONAL_DIFFUSION_DIR="$PROJECT_DIR/outputs/from_links_v2/unconditional_diffusion"
+
+for PROFILE in combined contact_only disturbance_only; do
+  python -m benchmarks.run_baselines \
+    --output_dir "$STUDY_DIR/$PROFILE" \
+    --config "$BENCHMARK_CONFIG" \
+    --methods reference,random,random_search,retrieval,adam,cma_es,unconditional_diffusion,unconditional_dgdm,conditional_diffusion,dgdm \
+    --candidate_budget 16 \
+    --seeds 0,1,2,3,4,5,6,7,8,9 \
+    --retrieval_data_dir "$DATASET_DIR/train" \
+    --dynamics_checkpoint "$DYNAMICS_DIR/best.pt" \
+    --diffusion_checkpoint "$DIFFUSION_DIR/best.pt" \
+    --unconditional_diffusion_checkpoint "$UNCONDITIONAL_DIFFUSION_DIR/best.pt" \
+    --device cuda \
+    --random_pool_size 256 \
+    --adam_steps 300 \
+    --adam_lr 0.03 \
+    --cma_generations 100 \
+    --cma_popsize 32 \
+    --cma_sigma 0.5 \
+    --diffusion_num_samples 256 \
+    --diffusion_batch_size 256 \
+    --diffusion_inference_steps 20 \
+    --dgdm_guidance_scale 0.1 \
+    --utility_profile "$PROFILE" \
+    --target_scenario_id all \
+    --evaluation_scope auto \
+    --run_benchmark \
+    --benchmark_top_k 1 \
+    --num_workers 1 \
+    --timeout 1800
+done
+```
+
+This is 82 selected designs per scenario/profile: eight stochastic methods at
+ten seeds plus the one-seed reference and retrieval baselines. Consequently,
+the complete study contains `82 x 9 x 3 = 2,214` PyElastica rollouts. The 16
+candidates per method are surrogate-ranked proposals; with
+`--benchmark_top_k 1`, they do not multiply the simulator count by 16.
 
 ### 7. Render the best seed from each method
 
@@ -256,7 +377,7 @@ video rendering enabled:
 ```bash
 python -m benchmarks.render_best \
   --benchmark_dir "$BENCHMARK_DIR" \
-  --scenario_ids nominal:00 \
+  --scenario_ids approach_radius:12 \
   --num_workers 1 \
   --timeout 1800
 ```
@@ -269,8 +390,8 @@ Available options on the same command are:
 
 - `--methods reference,adam,cma_es,conditional_diffusion,dgdm` renders only a
   chosen method subset.
-- `--scenario_ids nominal:00,orientation:02,branch_offset:02` renders several
-  representative scenes. Pass `--scenario_ids ""` to render all 28 labeled
+- `--scenario_ids approach_radius:00,approach_radius:12,approach_radius:24`
+  renders several representative scenes. Pass `--scenario_ids ""` to render all 25
   cells, which is expensive and usually unnecessary for qualitative figures.
 - `--dry_run` verifies candidate selection and generated PyElastica commands
   without running the simulations.

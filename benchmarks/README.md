@@ -1,5 +1,19 @@
 # Squirrel Gripper Simulation Benchmark V1
 
+> **Current default protocol (V2):** `scenarios_v2.json` replaces the original
+> 28-cell multi-family study with a 25-cell `approach_deg × cyl_rad` grid. The
+> approach values are `5, 25, 45, 65, 85°` (every other level across the full
+> dataset-supported range), and the radii are all five dataset levels:
+> `0.015, 0.020, 0.025, 0.030, 0.035 m`. The old `scenarios_v1.json` is retained
+> only to reproduce earlier experiments. Under the default automatic evaluation
+> scope, an exact specialist is simulated only on its target cell; a generalist
+> is selected and simulated over all 25 cells. Raw contact count, disturbance,
+> and angular span in degrees are reported alongside normalized utility.
+> A predeclared compact alternative, `scenarios_v2_compact.json`, uses the
+> minimum, center, and maximum training-supported levels for a 3×3 grid. V2
+> rejects family-specialist selection because its single family is the entire
+> grid and would therefore duplicate the generalist target.
+
 ## Start here: what point 1 is doing
 
 Point 1 builds an **exam for finger designs**. It does not yet build the
@@ -161,6 +175,12 @@ evaluation episode: three joint stiffness ratios, four free-link lengths,
 three joint lengths, finger cross-section/radius, total finger length, tendon
 tension, ankle wrap radius, and ankle stiffness.
 
+The common model/candidate representation has 16 coordinates, but V2 does not
+optimize every coordinate. Joint lengths, base radius (`0.01 m`), ankle wrap
+radius, and ankle stiffness have equal lower/upper bounds and therefore remain
+fixed. Keeping them in the vector preserves one dynamics/diffusion checkpoint
+contract; it does not make them active design degrees of freedom.
+
 Tension is treated as part of morphology-actuation co-design in V1. A later
 ablation should fix tension across all methods to isolate morphology quality.
 
@@ -229,7 +249,8 @@ Primary continuous metrics:
 
 The V1 scalar utility, used only for ranking when a scalar is required, is:
 
-`U = 0.45 disturbance + 0.20 contact + 0.35 wrap`.
+The V2 primary utility is
+`U = 0.55 disturbance + 0.35 contact + 0.10 wrap`.
 
 Always report the three components beside `U`. Report mean, median, standard
 deviation, 20%-CVaR (mean of the worst 20%), worst-family mean, and bootstrap
@@ -369,7 +390,7 @@ core test-simulator results to select their top candidate.
 The shared surrogate utility is aligned with the benchmark utility:
 
 ```text
-0.45 disturbance + 0.20 normalized contact coverage + 0.35 normalized wrap
+0.55 disturbance + 0.35 normalized contact coverage + 0.10 normalized wrap
 ```
 
 Each optimizer produces `candidate_budget` feasible From Links designs, stores

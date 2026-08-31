@@ -29,7 +29,11 @@ def select_target_cells(config, scenario_id=None, family=None, generalist=False)
     elif family:
         cells = [cell for cell in cells if cell["family"] == family]
     elif not generalist:
-        cells = [cell for cell in cells if cell["family"] == "nominal"]
+        default_id = config.get("default_target_scenario_id")
+        if default_id:
+            cells = [cell for cell in cells if cell["scenario_id"] == default_id]
+        else:
+            cells = [cell for cell in cells if cell["family"] == "nominal"]
     if not cells:
         raise ValueError("The surrogate-search target selected zero scenarios")
     return cells

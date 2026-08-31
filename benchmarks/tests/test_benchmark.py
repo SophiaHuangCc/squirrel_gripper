@@ -20,10 +20,33 @@ from generator.dataloader import (
 
 class BenchmarkTests(unittest.TestCase):
     def test_scenario_count_and_families(self):
-        cells = expand_core_scenarios(load_config())
-        self.assertEqual(len(cells), 28)
+        config = load_config()
+        cells = expand_core_scenarios(config)
+        self.assertEqual(len(cells), 25)
         counts = {family: sum(cell["family"] == family for cell in cells) for family in {c["family"] for c in cells}}
-        self.assertEqual(counts, {"nominal": 1, "orientation": 9, "branch_offset": 9, "landing_severity": 9})
+        self.assertEqual(counts, {"approach_radius": 25})
+        self.assertEqual(
+            [cell["params"]["approach_deg"] for cell in cells[::5]],
+            [5.0, 25.0, 45.0, 65.0, 85.0],
+        )
+        self.assertEqual(
+            [cell["params"]["cyl_rad"] for cell in cells[:5]],
+            [0.015, 0.020, 0.025, 0.030, 0.035],
+        )
+        self.assertEqual(
+            config["evaluation"]["utility_weights"],
+            {
+                "disturbance_resistance_score": 0.55,
+                "contact_coverage_norm": 0.35,
+                "angular_span_norm": 0.10,
+            },
+        )
+
+    def test_compact_scenario_grid_is_center_and_boundaries(self):
+        compact = load_config(Path(__file__).parents[1] / "scenarios_v2_compact.json")
+        cells = expand_core_scenarios(compact)
+        self.assertEqual(len(cells), 9)
+        self.assertEqual(compact["default_target_scenario_id"], "approach_radius:04")
 
     def test_reference_is_valid_from_links_design(self):
         design = validate_designs(reference_design())
@@ -66,11 +89,29 @@ class BenchmarkTests(unittest.TestCase):
         self.assertLess(summary["cvar20_utility"], summary["mean_utility"])
         self.assertEqual(summary["num_rollouts"], 5)
 
+    def test_raw_angular_span_is_reported_above_utility_cap(self):
+        summary = aggregate_records(
+            [{
+                "family": "approach_radius",
+                "metrics": {
+                    "disturbance_resistance_score": 0.5,
+                    "num_contacts": 20,
+                    "angular_span": 240.0,
+                    "n_elements": 100,
+                },
+            }],
+            load_config(),
+        )
+        self.assertEqual(summary["component_mean"]["angular_span_norm"], 1.0)
+        self.assertEqual(summary["raw_metric_mean"]["angular_span_deg"], 240.0)
+
     def test_target_selection_distinguishes_specialist_and_generalist(self):
         config = load_config()
-        self.assertEqual(len(select_target_cells(config)), 1)
-        self.assertEqual(len(select_target_cells(config, family="orientation")), 9)
-        self.assertEqual(len(select_target_cells(config, generalist=True)), 28)
+        default = select_target_cells(config)
+        self.assertEqual(len(default), 1)
+        self.assertEqual(default[0]["scenario_id"], "approach_radius:12")
+        self.assertEqual(len(select_target_cells(config, family="approach_radius")), 25)
+        self.assertEqual(len(select_target_cells(config, generalist=True)), 25)
 
     def test_adam_search_returns_ranked_feasible_candidates(self):
         class SmoothFakeSurrogate(torch.nn.Module):

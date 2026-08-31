@@ -52,7 +52,8 @@ class SquirrelDesignDiffusion(nn.Module):
     """
     Squirrel-finger adaptation of DGDM's diffusion generator.
 
-    Training learns p(design | task, init, desired_metrics).
+    Conditional training learns p(design | task, init, desired_metrics).
+    Unconditional training masks that vector and learns the marginal p(design).
     Sampling starts from Gaussian noise and denoises into a 16D From Links design.
     """
 
@@ -64,6 +65,7 @@ class SquirrelDesignDiffusion(nn.Module):
         learning_rate: float = 1e-4,
         ema_power: float = 0.75,
         num_inference_steps: int = 20,
+        conditioning_mode: str = "conditional",
     ):
         super().__init__()
         self.noise_pred_net = noise_pred_net
@@ -71,6 +73,9 @@ class SquirrelDesignDiffusion(nn.Module):
         self.learning_rate = learning_rate
         self.bounds = bounds or DesignBounds.defaults()
         self.num_inference_steps = num_inference_steps
+        if conditioning_mode not in {"conditional", "unconditional"}:
+            raise ValueError("conditioning_mode must be 'conditional' or 'unconditional'")
+        self.conditioning_mode = conditioning_mode
         # DGDM uses EMA weights for sampling. Use an internal helper so this
         # code does not depend on the exact diffusers EMA API version.
         ema_decay = 1.0 - (1.0 - float(ema_power)) * 0.01
@@ -87,8 +92,16 @@ class SquirrelDesignDiffusion(nn.Module):
             device=clean.device,
         ).long()
         noisy = self.noise_scheduler.add_noise(clean, noise, timesteps)
-        noise_pred = self.noise_pred_net(noisy, timesteps, global_cond=cond)
+        noise_pred = self.noise_pred_net(
+            noisy, timesteps, global_cond=self._network_condition(cond)
+        )
         return F.mse_loss(noise_pred, noise)
+
+    def _network_condition(self, cond: torch.Tensor) -> torch.Tensor:
+        """Mask task information for a task-agnostic diffusion prior."""
+        if self.conditioning_mode == "unconditional":
+            return torch.zeros_like(cond)
+        return cond
 
     def optimizer(self) -> torch.optim.Optimizer:
         return torch.optim.AdamW(self.noise_pred_net.parameters(), lr=self.learning_rate)
@@ -107,6 +120,7 @@ class SquirrelDesignDiffusion(nn.Module):
         objective: str,
         guidance_task_params: Optional[torch.Tensor] = None,
         guidance_init_config: Optional[torch.Tensor] = None,
+        guidance_weights: Optional[Dict[str, float]] = None,
     ) -> torch.Tensor:
         design_physical = project_physical_design(
             diffusion_to_physical(design_unit.squeeze(-1), self.bounds),
@@ -143,7 +157,16 @@ class SquirrelDesignDiffusion(nn.Module):
         elif objective == "disturbance_contact_span":
             score = disturbance + 0.1 * contacts + 0.5 * angular_span
         elif objective == "benchmark_utility":
-            score = 0.45 * disturbance + 0.20 * contacts + 0.35 * angular_span
+            weights = guidance_weights or {
+                "disturbance_resistance_score": 0.55,
+                "contact_coverage_norm": 0.35,
+                "angular_span_norm": 0.10,
+            }
+            score = (
+                float(weights["disturbance_resistance_score"]) * disturbance
+                + float(weights["contact_coverage_norm"]) * contacts
+                + float(weights["angular_span_norm"]) * angular_span
+            )
         else:
             raise ValueError(f"Unknown guidance objective: {objective}")
         return score.reshape(design_unit.shape[0], scenario_count).mean(dim=1)
@@ -158,6 +181,7 @@ class SquirrelDesignDiffusion(nn.Module):
         generator: Optional[torch.Generator] = None,
         guidance_task_params: Optional[torch.Tensor] = None,
         guidance_init_config: Optional[torch.Tensor] = None,
+        guidance_weights: Optional[Dict[str, float]] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Generate designs.
@@ -178,7 +202,9 @@ class SquirrelDesignDiffusion(nn.Module):
 
         for t in self.noise_scheduler.timesteps:
             timesteps = t.expand(cond.shape[0])
-            noise_pred = self.noise_pred_net(sample, timesteps, global_cond=cond)
+            noise_pred = self.noise_pred_net(
+                sample, timesteps, global_cond=self._network_condition(cond)
+            )
 
             if dynamics_model is not None and guidance_scale > 0.0:
                 with torch.enable_grad():
@@ -190,6 +216,7 @@ class SquirrelDesignDiffusion(nn.Module):
                         objective=guidance_objective,
                         guidance_task_params=guidance_task_params,
                         guidance_init_config=guidance_init_config,
+                        guidance_weights=guidance_weights,
                     ).sum()
                     grad = torch.autograd.grad(score, guided_sample)[0]
                 alpha_term = (1.0 - self.noise_scheduler.alphas_cumprod[t]).sqrt()

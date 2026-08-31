@@ -29,6 +29,13 @@ def parse_args():
     parser.add_argument("--num_train_timesteps", type=int, default=100)
     parser.add_argument("--num_inference_steps", type=int, default=20)
     parser.add_argument("--ema_power", type=float, default=0.75)
+    parser.add_argument(
+        "--conditioning", choices=("conditional", "unconditional"), default="conditional",
+        help=(
+            "conditional learns p(design|task,init,metrics); unconditional masks the "
+            "condition and learns a task-agnostic design prior p(design)"
+        ),
+    )
     parser.add_argument("--val_ratio", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda")
@@ -143,6 +150,7 @@ def main():
         learning_rate=args.learning_rate,
         ema_power=args.ema_power,
         num_inference_steps=args.num_inference_steps,
+        conditioning_mode=args.conditioning,
     ).to(device)
     optimizer = model.optimizer()
 

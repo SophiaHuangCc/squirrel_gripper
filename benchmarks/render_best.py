@@ -36,8 +36,8 @@ def main():
         help="Optional comma-separated subset; default renders every summarized method.",
     )
     parser.add_argument(
-        "--scenario_ids", type=str, default="nominal:00",
-        help="Comma-separated scenes to render; use an empty string to render all 28.",
+        "--scenario_ids", type=str, default="approach_radius:12",
+        help="Comma-separated scenes to render; use an empty string to render all 25.",
     )
     parser.add_argument("--num_workers", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=1800.0)

@@ -41,7 +41,11 @@ def target_cells(config, scenario_id=None, family=None, generalist=False):
     elif family:
         cells = [cell for cell in cells if cell["family"] == family]
     elif not generalist:
-        cells = [cell for cell in cells if cell["family"] == "nominal"]
+        default_id = config.get("default_target_scenario_id")
+        if default_id:
+            cells = [cell for cell in cells if cell["scenario_id"] == default_id]
+        else:
+            cells = [cell for cell in cells if cell["family"] == "nominal"]
     if not cells:
         raise ValueError("Retrieval target selected zero benchmark cells")
     return np.asarray([[cell["params"][key] for key in ENV_KEYS] for cell in cells], dtype=np.float32)
@@ -53,6 +57,7 @@ def retrieve(dataset_dir, config, num_candidates, scenario_id=None, family=None,
         config, scenario_id=scenario_id, family=family, generalist=generalist
     )
     rows = []
+    weights = config["evaluation"]["utility_weights"]
     for index, path in enumerate(dataset.files):
         item = dataset[index]
         # Use the shared model-to-physical conversion so retrieval cannot drift
@@ -63,7 +68,11 @@ def retrieve(dataset_dir, config, num_candidates, scenario_id=None, family=None,
         distances = np.linalg.norm((targets - environment[None, :]) / ENV_SCALES, axis=1)
         scenario_distance = float(np.mean(distances))
         target = item["target_metrics"].numpy()
-        observed_utility = float(0.20 * target[0] + 0.45 * target[1] + 0.35 * target[2])
+        observed_utility = float(
+            float(weights["contact_coverage_norm"]) * target[0]
+            + float(weights["disturbance_resistance_score"]) * target[1]
+            + float(weights["angular_span_norm"]) * target[2]
+        )
         rows.append((scenario_distance, -observed_utility, path, design, observed_utility))
     rows.sort(key=lambda row: (row[0], row[1], row[2]))
     selected = []
