@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from dynamics.profile_forward_2d import ProfileForward2DModel
+from generator.dataloader import DesignBounds, model_norm_to_physical, physical_to_diffusion
 
 
 class Trainer:
@@ -46,6 +47,7 @@ class Trainer:
         self.num_train_timesteps = getattr(self.args, "num_train_timesteps", 100)
         self.num_inference_steps = getattr(self.args, "num_inference_steps", 20)
         self.use_design_noise = getattr(self.args, "use_design_noise", False)
+        self.design_bounds = DesignBounds.defaults()
 
         self.model = ProfileForward2DModel(
             W=self.hidden_dim,
@@ -101,7 +103,12 @@ class Trainer:
         K = self.num_timesteps_per_batch
 
         task_all = task_tensor.repeat(K, 1)
-        design_all = design_tensor.repeat(K, 1)
+        # DGDM guidance acts on the diffusion state x_t, whose coordinates are
+        # [-1, 1].  Corrupt the clean design in that same coordinate system.
+        clean_unit = physical_to_diffusion(
+            model_norm_to_physical(design_tensor), self.design_bounds
+        ).clamp(-1.0, 1.0)
+        design_all = clean_unit.repeat(K, 1)
         init_all = init_tensor.repeat(K, 1)
         target_all = target.repeat(K, 1)
 
@@ -223,22 +230,42 @@ class Trainer:
             if target is not None:
                 target = target.to(self.device).float()
 
-            B = design_tensor.shape[0]
-            timesteps = torch.zeros(B, dtype=torch.float32, device=self.device)
-
-            pred = self.model(
-                task_params=task_tensor,
-                design_params=design_tensor,
-                init_config=init_tensor,
-                timesteps=timesteps,
-            )
-
-            if target is None:
-                loss = torch.tensor(0.0, device=self.device)
+            if self.use_design_noise:
+                dummy_target = target if target is not None else torch.zeros(
+                    design_tensor.shape[0], self.output_dim, device=self.device
+                )
+                task_all, noisy_all, init_all, timestep_all, target_all = (
+                    self._make_noisy_design_batch(
+                        task_tensor, design_tensor, init_tensor, dummy_target
+                    )
+                )
+                pred_all = self.model(task_all, noisy_all, init_all, timestep_all)
+                pred = pred_all.reshape(
+                    self.num_timesteps_per_batch, design_tensor.shape[0], self.output_dim
+                ).mean(dim=0)
+                loss = (
+                    self.criterion(pred_all, target_all) if target is not None
+                    else torch.tensor(0.0, device=self.device)
+                )
             else:
-                loss = self.criterion(pred, target)
+                timesteps = torch.zeros(
+                    design_tensor.shape[0], dtype=torch.float32, device=self.device
+                )
+                pred = self.model(task_tensor, design_tensor, init_tensor, timesteps)
+                loss = (
+                    self.criterion(pred, target) if target is not None
+                    else torch.tensor(0.0, device=self.device)
+                )
 
             return pred, loss
 
     def save_checkpoint(self, path):
-        torch.save(self.model.state_dict(), path)
+        torch.save({
+            "model": self.model.state_dict(),
+            "model_type": "aggregate_metric_dynamics",
+            "noise_conditioned": bool(self.use_design_noise),
+            "design_coordinates": "diffusion_unit" if self.use_design_noise else "model_norm",
+            "num_train_timesteps": int(self.num_train_timesteps),
+            "noise_beta_schedule": "squaredcos_cap_v2" if self.use_design_noise else None,
+            "args": vars(self.args),
+        }, path)

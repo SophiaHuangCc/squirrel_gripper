@@ -71,6 +71,10 @@ def main():
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--diffusion_checkpoint", type=Path, required=True)
     parser.add_argument("--dynamics_checkpoint", type=Path, required=True)
+    parser.add_argument(
+        "--dgdm_dynamics_checkpoint", type=Path, required=True,
+        help="Noise-and-timestep-conditioned dynamics checkpoint used at every denoising step.",
+    )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--scales", default=",".join(str(x) for x in DEFAULT_SCALES))
     parser.add_argument("--seeds", default="", help="Defaults to method_seeds in the benchmark config")
@@ -106,6 +110,10 @@ def main():
     candidate_dir = args.output_dir / "candidates"
     candidate_dir.mkdir(exist_ok=True)
     surrogate = load_surrogate(args.dynamics_checkpoint, device=args.device)
+    guidance_surrogate = load_surrogate(
+        args.dgdm_dynamics_checkpoint, device=args.device,
+        expected_noise_conditioned=True,
+    )
     diffusion = load_diffusion(
         args.diffusion_checkpoint, device=args.device,
         num_inference_steps=args.inference_steps,
@@ -117,6 +125,7 @@ def main():
         "num_samples": args.num_samples, "inference_steps": args.inference_steps,
         "diffusion_checkpoint": str(args.diffusion_checkpoint.resolve()),
         "dynamics_checkpoint": str(args.dynamics_checkpoint.resolve()),
+        "dgdm_dynamics_checkpoint": str(args.dgdm_dynamics_checkpoint.resolve()),
         "runs": [],
     }
     proposal_times = []
@@ -133,6 +142,7 @@ def main():
                 target_angular_span=args.target_angular_span,
                 scenario_id=args.target_scenario_id, family=args.target_family,
                 generalist=args.generalist, device=args.device,
+                guidance_dynamics_model=guidance_surrogate if scale > 0 else None,
             )
             elapsed = time.perf_counter() - started
             path = candidate_dir / f"{method}_s{seed}.npz"
@@ -146,6 +156,7 @@ def main():
                 "selection_rule": "surrogate_benchmark_utility",
                 "diffusion_checkpoint": str(args.diffusion_checkpoint.resolve()),
                 "dynamics_checkpoint": str(args.dynamics_checkpoint.resolve()),
+                "dgdm_dynamics_checkpoint": str(args.dgdm_dynamics_checkpoint.resolve()),
             }
             save_candidates(path, result.designs, method, seed, scores=result.scores, metadata=metadata)
             manifest["runs"].append({"method": method, "scale": scale, "seed": seed,

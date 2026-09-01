@@ -133,6 +133,11 @@ def main():
     parser.add_argument("--retrieval_scenario_id", type=str, default=None)
     parser.add_argument("--retrieval_family", type=str, default=None)
     parser.add_argument("--dynamics_checkpoint", type=Path, default=None)
+    parser.add_argument(
+        "--dgdm_dynamics_checkpoint", type=Path, default=None,
+        help=("Noise-and-timestep-conditioned dynamics checkpoint trained with "
+              "dynamics/main.py --use_design_noise; used only for DGDM guidance."),
+    )
     parser.add_argument("--device", choices=("cpu", "mps", "cuda"), default="cpu")
     parser.add_argument("--target_scenario_id", type=str, default=None)
     parser.add_argument("--target_family", type=str, default=None)
@@ -432,10 +437,23 @@ def main():
             )
         if args.dynamics_checkpoint is None:
             raise ValueError("--dynamics_checkpoint is required to rank diffusion candidates")
+        guided_methods = diffusion_methods.intersection({"dgdm", "unconditional_dgdm"})
+        if guided_methods and args.dgdm_dynamics_checkpoint is None:
+            raise ValueError(
+                "--dgdm_dynamics_checkpoint is required for DGDM methods. Keep "
+                "--dynamics_checkpoint as the clean model used for final ranking."
+            )
         from benchmarks.baselines.diffusion_search import diffusion_search, load_diffusion
 
         if not search_methods:
             surrogate = load_surrogate(args.dynamics_checkpoint, device=args.device)
+        guidance_surrogate = (
+            load_surrogate(
+                args.dgdm_dynamics_checkpoint, device=args.device,
+                expected_noise_conditioned=True,
+            )
+            if guided_methods else None
+        )
         diffusion_models = {}
         if conditional_methods:
             diffusion_models["conditional"] = load_diffusion(
@@ -472,6 +490,7 @@ def main():
                     target_angular_span=args.target_angular_span,
                     scenario_id=args.target_scenario_id, family=args.target_family,
                     generalist=args.generalist, device=args.device,
+                    guidance_dynamics_model=guidance_surrogate if guided else None,
                 )
                 path = candidate_dir / f"{method}_s{seed}.npz"
                 save_candidates(
@@ -480,6 +499,9 @@ def main():
                         "diffusion_checkpoint": str(checkpoint_path.resolve()),
                         "conditioning_mode": conditioning_mode,
                         "dynamics_checkpoint": str(args.dynamics_checkpoint.resolve()),
+                        "dgdm_dynamics_checkpoint": (
+                            str(args.dgdm_dynamics_checkpoint.resolve()) if guided else None
+                        ),
                         "guidance_scale": guidance_scale,
                         "num_samples": args.diffusion_num_samples,
                         "num_inference_steps": args.diffusion_inference_steps,

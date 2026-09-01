@@ -46,10 +46,6 @@ class DGDMDesignDiffusion(nn.Module):
         noisy = self.noise_scheduler.add_noise(clean, noise, timestep)
         return torch.nn.functional.mse_loss(self.noise_pred_net(noisy, timestep, global_cond=None), noise)
 
-    def _design_norm(self, unit):
-        physical = project_physical_design(diffusion_to_physical(unit.squeeze(-1), self.bounds), self.bounds)
-        return physical_to_model_norm(physical)
-
     @torch.no_grad()
     def sample(self, batch_size: int, dynamics_model=None, scenarios: Optional[ScenarioBatch]=None,
                target: Optional[ProfileTarget]=None, guidance_scale=0.0, generator=None, device=None):
@@ -65,7 +61,12 @@ class DGDMDesignDiffusion(nn.Module):
             if guided:
                 with torch.enable_grad():
                     x = sample.detach().requires_grad_(True)
-                    score = aggregate_profile_score(dynamics_model, self._design_norm(x), scenarios, target).sum()
+                    # The profile model was trained on x_t in diffusion [-1, 1]
+                    # coordinates and on the matching normalized noise level.
+                    tau = t.float() / float(self.noise_scheduler.config.num_train_timesteps)
+                    score = aggregate_profile_score(
+                        dynamics_model, x.squeeze(-1), scenarios, target, tau
+                    ).sum()
                     grad = torch.autograd.grad(score, x)[0]
                     grad = grad / grad.flatten(1).norm(dim=1).clamp_min(1e-8).view(-1, 1, 1)
                 sigma = (1.0 - self.noise_scheduler.alphas_cumprod[t]).sqrt()

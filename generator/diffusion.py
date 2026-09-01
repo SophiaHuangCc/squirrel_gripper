@@ -121,18 +121,24 @@ class SquirrelDesignDiffusion(nn.Module):
         guidance_task_params: Optional[torch.Tensor] = None,
         guidance_init_config: Optional[torch.Tensor] = None,
         guidance_weights: Optional[Dict[str, float]] = None,
+        diffusion_timestep: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        design_physical = project_physical_design(
-            diffusion_to_physical(design_unit.squeeze(-1), self.bounds),
-            self.bounds,
-        )
-        design_norm = physical_to_model_norm(design_physical)
+        noise_conditioned = bool(getattr(dynamics_model, "noise_conditioned", False))
+        if noise_conditioned:
+            # This is exactly the intermediate x_t seen during DGDM dynamics
+            # training. Do not clamp/project it into a clean geometry.
+            dynamics_design = design_unit.squeeze(-1)
+        else:
+            design_physical = project_physical_design(
+                diffusion_to_physical(design_unit.squeeze(-1), self.bounds), self.bounds,
+            )
+            dynamics_design = physical_to_model_norm(design_physical)
         if (guidance_task_params is None) != (guidance_init_config is None):
             raise ValueError("guidance task and initial-condition sets must be provided together")
         if guidance_task_params is None:
             task_params = cond[:, 0:3]
             init_config = cond[:, 3:6]
-            design_batch = design_norm
+            design_batch = dynamics_design
             scenario_count = 1
         else:
             scenario_count = guidance_task_params.shape[0]
@@ -141,8 +147,14 @@ class SquirrelDesignDiffusion(nn.Module):
             batch_size = design_unit.shape[0]
             task_params = guidance_task_params.repeat(batch_size, 1)
             init_config = guidance_init_config.repeat(batch_size, 1)
-            design_batch = design_norm.repeat_interleave(scenario_count, dim=0)
-        timesteps = torch.zeros(design_batch.shape[0], dtype=torch.float32, device=design_unit.device)
+            design_batch = dynamics_design.repeat_interleave(scenario_count, dim=0)
+        if noise_conditioned:
+            if diffusion_timestep is None:
+                raise ValueError("Noise-conditioned dynamics guidance requires the current diffusion timestep")
+            timestep_value = diffusion_timestep.float() / float(dynamics_model.num_train_timesteps)
+            timesteps = timestep_value.reshape(1).expand(design_batch.shape[0])
+        else:
+            timesteps = torch.zeros(design_batch.shape[0], dtype=torch.float32, device=design_unit.device)
         pred = dynamics_model(task_params, design_batch, init_config, timesteps)
         # The three surrogate outputs represent normalized C, D, and A.  Keep
         # dynamics guidance on the same physical [0, 1] scale as candidate
@@ -222,6 +234,7 @@ class SquirrelDesignDiffusion(nn.Module):
                         guidance_task_params=guidance_task_params,
                         guidance_init_config=guidance_init_config,
                         guidance_weights=guidance_weights,
+                        diffusion_timestep=t,
                     ).sum()
                     grad = torch.autograd.grad(score, guided_sample)[0]
                 alpha_term = (1.0 - self.noise_scheduler.alphas_cumprod[t]).sqrt()

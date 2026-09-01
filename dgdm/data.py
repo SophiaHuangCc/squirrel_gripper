@@ -141,6 +141,7 @@ class InteractionProfileDataset(Dataset):
         if not self.files:
             raise ValueError(f"No trajectory archives found below {dataset_dir!r}")
         self.profile_steps = int(profile_steps)
+        self.bounds = DesignBounds.defaults()
         self.designs = DynamicsDataset(dataset_dir=dataset_dir)
         self._design_index = {os.path.abspath(p): i for i, p in enumerate(self.designs.files)}
 
@@ -153,8 +154,12 @@ class InteractionProfileDataset(Dataset):
             profile, mask = extract_profile(z, self.profile_steps)
             scenario = extract_scenario(z)
         design = self.designs[self._design_index[os.path.abspath(path)]]["design_params"].float()
+        design_unit = physical_to_diffusion(
+            model_norm_to_physical(design), self.bounds
+        ).clamp(-1.0, 1.0)
         return {
             "design_norm": design,
+            "design_unit": design_unit,
             "scenario": torch.from_numpy(scenario),
             "profile": torch.from_numpy(profile),
             "profile_mask": torch.from_numpy(mask),

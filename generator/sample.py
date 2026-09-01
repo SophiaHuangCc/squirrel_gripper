@@ -11,7 +11,6 @@ import numpy as np
 import torch
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 
-from dynamics.profile_forward_2d import ProfileForward2DModel
 from generator.dataloader import DesignBounds
 from generator.diffusion import SquirrelDesignDiffusion, make_condition_batch
 from generator.diffusion_utils import ConditionalUnet1D
@@ -21,6 +20,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Sample squirrel finger designs from diffusion generator.")
     parser.add_argument("--diffusion_checkpoint_path", type=str, required=True)
     parser.add_argument("--dynamics_checkpoint_path", type=str, default=None)
+    parser.add_argument(
+        "--dgdm_dynamics_checkpoint_path", type=str, default=None,
+        help="Noise-conditioned dynamics checkpoint used only for denoising guidance.",
+    )
     parser.add_argument("--save_dir", type=str, default="generator/runs/sample")
     parser.add_argument("--num_samples", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=256)
@@ -76,15 +79,11 @@ def load_diffusion(args, device):
     return model
 
 
-def load_dynamics(path, device):
+def load_dynamics(path, device, expected_noise_conditioned=False):
     if path is None:
         return None
-    model = ProfileForward2DModel(W=256, task_ch=3, design_ch=16, init_ch=3, output_ch=3).to(device)
-    model.load_state_dict(torch.load(path, map_location=device))
-    model.eval()
-    for param in model.parameters():
-        param.requires_grad = False
-    return model
+    from benchmarks.baselines.surrogate_search import load_surrogate
+    return load_surrogate(path, device=device, expected_noise_conditioned=expected_noise_conditioned)
 
 
 def objective_from_pred(pred, objective):
@@ -110,6 +109,11 @@ def main():
 
     diffusion = load_diffusion(args, device)
     dynamics_model = load_dynamics(args.dynamics_checkpoint_path, device)
+    guidance_model = load_dynamics(
+        args.dgdm_dynamics_checkpoint_path, device, expected_noise_conditioned=True
+    )
+    if args.guidance_scale > 0 and guidance_model is None:
+        raise ValueError("--dgdm_dynamics_checkpoint_path is required when guidance_scale > 0")
 
     all_design_physical = []
     all_design_norm = []
@@ -134,7 +138,7 @@ def main():
         )
         out = diffusion.sample(
             cond=cond,
-            dynamics_model=dynamics_model,
+            dynamics_model=guidance_model,
             guidance_scale=args.guidance_scale,
             guidance_objective=args.guidance_objective,
             generator=generator,

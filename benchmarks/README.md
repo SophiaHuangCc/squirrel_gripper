@@ -86,6 +86,7 @@ Use `--dry_run` first when checking paths and scenario coverage.
 ### Unattended specialist + generalist study run
 
 `scripts/run_design_studies.sh` exports the lab-machine defaults,
+runs or reuses a separate noise-and-timestep-conditioned dynamics checkpoint,
 runs all three objective profiles for specialists and generalists, analyzes both
 studies, optionally performs final-design video/energy reruns, and runs the
 paired conditional-DGDM guidance-scale sweep. It uses a V3
@@ -95,6 +96,12 @@ stored under `outputs/from_links_v3/study_logs/`. The default
 keeps the specialist and generalist studies sequential because each benchmark
 already runs 30 simulator groups concurrently. Set `RUN_STUDIES_IN_PARALLEL=1`
 only on a machine that can safely support roughly twice that load.
+The default `TRAIN_DGDM_DYNAMICS=auto` trains
+`outputs/from_links_v3/dynamics_noisy/best.pt` only when it is missing. Set it
+to `always` for an intentional retrain or `never` to require an existing noisy
+checkpoint. The clean checkpoint remains unchanged and is used by Adam,
+CMA-ES, random search, and final diffusion candidate ranking; the noisy
+checkpoint is passed only as `--dgdm_dynamics_checkpoint`.
 
 > **Current default protocol (V2):** `scenarios_v2.json` replaces the original
 > 28-cell multi-family study with a 25-cell `approach_deg × cyl_rad` grid. The
@@ -400,6 +407,7 @@ TendonForces/.venv/bin/python -m benchmarks.run_guidance_sweep \
   --output_dir outputs/guidance_sweep_v1 \
   --diffusion_checkpoint PATH/TO/DIFFUSION/best.pt \
   --dynamics_checkpoint PATH/TO/DYNAMICS/best.pt \
+  --dgdm_dynamics_checkpoint PATH/TO/NOISE_CONDITIONED_DYNAMICS/best.pt \
   --scales 0,0.1,1,2,10 \
   --seeds 0,1,2,3,4 \
   --candidate_budget 16 \
@@ -544,6 +552,20 @@ TendonForces/.venv/bin/python dynamics/main.py \
 
 The repeated train directory above is acceptable only for a smoke test. Use
 disjoint train and test directories for an experiment.
+
+DGDM additionally requires a separate dynamics checkpoint trained on the
+diffusion noise distribution. Use the same training command with a different
+`--save_dir` and add:
+
+```bash
+  --use_design_noise \
+  --num_train_timesteps 100 \
+  --num_timesteps_per_batch 4
+```
+
+Pass the clean checkpoint as `--dynamics_checkpoint` and the noisy checkpoint
+as `--dgdm_dynamics_checkpoint`. The latter is used at every DDIM step; the
+former remains the common clean-design ranking model for all methods.
 
 Generate nominal-specialist candidates and validate the benchmark plan without
 running the expensive simulator:

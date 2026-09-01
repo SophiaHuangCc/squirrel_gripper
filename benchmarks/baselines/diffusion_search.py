@@ -52,10 +52,24 @@ def diffusion_search(
     batch_size=256, guidance_scale=0.0, num_inference_steps=20,
     target_contacts=0.8, target_disturbance=0.8, target_angular_span=0.8,
     scenario_id=None, family=None, generalist=False, device="cpu",
+    guidance_dynamics_model=None,
 ):
     cells = select_target_cells(config, scenario_id, family, generalist)
     if num_samples < num_candidates:
         raise ValueError("diffusion num_samples must be >= candidate_budget")
+    if guidance_scale > 0 and guidance_dynamics_model is None:
+        raise ValueError(
+            "Guided diffusion requires a separately trained noise-conditioned "
+            "dynamics model; pass guidance_dynamics_model."
+        )
+    if guidance_scale > 0:
+        prior_steps = int(diffusion_model.noise_scheduler.config.num_train_timesteps)
+        dynamics_steps = int(guidance_dynamics_model.num_train_timesteps)
+        if prior_steps != dynamics_steps:
+            raise ValueError(
+                f"Diffusion prior uses {prior_steps} training timesteps but DGDM "
+                f"dynamics uses {dynamics_steps}; retrain or select matching checkpoints."
+            )
     # The diffusion network was trained with one condition vector.  For a
     # family/generalist task, use the centroid of the selected scenario set as
     # its proposal context, then rank every proposal over the complete set.
@@ -99,7 +113,7 @@ def diffusion_search(
         )
         output = diffusion_model.sample(
             cond=condition,
-            dynamics_model=dynamics_model if guidance_scale > 0 else None,
+            dynamics_model=guidance_dynamics_model if guidance_scale > 0 else None,
             guidance_scale=float(guidance_scale), guidance_objective="benchmark_utility",
             generator=generator,
             guidance_task_params=guidance_task if guidance_scale > 0 else None,

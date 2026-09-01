@@ -85,6 +85,7 @@ or experiment.
 export PROJECT_DIR=/home/real/Desktop/Squirrel_Gripper/ws/squirrel_gripper
 export DATASET_DIR="$PROJECT_DIR/TendonForces/runs/exp1"
 export DYNAMICS_DIR="$PROJECT_DIR/outputs/from_links_v2/dynamics"
+export DGDM_DYNAMICS_DIR="$PROJECT_DIR/outputs/from_links_v2/dynamics_noise_conditioned"
 export DIFFUSION_DIR="$PROJECT_DIR/outputs/from_links_v2/diffusion"
 export BENCHMARK_DIR="$PROJECT_DIR/outputs/from_links_v2/benchmark"
 
@@ -200,6 +201,7 @@ python -m benchmarks.run_baselines \
   --seeds 0 \
   --retrieval_data_dir "$DATASET_DIR/train" \
   --dynamics_checkpoint "$DYNAMICS_DIR/best.pt" \
+  --dgdm_dynamics_checkpoint "$DGDM_DYNAMICS_DIR/best.pt" \
   --diffusion_checkpoint "$DIFFUSION_DIR/best.pt" \
   --unconditional_diffusion_checkpoint "$UNCONDITIONAL_DIFFUSION_DIR/best.pt" \
   --device cuda \
@@ -275,6 +277,7 @@ python -m benchmarks.run_baselines \
   --seeds 0,1,2,3,4 \
   --retrieval_data_dir "$DATASET_DIR/train" \
   --dynamics_checkpoint "$DYNAMICS_DIR/best.pt" \
+  --dgdm_dynamics_checkpoint "$DGDM_DYNAMICS_DIR/best.pt" \
   --diffusion_checkpoint "$DIFFUSION_DIR/best.pt" \
   --unconditional_diffusion_checkpoint "$UNCONDITIONAL_DIFFUSION_DIR/best.pt" \
   --device cuda \
@@ -343,6 +346,7 @@ for PROFILE in combined contact_only disturbance_only; do
     --seeds 0,1,2,3,4,5,6,7,8,9 \
     --retrieval_data_dir "$DATASET_DIR/train" \
     --dynamics_checkpoint "$DYNAMICS_DIR/best.pt" \
+    --dgdm_dynamics_checkpoint "$DGDM_DYNAMICS_DIR/best.pt" \
     --diffusion_checkpoint "$DIFFUSION_DIR/best.pt" \
     --unconditional_diffusion_checkpoint "$UNCONDITIONAL_DIFFUSION_DIR/best.pt" \
     --device cuda \
@@ -567,7 +571,8 @@ checkpoint, and optimizer:
 
 ## 3. Train the surrogate
 
-Train the three-output dynamics model with:
+Train the clean three-output dynamics model used by Adam, CMA-ES, retrieval
+ranking, and final diffusion-candidate ranking with:
 
 ```bash
 python dynamics/main.py \
@@ -582,8 +587,28 @@ python dynamics/main.py \
   --patience 10 \
   --val_step 5 \
   --save_ckpt_step 500 \
+  --output_dim 3
+```
+
+Train a separate noise-and-timestep-conditioned copy for DGDM guidance:
+
+```bash
+python dynamics/main.py \
+  --mode train \
+  --data_dir TendonForces/runs/exp3/train \
+  --test_data_dir TendonForces/runs/exp3/test \
+  --save_dir checkpoints_dgdm_noise \
+  --batch_size 32 \
+  --num_workers 0 \
+  --lr 1e-3 \
+  --num_epochs 300 \
+  --patience 10 \
+  --val_step 5 \
+  --save_ckpt_step 500 \
   --output_dim 3 \
-  --use_design_noise
+  --use_design_noise \
+  --num_train_timesteps 100 \
+  --num_timesteps_per_batch 4
 ```
 
 Four-output checkpoints are intentionally incompatible and must be retrained.
@@ -594,7 +619,7 @@ correlation, and top-k ranking quality to W&B.
 
 Checkpoint behavior:
 
-- `checkpoints/best.pt` is saved whenever total validation MSE reaches a new
+- `checkpoints/best.pt` (or `checkpoints_dgdm_noise/best.pt`) is saved whenever total validation MSE reaches a new
   minimum. This is normally the checkpoint to use for optimization.
 - `checkpoints/latest.pt` is a periodic training snapshot. It is newer in wall
   time but is not necessarily better on validation data.

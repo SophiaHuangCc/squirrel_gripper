@@ -13,6 +13,7 @@ BENCHMARK_CONFIG="${BENCHMARK_CONFIG:-$PROJECT_DIR/benchmarks/scenarios_v2_compa
 
 # V3 intentionally separates corrected clamped-surrogate runs from older V2 results.
 RESULT_ROOT="${RESULT_ROOT:-$PROJECT_DIR/outputs/from_links_v3}"
+DGDM_DYNAMICS_DIR="${DGDM_DYNAMICS_DIR:-$RESULT_ROOT/dynamics_noisy}"
 SPECIALIST_STUDY_DIR="${SPECIALIST_STUDY_DIR:-$RESULT_ROOT/nine_scenario_objectives}"
 GENERALIST_STUDY_DIR="${GENERALIST_STUDY_DIR:-$RESULT_ROOT/nine_scenario_generalists}"
 LOG_DIR="${LOG_DIR:-$RESULT_ROOT/study_logs}"
@@ -35,6 +36,16 @@ RUN_GUIDANCE_SWEEP="${RUN_GUIDANCE_SWEEP:-1}"
 GUIDANCE_SCALES="${GUIDANCE_SCALES:-0,0.1,1,2,10}"
 GUIDANCE_SEEDS="${GUIDANCE_SEEDS:-$SEEDS}"
 GUIDANCE_SWEEP_DIR="${GUIDANCE_SWEEP_DIR:-$RESULT_ROOT/guidance_scale_sweep/generalist}"
+# auto reuses best.pt when present and trains it otherwise; use always to
+# retrain intentionally or never to require an existing checkpoint.
+TRAIN_DGDM_DYNAMICS="${TRAIN_DGDM_DYNAMICS:-auto}"
+DGDM_DYNAMICS_EPOCHS="${DGDM_DYNAMICS_EPOCHS:-300}"
+DGDM_DYNAMICS_BATCH_SIZE="${DGDM_DYNAMICS_BATCH_SIZE:-32}"
+DGDM_DYNAMICS_WORKERS="${DGDM_DYNAMICS_WORKERS:-8}"
+DGDM_DYNAMICS_LR="${DGDM_DYNAMICS_LR:-1e-3}"
+DGDM_DYNAMICS_PATIENCE="${DGDM_DYNAMICS_PATIENCE:-10}"
+DIFFUSION_TRAIN_TIMESTEPS="${DIFFUSION_TRAIN_TIMESTEPS:-100}"
+NOISY_TIMESTEPS_PER_BATCH="${NOISY_TIMESTEPS_PER_BATCH:-4}"
 
 mkdir -p "$LOG_DIR" "$SPECIALIST_STUDY_DIR" "$GENERALIST_STUDY_DIR"
 RUN_STAMP="$(date +%Y%m%d_%H%M%S)"
@@ -64,7 +75,8 @@ for required in \
   "$DIFFUSION_DIR/best.pt" \
   "$UNCONDITIONAL_DIFFUSION_DIR/best.pt" \
   "$BENCHMARK_CONFIG" \
-  "$DATASET_DIR/train"; do
+  "$DATASET_DIR/train" \
+  "$DATASET_DIR/test"; do
   if [[ ! -e "$required" ]]; then
     echo "ERROR: required path does not exist: $required"
     exit 2
@@ -77,6 +89,55 @@ echo "[PATH] specialist=$SPECIALIST_STUDY_DIR"
 echo "[PATH] generalist=$GENERALIST_STUDY_DIR"
 echo "[CONFIG] workers=$NUM_WORKERS seeds=$SEEDS profiles=$PROFILES energy=$ENERGY_SELECTION"
 echo "[CONFIG] guidance_sweep=$RUN_GUIDANCE_SWEEP scales=$GUIDANCE_SCALES"
+echo "[CONFIG] noisy_dynamics=$DGDM_DYNAMICS_DIR train_mode=$TRAIN_DGDM_DYNAMICS"
+
+train_dgdm_dynamics() {
+  local checkpoint="$DGDM_DYNAMICS_DIR/best.pt"
+  if [[ "$TRAIN_DGDM_DYNAMICS" == "auto" && -f "$checkpoint" ]]; then
+    echo "[NOISY DYNAMICS REUSE] $checkpoint"
+    return
+  fi
+  if [[ "$TRAIN_DGDM_DYNAMICS" == "never" ]]; then
+    if [[ ! -f "$checkpoint" ]]; then
+      echo "ERROR: TRAIN_DGDM_DYNAMICS=never but checkpoint is missing: $checkpoint"
+      return 2
+    fi
+    echo "[NOISY DYNAMICS REUSE] $checkpoint"
+    return
+  fi
+  if [[ "$TRAIN_DGDM_DYNAMICS" != "auto" && "$TRAIN_DGDM_DYNAMICS" != "always" ]]; then
+    echo "ERROR: TRAIN_DGDM_DYNAMICS must be auto, always, or never"
+    return 2
+  fi
+
+  mkdir -p "$DGDM_DYNAMICS_DIR"
+  echo "[NOISY DYNAMICS TRAIN START] time=$(date --iso-8601=seconds)"
+  "$PYTHON_BIN" dynamics/main.py \
+    --mode train \
+    --device "$DEVICE" \
+    --data_dir "$DATASET_DIR/train" \
+    --test_data_dir "$DATASET_DIR/test" \
+    --save_dir "$DGDM_DYNAMICS_DIR" \
+    --batch_size "$DGDM_DYNAMICS_BATCH_SIZE" \
+    --num_workers "$DGDM_DYNAMICS_WORKERS" \
+    --lr "$DGDM_DYNAMICS_LR" \
+    --num_epochs "$DGDM_DYNAMICS_EPOCHS" \
+    --patience "$DGDM_DYNAMICS_PATIENCE" \
+    --val_step 5 \
+    --save_ckpt_step 500 \
+    --output_dim 3 \
+    --use_design_noise \
+    --num_train_timesteps "$DIFFUSION_TRAIN_TIMESTEPS" \
+    --num_inference_steps 20 \
+    --num_timesteps_per_batch "$NOISY_TIMESTEPS_PER_BATCH"
+  if [[ ! -f "$checkpoint" ]]; then
+    echo "ERROR: noisy dynamics training finished without creating $checkpoint"
+    return 2
+  fi
+  echo "[NOISY DYNAMICS TRAIN DONE] checkpoint=$checkpoint time=$(date --iso-8601=seconds)"
+}
+
+train_dgdm_dynamics
 
 run_benchmark_profile() {
   local protocol=$1
@@ -99,6 +160,7 @@ run_benchmark_profile() {
     --seeds "$SEEDS" \
     --retrieval_data_dir "$DATASET_DIR/train" \
     --dynamics_checkpoint "$DYNAMICS_DIR/best.pt" \
+    --dgdm_dynamics_checkpoint "$DGDM_DYNAMICS_DIR/best.pt" \
     --diffusion_checkpoint "$DIFFUSION_DIR/best.pt" \
     --unconditional_diffusion_checkpoint "$UNCONDITIONAL_DIFFUSION_DIR/best.pt" \
     --device "$DEVICE" \
@@ -186,6 +248,7 @@ run_guidance_sweep() {
     --config "$BENCHMARK_CONFIG" \
     --diffusion_checkpoint "$DIFFUSION_DIR/best.pt" \
     --dynamics_checkpoint "$DYNAMICS_DIR/best.pt" \
+    --dgdm_dynamics_checkpoint "$DGDM_DYNAMICS_DIR/best.pt" \
     --scales "$GUIDANCE_SCALES" \
     --seeds "$GUIDANCE_SEEDS" \
     --candidate_budget 16 \

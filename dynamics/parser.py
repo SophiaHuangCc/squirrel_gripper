@@ -33,6 +33,15 @@ def parse():
     parser.add_argument("--save_ckpt_step", type=int, default=500, help="Save every N batches")
     parser.add_argument("--wandb_id", type=str, default="squirrel_dynamics_01")
     parser.add_argument("--use_design_noise", action="store_true")
+    parser.add_argument(
+        "--num_train_timesteps", type=int, default=100,
+        help="Diffusion training horizon used by the prior and noisy DGDM dynamics model.",
+    )
+    parser.add_argument(
+        "--num_timesteps_per_batch", type=int, default=4,
+        help="Independent noise levels sampled per clean design for DGDM dynamics training.",
+    )
+    parser.add_argument("--num_inference_steps", type=int, default=20)
     parser.add_argument("--use_es", action="store_true", help="Use evolutionary strategy for training")
     parser.add_argument(
         "--cma_sigma",

@@ -63,11 +63,22 @@ class ProfileTarget:
         return -weighted.sum(dim=(-2, -1)) / denom
 
 
-def aggregate_profile_score(model, designs, scenarios: ScenarioBatch, target: ProfileTarget):
+def aggregate_profile_score(model, designs, scenarios: ScenarioBatch, target: ProfileTarget,
+                            diffusion_timestep: torch.Tensor | None = None):
     """Evaluate every design under every initial condition and take weighted expectation."""
     batch, scenario_count = designs.shape[0], scenarios.values.shape[0]
     design_grid = designs[:, None, :].expand(batch, scenario_count, -1).reshape(batch * scenario_count, -1)
     scenario_grid = scenarios.values.to(designs)[None, :, :].expand(batch, -1, -1).reshape(batch * scenario_count, -1)
-    profiles = model(design_grid, scenario_grid).reshape(batch, scenario_count, model.profile_steps, model.channels)
+    timestep_grid = None
+    if diffusion_timestep is not None:
+        timestep = diffusion_timestep.to(designs).reshape(-1)
+        if timestep.numel() == 1:
+            timestep = timestep.expand(batch)
+        if timestep.numel() != batch:
+            raise ValueError("diffusion_timestep must be scalar or have one value per design")
+        timestep_grid = timestep[:, None].expand(batch, scenario_count).reshape(-1)
+    profiles = model(design_grid, scenario_grid, timestep_grid).reshape(
+        batch, scenario_count, model.profile_steps, model.channels
+    )
     per_scenario = target.score(profiles)
     return (per_scenario * scenarios.normalized_weights(designs.device, designs.dtype)[None, :]).sum(dim=1)

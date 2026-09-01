@@ -39,13 +39,19 @@ def select_target_cells(config, scenario_id=None, family=None, generalist=False)
     return cells
 
 
-def load_surrogate(checkpoint_path, device="cpu", hidden_dim=256):
+def load_surrogate(checkpoint_path, device="cpu", hidden_dim=256, expected_noise_conditioned=False):
     model = ProfileForward2DModel(
         W=hidden_dim, task_ch=3, design_ch=16, init_ch=3, output_ch=3
     ).to(device)
     state = torch.load(checkpoint_path, map_location=device)
-    if isinstance(state, dict) and "model" in state:
-        state = state["model"]
+    metadata = state if isinstance(state, dict) and "model" in state else {}
+    noise_conditioned = bool(metadata.get("noise_conditioned", False))
+    if noise_conditioned != bool(expected_noise_conditioned):
+        wanted = "noise-conditioned DGDM" if expected_noise_conditioned else "clean-design"
+        found = "noise-conditioned DGDM" if noise_conditioned else "clean-design/legacy"
+        raise ValueError(f"Expected a {wanted} dynamics checkpoint, but {checkpoint_path} is {found}.")
+    if metadata:
+        state = metadata["model"]
     try:
         model.load_state_dict(state)
     except RuntimeError as exc:
@@ -56,6 +62,11 @@ def load_surrogate(checkpoint_path, device="cpu", hidden_dim=256):
     model.eval()
     for parameter in model.parameters():
         parameter.requires_grad_(False)
+    model.noise_conditioned = noise_conditioned
+    model.num_train_timesteps = int(metadata.get("num_train_timesteps", 100))
+    model.design_coordinates = metadata.get(
+        "design_coordinates", "diffusion_unit" if noise_conditioned else "model_norm"
+    )
     return model
 
 

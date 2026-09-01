@@ -7,7 +7,8 @@ object/initial-condition scenarios.
 
 ```bash
 python dgdm/train_prior.py --data_dir runs/exp3 --save_dir dgdm/runs/prior
-python dgdm/train_dynamics.py --data_dir runs/exp3 --save_dir dgdm/runs/dynamics
+python dgdm/train_dynamics.py --data_dir runs/exp3 --save_dir dgdm/runs/dynamics \
+  --timesteps 100 --timesteps_per_batch 4
 python dgdm/generate.py --prior dgdm/runs/prior/last.pt \
   --dynamics dgdm/runs/dynamics/best.pt --task dgdm/task_example.json
 ```
@@ -17,6 +18,12 @@ landing_height/0.10, landing_speed, initial_x_gap/0.10, friction, body_mass]`.
 Profile channel names are stored in every dynamics checkpoint. Archives lacking a
 signal use a zero training mask for that signal. This makes partial legacy data safe,
 but profile objectives should only use channels well represented in the training set.
+
+The DGDM dynamics model is deliberately separate from the clean aggregate-metric
+surrogate used by Adam and CMA-ES. During training, each clean design is mapped to
+the prior's `[-1, 1]` coordinates, corrupted at random diffusion timesteps, and paired
+with its original clean simulation profile. During generation, guidance is evaluated
+on the current noisy design and matching timestep at every DDIM step.
 
 For the paper comparison, keep `generator/` as the conditional aggregate-metric
 baseline. Compare unconditional prior samples, direct profile-gradient descent,
