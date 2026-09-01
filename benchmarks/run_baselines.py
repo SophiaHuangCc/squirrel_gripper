@@ -1,6 +1,7 @@
 """Generate common baseline candidates and optionally run the simulation suite."""
 
 import argparse
+import concurrent.futures
 import csv
 import json
 import statistics
@@ -188,7 +189,13 @@ def main():
         ),
     )
     parser.add_argument("--families", type=str, default="")
-    parser.add_argument("--num_workers", type=int, default=1)
+    parser.add_argument(
+        "--num_workers", type=int, default=1,
+        help=(
+            "Maximum concurrent candidate benchmark subprocesses. Each subprocess "
+            "runs one rollout at a time, preventing nested worker oversubscription."
+        ),
+    )
     parser.add_argument("--timeout", type=float, default=1800.0)
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--dry_run", action="store_true")
@@ -520,7 +527,7 @@ def main():
     if not args.run_benchmark:
         return
 
-    record_files = []
+    benchmark_jobs = []
     for path in candidate_files:
         loaded = load_candidates(path)
         run_dir = args.output_dir / "runs" / f"{loaded['method']}_s{loaded['seed']}"
@@ -530,7 +537,10 @@ def main():
             "--output_dir", str(run_dir),
             "--config", str(args.config),
             "--top_k", str(args.benchmark_top_k),
-            "--num_workers", str(args.num_workers),
+            # Parallelism is managed here across candidate/method/seed files.
+            # A specialist child contains only one rollout, so assigning the
+            # complete worker pool inside that child leaves the other CPUs idle.
+            "--num_workers", "1",
             "--timeout", str(args.timeout),
         ]
         if args.families:
@@ -546,9 +556,27 @@ def main():
             command.append("--render")
         if args.dry_run:
             command.append("--dry_run")
-        run_checked(command)
-        if not args.dry_run:
-            record_files.append(run_dir / "records.jsonl")
+        benchmark_jobs.append((command, run_dir / "records.jsonl"))
+
+    worker_count = max(1, int(args.num_workers))
+    print(
+        f"[BENCHMARK PARALLELISM] {len(benchmark_jobs)} candidate groups, "
+        f"up to {min(worker_count, len(benchmark_jobs))} concurrent subprocesses"
+    )
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_to_record = {
+            executor.submit(run_checked, command): record_path
+            for command, record_path in benchmark_jobs
+        }
+        for completed, future in enumerate(
+            concurrent.futures.as_completed(future_to_record), start=1
+        ):
+            future.result()
+            print(f"[BENCHMARK GROUP {completed}/{len(benchmark_jobs)}] complete")
+
+    record_files = (
+        [] if args.dry_run else [record_path for _, record_path in benchmark_jobs]
+    )
 
     if record_files:
         run_checked(

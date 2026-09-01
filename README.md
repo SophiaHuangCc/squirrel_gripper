@@ -307,6 +307,10 @@ Useful options on this single command are:
   diagnostic. Keep `1` for the primary deployable comparison.
 - `--render` enables simulator videos. Without it, benchmark runs disable video
   generation to save time and storage.
+- `--num_workers N` runs up to `N` method/seed candidate groups concurrently.
+  This is the effective parallelization axis for exact-specialist evaluation,
+  where each selected design has only one target-scenario rollout. Each child
+  benchmark stays single-worker to avoid nesting `N` worker pools.
 - `--surrogate_eval_budget N` overrides method-specific search lengths to
   approximately equalize surrogate evaluations. Record the chosen value when
   using it; its effect depends on whether the target contains 1 or 25 cells.
@@ -367,6 +371,9 @@ ten seeds plus the one-seed reference and retrieval baselines. Consequently,
 the complete study contains `82 x 9 x 3 = 2,214` PyElastica rollouts. The 16
 candidates per method are surrogate-ranked proposals; with
 `--benchmark_top_k 1`, they do not multiply the simulator count by 16.
+Completed rollouts are resumable: rerunning the identical command reuses each
+successful `benchmark_result.json` and executes only missing, failed, or timed
+out rollouts.
 
 ### 7. Render the best seed from each method
 
