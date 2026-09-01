@@ -8,9 +8,10 @@ import torch
 
 from benchmarks.baselines.random_search import sample_feasible_designs
 from benchmarks.baselines.reference import reference_design
-from benchmarks.baselines.surrogate_search import adam_search, select_target_cells
+from benchmarks.baselines.surrogate_search import _candidate_scores, adam_search, select_target_cells
 from benchmarks.candidates import load_candidates, save_candidates, validate_designs
 from benchmarks.protocol import aggregate_records, expand_core_scenarios, load_config
+from benchmarks.run_guidance_sweep import method_name, parse_float_list
 from dynamics.trainer import Trainer
 from generator.dataloader import (
     DESIGN_MODEL_SCALES, DesignBounds, model_norm_to_physical,
@@ -19,6 +20,12 @@ from generator.dataloader import (
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_guidance_sweep_labels_are_distinct_and_parseable(self):
+        scales = parse_float_list("0,0.1,1,2,10")
+        self.assertEqual(scales, (0.0, 0.1, 1.0, 2.0, 10.0))
+        self.assertEqual(len({method_name(scale) for scale in scales}), len(scales))
+        self.assertEqual(method_name(0.1), "conditional_dgdm_gs0p1")
+
     def test_scenario_count_and_families(self):
         config = load_config()
         cells = expand_core_scenarios(config)
@@ -128,6 +135,23 @@ class BenchmarkTests(unittest.TestCase):
         self.assertTrue(np.all(result.scores[:-1] >= result.scores[1:]))
         self.assertEqual(result.model_evaluations, 6)
 
+    def test_surrogate_scores_obey_normalized_metric_bounds(self):
+        class OutOfRangeSurrogate(torch.nn.Module):
+            def forward(self, task_params, design_params, init_config, timesteps):
+                return torch.tensor([[2.0, -1.0, 0.5]], dtype=torch.float32).repeat(
+                    design_params.shape[0], 1
+                )
+
+        score = _candidate_scores(
+            OutOfRangeSurrogate(), torch.zeros(1, 16), torch.zeros(1, 3),
+            torch.zeros(1, 3), {
+                "contact_coverage_norm": 1.0,
+                "disturbance_resistance_score": 0.0,
+                "angular_span_norm": 0.0,
+            },
+        )
+        self.assertAlmostEqual(float(score.item()), 1.0)
+
     def test_standard_dynamics_trainer_does_not_require_diffusers(self):
         args = SimpleNamespace(
             device="cpu", task_dim=3, design_dim=16, init_dim=3,
@@ -157,6 +181,24 @@ class BenchmarkTests(unittest.TestCase):
         physical = model_norm_to_physical(torch.ones(16))
         self.assertEqual(tuple(physical.shape), (16,))
         self.assertAlmostEqual(float(physical[11]), float(DESIGN_MODEL_SCALES[11]))
+
+    def test_tendon_path_length_uses_routing_points_and_distal_anchor(self):
+        try:
+            from TendonForces.TendonForces import TendonForces
+        except ModuleNotFoundError as exc:
+            if exc.name == "elastica":
+                self.skipTest("PyElastica is not installed in this test environment")
+            raise
+        positions = np.array([
+            [0.0, 1.0, 2.0, 3.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ])
+        directors = np.repeat(np.eye(3)[:, :, None], 3, axis=2)
+        length = TendonForces.get_path_length(
+            positions, directors, np.array([1, 2]), np.array([0.0, 0.0, 0.1]), 3
+        )
+        self.assertAlmostEqual(float(length), 3.0)
 
 
 if __name__ == "__main__":

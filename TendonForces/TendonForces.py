@@ -199,6 +199,44 @@ class TendonForces(NoForces):
             self.debug_store["tendon_direction_prev"] = (-unit_norm_vector_array[:-1]).copy()
             self.debug_store["tendon_direction_next"] = unit_norm_vector_array[1:].copy()
             self.debug_store["resultant_force_global"] = self.force_data.copy()
+            self.debug_store["tendon_path_length"] = self.get_path_length(
+                np.array(system.position_collection),
+                np.array(system.director_collection),
+                np.array(self.vertebra_nodes),
+                self.vertebra_height_vector,
+                self.distal_anchor_node,
+            )
+
+    @staticmethod
+    @njit(cache=True)
+    def get_path_length(position_collection, director_collection, vertebra_nodes,
+                        vertebra_height_vector, distal_anchor_node):
+        """Length of the modeled tendon polyline through its routing points."""
+        n_nodes = position_collection.shape[1]
+        n_directors = director_collection.shape[2]
+        route_nodes = np.empty(len(vertebra_nodes) + 2, dtype=np.int64)
+        route_nodes[0] = 0
+        for i in range(len(vertebra_nodes)):
+            route_nodes[i + 1] = vertebra_nodes[i]
+        route_count = len(vertebra_nodes) + 1
+        if distal_anchor_node >= 0:
+            route_nodes[route_count] = min(max(distal_anchor_node, 0), n_nodes - 1)
+            route_count += 1
+
+        total = 0.0
+        previous = np.zeros(3, dtype=np.float64)
+        for i in range(route_count):
+            node = min(max(route_nodes[i], 0), n_nodes - 1)
+            director_idx = min(max(node, 0), n_directors - 1)
+            point = (
+                position_collection[:, node]
+                + np.ascontiguousarray(director_collection[..., director_idx].T)
+                @ np.ascontiguousarray(vertebra_height_vector)
+            )
+            if i > 0:
+                total += np.linalg.norm(point - previous)
+            previous = point
+        return total
 
 
     def apply_torques(self, system: SystemType, time: np.float64 = 0.0):

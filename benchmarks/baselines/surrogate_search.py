@@ -93,6 +93,13 @@ def _candidate_scores(model, designs, task, init, weights):
     init_batch = init.repeat(candidate_count, 1)
     timesteps = torch.zeros(candidate_count * scenario_count, device=designs.device)
     pred = model(task_batch, design_batch, init_batch, timesteps).reshape(candidate_count, scenario_count, 3)
+    # C, D, and A are normalized benchmark quantities.  The regression model
+    # has a linear output head, so modest extrapolation outside [0, 1] is
+    # possible, especially after gradient-based design search.  Score the
+    # prediction under the same bounded contract used by the simulator rather
+    # than allowing an impossible value (for example, contact coverage > 1) to
+    # dominate candidate selection.
+    pred = pred.clamp(0.0, 1.0)
     per_cell = (
         float(weights["contact_coverage_norm"]) * pred[..., 0]
         + float(weights["disturbance_resistance_score"]) * pred[..., 1]

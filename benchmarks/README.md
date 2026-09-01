@@ -1,5 +1,101 @@
 # Squirrel Gripper Simulation Benchmark V1
 
+## Analyze a completed multi-objective specialist study
+
+The specialist sweep is stored as
+`STUDY_DIR/{combined,contact_only,disturbance_only}/specialists/approach_radius-XX`.
+Each scenario directory contains `candidates/`, per-method/seed `runs/`, and a
+`summary/`. One candidate file may contain several proposed designs, but the
+primary benchmark normally evaluates only the preselected top design because
+`--benchmark_top_k 1` is used.
+
+Do not select a final design by the surrogate `selection_score`. That value is
+used before simulation. Select it by the full-simulator `utility` for the
+declared objective. The following command recursively discovers completed runs
+and creates flat tables, including the best seed per method and the best method
+and seed overall for every scenario:
+
+```bash
+python -m benchmarks.analyze_study \
+  --study_dir "$BENCHMARK_DIR/nine_scenario_objectives"
+```
+
+The most useful outputs are:
+
+- `method_by_scenario.csv`: mean/std across seeds for each method and scene;
+- `method_overall.csv`: aggregate method comparison across the study;
+- `best_per_method_scenario.csv`: simulator-best seed for each method/scene;
+- `best_overall_per_scenario.csv`: one simulator-best design across all methods;
+- `timing_summary.csv`: proposal time and simulator time, reported separately;
+- `surrogate_gap_summary.csv`: surrogate-minus-simulator diagnostic;
+- `all_rollouts.csv`: a flat index containing paths to every result and master log.
+
+To regenerate an MP4 only for the single simulator-best design across all
+methods in every objective/scenario, add `--render_best_overall`. Use
+`--dry_run` first to print and validate all render commands without simulating:
+
+```bash
+python -m benchmarks.analyze_study \
+  --study_dir "$BENCHMARK_DIR/nine_scenario_objectives" \
+  --render_best_overall \
+  --num_workers 1 \
+  --timeout 1800 \
+  --dry_run
+```
+
+Remove `--dry_run` to produce the videos. Rendering one best design for each of
+three objectives and nine scenes launches 27 new rendered simulations. These
+are visualization reruns and should not replace the cached numerical results.
+Use `--objectives combined` or, for example,
+`--scenario_ids approach_radius:04` to render a smaller declared subset.
+Add `--measure_energy` to an actual render rerun to log tendon displacement,
+positive actuator work, and net actuator work in `final_design_energy.csv`.
+This opt-in calculation is not used during dataset generation, model training,
+candidate selection, or the primary utility benchmark.
+Use `--render_best_per_method --measure_energy` instead when the post-hoc study
+should compare the best simulated seed from every method rather than only the
+single best method overall; results are written to
+`per_method_final_design_energy.csv`.
+
+### Analyze a generalist study
+
+A generalist is one fixed design evaluated on every scenario. Its seed must be
+selected by mean full-simulator utility across the complete grid, not by taking
+a different best design in each scene. Point the same analyzer at the directory
+containing the completed generalist runs:
+
+```bash
+python -m benchmarks.analyze_study \
+  --study_dir "$GENERALIST_STUDY_DIR" \
+  --protocol generalist
+```
+
+In addition to the common rollout, timing, and calibration tables, this writes:
+
+- `generalist_candidate_summary.csv`: one fixed design/seed across all cells,
+  including mean, cross-scenario standard deviation, CVaR20, and worst cell;
+- `generalist_method_summary.csv`: mean and standard deviation across seeds;
+- `best_generalist_per_method.csv`: the simulator-best seed for each method;
+- `best_generalist_overall.csv`: one best method/seed by all-scenario mean.
+
+Render the single best generalist over the same complete grid with
+`--render_best_generalist`; use `--render_best_generalist_per_method` to compare
+one generalist from every method. Either can be combined with `--measure_energy`.
+Use `--dry_run` first when checking paths and scenario coverage.
+
+### Unattended specialist + generalist study run
+
+`scripts/run_design_studies.sh` exports the lab-machine defaults,
+runs all three objective profiles for specialists and generalists, analyzes both
+studies, optionally performs final-design video/energy reruns, and runs the
+paired conditional-DGDM guidance-scale sweep. It uses a V3
+result root so corrected surrogate-clamping experiments do not mix with V2.
+Run it in a persistent terminal such as `tmux`; progress and final status are
+stored under `outputs/from_links_v3/study_logs/`. The default
+keeps the specialist and generalist studies sequential because each benchmark
+already runs 30 simulator groups concurrently. Set `RUN_STUDIES_IN_PARALLEL=1`
+only on a machine that can safely support roughly twice that load.
+
 > **Current default protocol (V2):** `scenarios_v2.json` replaces the original
 > 28-cell multi-family study with a 25-cell `approach_deg × cyl_rad` grid. The
 > approach values are `5, 25, 45, 65, 85°` (every other level across the full
@@ -293,6 +389,33 @@ test simulations and cannot represent one-shot deployment.
 - target-cell versus family-aggregate guidance;
 - in-distribution versus leave-one-family-out scenarios;
 - dynamics predicted score versus simulator score (surrogate exploitation gap).
+
+### Paired guidance-scale sweep
+
+The current task/target-conditioned DGDM adaptation can be swept at five scales
+with identical initial noise, checkpoints, sample budget, DDIM steps, and seeds:
+
+```bash
+TendonForces/.venv/bin/python -m benchmarks.run_guidance_sweep \
+  --output_dir outputs/guidance_sweep_v1 \
+  --diffusion_checkpoint PATH/TO/DIFFUSION/best.pt \
+  --dynamics_checkpoint PATH/TO/DYNAMICS/best.pt \
+  --scales 0,0.1,1,2,10 \
+  --seeds 0,1,2,3,4 \
+  --candidate_budget 16 \
+  --num_samples 256 \
+  --inference_steps 20 \
+  --generalist \
+  --run_benchmark \
+  --benchmark_top_k 1 \
+  --num_workers 4
+```
+
+The scale-zero arm is the paired unguided control. Results are labeled
+`conditional_dgdm_gs0`, `...gs0p1`, `...gs1`, `...gs2`, and `...gs10` so the
+summary cannot collapse different scales into one method. This runner studies
+the existing conditional adaptation; the separate unconditional DGDM path must
+be swept with its own unconditional prior and noisy-timestep dynamics checkpoint.
 
 ## Experimental story
 

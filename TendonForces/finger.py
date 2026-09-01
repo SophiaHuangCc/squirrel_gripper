@@ -1057,6 +1057,13 @@ def main():
         action='store_true', 
         help='Enable tendon force verification mode')
     parser.add_argument(
+        "--compute_tendon_energy", action="store_true",
+        help=(
+            "Log tendon path length and calculate frictionless actuator work. "
+            "This is off by default and intended for final-design evaluation."
+        ),
+    )
+    parser.add_argument(
         "--distal_tendon_anchor",
         choices=["none", "tip"],
         default="none",
@@ -1711,6 +1718,7 @@ def main():
         "resultant_force_global": np.zeros((len(vertebra_nodes), 3)),
         "computed_torque_local": np.zeros((len(vertebra_nodes), 3)),
         "computed_torque_global": np.zeros((len(vertebra_nodes), 3)),
+        "tendon_path_length": 0.0,
     }
     distal_anchor_node = int(args.distal_tendon_anchor_node)
     if distal_anchor_node < 0 and args.distal_tendon_anchor == "tip":
@@ -1926,6 +1934,10 @@ def main():
 
                 self.callback_params["ankle_angle"].append(self.landing_state["ankle_angle"])
                 self.callback_params["current_tension"].append(self.landing_state["current_tension"])
+                if args.compute_tendon_energy:
+                    self.callback_params["tendon_path_length"].append(
+                        float(self.tendon_debug["tendon_path_length"])
+                    )
 
     data = defaultdict(list)
     sim.collect_diagnostics(finger).using(CB, step_skip=step_skip, callback_params=data, 
@@ -1937,6 +1949,37 @@ def main():
     integrate(timestepper, sim, final_time, total_steps)
 
     data_to_save = {key: np.array(value) for key, value in data.items()}
+
+    if args.compute_tendon_energy:
+        energy_time = np.asarray(data_to_save.get("time", []), dtype=float).reshape(-1)
+        tendon_length = np.asarray(
+            data_to_save.get("tendon_path_length", []), dtype=float
+        ).reshape(-1)
+        tendon_tension = np.asarray(
+            data_to_save.get("current_tension", []), dtype=float
+        ).reshape(-1)
+        sample_count = min(len(energy_time), len(tendon_length), len(tendon_tension))
+        if sample_count >= 2:
+            tendon_length = tendon_length[:sample_count]
+            tendon_tension = tendon_tension[:sample_count]
+            delta_length = np.diff(tendon_length)
+            midpoint_tension = 0.5 * (tendon_tension[:-1] + tendon_tension[1:])
+            # For an ideal frictionless tendon, shortening under positive
+            # tension is positive actuator work: dW = -T dL.
+            work_increment = -midpoint_tension * delta_length
+            positive_work = float(np.maximum(work_increment, 0.0).sum())
+            net_work = float(work_increment.sum())
+            shortening = float(tendon_length[0] - tendon_length[-1])
+            data_to_save["tendon_displacement_m"] = np.array([shortening])
+            data_to_save["tendon_actuator_work_positive_j"] = np.array([positive_work])
+            data_to_save["tendon_actuator_work_net_j"] = np.array([net_work])
+            print(
+                "[TENDON ENERGY] "
+                f"shortening={shortening:.6f} m "
+                f"positive_work={positive_work:.6f} J net_work={net_work:.6f} J"
+            )
+        else:
+            print("[TENDON ENERGY] insufficient logged samples; metrics unavailable")
 
     if args.torque_debug:
         torque_log_path = os.path.join(base_outdir, f"torque_debug_{run_id}_{suffix}.csv")

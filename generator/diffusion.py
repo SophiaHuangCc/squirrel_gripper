@@ -144,6 +144,11 @@ class SquirrelDesignDiffusion(nn.Module):
             design_batch = design_norm.repeat_interleave(scenario_count, dim=0)
         timesteps = torch.zeros(design_batch.shape[0], dtype=torch.float32, device=design_unit.device)
         pred = dynamics_model(task_params, design_batch, init_config, timesteps)
+        # The three surrogate outputs represent normalized C, D, and A.  Keep
+        # dynamics guidance on the same physical [0, 1] scale as candidate
+        # ranking and simulator utility, so denoising cannot exploit surrogate
+        # extrapolation above the attainable metric range.
+        pred = pred.clamp(0.0, 1.0)
 
         contacts = pred[:, 0]
         disturbance = pred[:, 1]

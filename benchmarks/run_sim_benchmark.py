@@ -59,7 +59,10 @@ def read_metric_from_npz(path):
             "angular_span": scalar(data, "angular_span", 0.0),
             "n_elements": scalar(data, "n_elements", 100.0),
         }
-        for key in ("max_overlap_overall", "total_energy"):
+        for key in (
+            "max_overlap_overall", "total_energy", "tendon_displacement_m",
+            "tendon_actuator_work_positive_j", "tendon_actuator_work_net_j",
+        ):
             if key in data:
                 metric[key] = scalar(data, key, 0.0)
     return metric
@@ -119,13 +122,14 @@ def build_command(design, scenario, run_dir, run_id, python_executable):
     return command, decoded
 
 
-def execute_job(job, weights, timeout, python_executable, render):
+def execute_job(job, weights, timeout, python_executable, render, measure_energy):
     run_dir = Path(job["run_dir"])
     result_path = run_dir / "benchmark_result.json"
     if result_path.exists():
         with open(result_path, "r", encoding="utf-8") as stream:
             cached = json.load(stream)
-        if cached.get("status") == "ok":
+        energy_complete = "tendon_actuator_work_positive_j" in cached.get("metrics", {})
+        if cached.get("status") == "ok" and (not measure_energy or energy_complete):
             cached["cached"] = True
             return cached
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -135,6 +139,8 @@ def execute_job(job, weights, timeout, python_executable, render):
     )
     if not render:
         command.append("--disable_video_plots")
+    if measure_energy:
+        command.append("--compute_tendon_energy")
     with open(run_dir / "benchmark_job.json", "w", encoding="utf-8") as stream:
         json.dump({**job, "decoded_design": decoded, "command": command}, stream, indent=2)
 
@@ -204,6 +210,10 @@ def main():
     parser.add_argument("--timeout", type=float, default=1800.0)
     parser.add_argument("--python", type=str, default=sys.executable)
     parser.add_argument("--render", action="store_true")
+    parser.add_argument(
+        "--measure_energy", action="store_true",
+        help="Calculate frictionless tendon actuator work for selected final designs.",
+    )
     parser.add_argument("--dry_run", action="store_true")
     parser.add_argument("--max_rollouts", type=int, default=None, help="Debug-only truncation")
     args = parser.parse_args()
@@ -275,7 +285,10 @@ def main():
     records = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.num_workers)) as executor:
         futures = [
-            executor.submit(execute_job, job, weights, args.timeout, python_executable, args.render)
+            executor.submit(
+                execute_job, job, weights, args.timeout, python_executable,
+                args.render, args.measure_energy,
+            )
             for job in jobs
         ]
         for completed, future in enumerate(concurrent.futures.as_completed(futures), start=1):
