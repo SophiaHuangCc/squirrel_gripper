@@ -9,13 +9,15 @@ BENCHMARK_CONFIG="${BENCHMARK_CONFIG:-$PROJECT_DIR/benchmarks/scenarios_v2_compa
 RESULT_ROOT="${RESULT_ROOT:-$PROJECT_DIR/outputs/from_links_v4_old_utility}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_DIR/.venv/bin/python}"
 
-# Prefer the checkpoint locations observed on the Linux workstation, while
-# retaining compatibility with the older from_links_v2 layout.
+# The benchmark search code requires the clean three-output surrogate trained
+# for the current 16-dimensional design representation.  The older
+# outputs/dynamics/exp1 checkpoint is architecture-incompatible.
 if [[ -z "${DYNAMICS_CHECKPOINT:-}" ]]; then
-  if [[ -f "$PROJECT_DIR/outputs/dynamics/exp1/best.pt" ]]; then
-    DYNAMICS_CHECKPOINT="$PROJECT_DIR/outputs/dynamics/exp1/best.pt"
-  else
+  if [[ -f "$PROJECT_DIR/outputs/from_links_v2/dynamics/best.pt" ]]; then
     DYNAMICS_CHECKPOINT="$PROJECT_DIR/outputs/from_links_v2/dynamics/best.pt"
+  else
+    echo "ERROR: compatible clean dynamics checkpoint is missing: $PROJECT_DIR/outputs/from_links_v2/dynamics/best.pt"
+    exit 2
   fi
 fi
 DGDM_DYNAMICS_CHECKPOINT="${DGDM_DYNAMICS_CHECKPOINT:-$PROJECT_DIR/outputs/from_links_v3/dynamics_noisy/best.pt}"
@@ -74,6 +76,15 @@ echo "[UTILITY] D=0.45 C=0.20 A=0.35"
 echo "[CONFIG] seeds=$SEEDS benchmark_workers=$NUM_WORKERS render_workers=$RENDER_WORKERS"
 echo "[CONFIG] dgdm_guidance_scale=$DGDM_GUIDANCE_SCALE"
 echo "[OUTPUT] $RESULT_ROOT"
+
+echo "[CHECKPOINT TEST] clean dynamics=$DYNAMICS_CHECKPOINT"
+"$PYTHON_BIN" -c \
+  'from benchmarks.baselines.surrogate_search import load_surrogate; import sys; load_surrogate(sys.argv[1], device="cpu"); print("[CHECKPOINT OK] clean dynamics")' \
+  "$DYNAMICS_CHECKPOINT"
+echo "[CHECKPOINT TEST] noisy dynamics=$DGDM_DYNAMICS_CHECKPOINT"
+"$PYTHON_BIN" -c \
+  'from benchmarks.baselines.surrogate_search import load_surrogate; import sys; load_surrogate(sys.argv[1], device="cpu", expected_noise_conditioned=True); print("[CHECKPOINT OK] noisy dynamics")' \
+  "$DGDM_DYNAMICS_CHECKPOINT"
 
 run_candidates_and_benchmarks() {
   local protocol=$1
