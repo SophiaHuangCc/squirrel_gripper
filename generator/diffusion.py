@@ -175,9 +175,9 @@ class SquirrelDesignDiffusion(nn.Module):
             score = disturbance + 0.1 * contacts + 0.5 * angular_span
         elif objective == "benchmark_utility":
             weights = guidance_weights or {
-                "disturbance_resistance_score": 0.55,
-                "contact_coverage_norm": 0.35,
-                "angular_span_norm": 0.10,
+                "disturbance_resistance_score": 0.45,
+                "contact_coverage_norm": 0.20,
+                "angular_span_norm": 0.35,
             }
             score = (
                 float(weights["disturbance_resistance_score"]) * disturbance

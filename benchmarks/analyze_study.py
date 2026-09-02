@@ -83,7 +83,7 @@ def read_rows(root):
         positive_work = metrics.get("tendon_actuator_work_positive_j")
         combined = (
             None if None in (contact, disturbance, angular)
-            else 0.35 * float(contact) + 0.55 * float(disturbance) + 0.10 * float(angular)
+            else 0.20 * float(contact) + 0.45 * float(disturbance) + 0.35 * float(angular)
         )
         row = {
             "objective": objective_name(result_path, root),
@@ -353,10 +353,15 @@ def render_rows(rows, output_dir, num_workers, timeout, dry_run, measure_energy)
 
 def run_render_commands(commands, num_workers):
     """Run independent render groups concurrently without nested worker pools."""
+    total = len(commands)
+    if not total:
+        print("[RENDER PROGRESS] no render commands selected", flush=True)
+        return
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(num_workers))) as executor:
         futures = [executor.submit(subprocess.run, command, check=True) for command in commands]
-        for future in concurrent.futures.as_completed(futures):
+        for completed, future in enumerate(concurrent.futures.as_completed(futures), start=1):
             future.result()
+            print(f"[RENDER PROGRESS] completed={completed}/{total}", flush=True)
 
 
 def render_generalists(rows, output_dir, num_workers, timeout, dry_run, measure_energy):

@@ -6,7 +6,9 @@ set -Eeuo pipefail
 PROJECT_DIR="${PROJECT_DIR:-/home/real/Desktop/Squirrel_Gripper/ws/squirrel_gripper}"
 RESULT_ROOT="${RESULT_ROOT:-$PROJECT_DIR/outputs/from_links_v3}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_DIR/.venv/bin/python}"
-NUM_WORKERS="${NUM_WORKERS:-30}"
+# Video encoding and PyElastica simulation are both CPU/memory intensive.
+# Keep post-processing concurrency conservative; callers can override it.
+NUM_WORKERS="${NUM_WORKERS:-4}"
 TIMEOUT="${TIMEOUT:-1800}"
 ENERGY_SELECTION="${ENERGY_SELECTION:-per_method}"
 

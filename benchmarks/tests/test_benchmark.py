@@ -43,9 +43,9 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(
             config["evaluation"]["utility_weights"],
             {
-                "disturbance_resistance_score": 0.55,
-                "contact_coverage_norm": 0.35,
-                "angular_span_norm": 0.10,
+                "disturbance_resistance_score": 0.45,
+                "contact_coverage_norm": 0.20,
+                "angular_span_norm": 0.35,
             },
         )
 
