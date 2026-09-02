@@ -32,6 +32,8 @@ ENERGY_SELECTION="${ENERGY_SELECTION:-per_method}"
 # Keep 0 on a 30-core/single-GPU machine. Set to 1 only if roughly 60 simulator
 # workers and concurrent GPU proposal generation are known to fit.
 RUN_STUDIES_IN_PARALLEL="${RUN_STUDIES_IN_PARALLEL:-0}"
+# Set to 0 when resuming only the final energy/video post-processing stage.
+RUN_CORE_STUDIES="${RUN_CORE_STUDIES:-1}"
 RUN_GUIDANCE_SWEEP="${RUN_GUIDANCE_SWEEP:-1}"
 GUIDANCE_SCALES="${GUIDANCE_SCALES:-0,0.1,1,2,10}"
 GUIDANCE_SEEDS="${GUIDANCE_SEEDS:-$SEEDS}"
@@ -88,6 +90,7 @@ echo "[START] $(date --iso-8601=seconds)"
 echo "[PATH] specialist=$SPECIALIST_STUDY_DIR"
 echo "[PATH] generalist=$GENERALIST_STUDY_DIR"
 echo "[CONFIG] workers=$NUM_WORKERS seeds=$SEEDS profiles=$PROFILES energy=$ENERGY_SELECTION"
+echo "[CONFIG] core_studies=$RUN_CORE_STUDIES"
 echo "[CONFIG] guidance_sweep=$RUN_GUIDANCE_SWEEP scales=$GUIDANCE_SCALES"
 echo "[CONFIG] noisy_dynamics=$DGDM_DYNAMICS_DIR train_mode=$TRAIN_DGDM_DYNAMICS"
 
@@ -269,17 +272,21 @@ run_guidance_sweep() {
   echo "[GUIDANCE SWEEP DONE] time=$(date --iso-8601=seconds)"
 }
 
-if [[ "$RUN_STUDIES_IN_PARALLEL" == "1" ]]; then
-  echo "[WARNING] specialist and generalist pipelines will share GPU and CPU resources"
-  run_pipeline specialist "$SPECIALIST_STUDY_DIR" &
-  specialist_pid=$!
-  run_pipeline generalist "$GENERALIST_STUDY_DIR" &
-  generalist_pid=$!
-  wait "$specialist_pid"
-  wait "$generalist_pid"
+if [[ "$RUN_CORE_STUDIES" == "0" ]]; then
+  echo "[CORE STUDIES SKIPPED]"
 else
-  run_pipeline specialist "$SPECIALIST_STUDY_DIR"
-  run_pipeline generalist "$GENERALIST_STUDY_DIR"
+  if [[ "$RUN_STUDIES_IN_PARALLEL" == "1" ]]; then
+    echo "[WARNING] specialist and generalist pipelines will share GPU and CPU resources"
+    run_pipeline specialist "$SPECIALIST_STUDY_DIR" &
+    specialist_pid=$!
+    run_pipeline generalist "$GENERALIST_STUDY_DIR" &
+    generalist_pid=$!
+    wait "$specialist_pid"
+    wait "$generalist_pid"
+  else
+    run_pipeline specialist "$SPECIALIST_STUDY_DIR"
+    run_pipeline generalist "$GENERALIST_STUDY_DIR"
+  fi
 fi
 
 # Run the numerical guidance study before expensive video/energy reruns.

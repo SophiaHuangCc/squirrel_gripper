@@ -242,6 +242,12 @@ def generalist_method_summary(candidate_rows):
 def read_proposal_times(root):
     rows = []
     for path in sorted(root.rglob("proposal_times.csv")):
+        # Analysis writes a normalized proposal_times.csv beneath
+        # study_analysis.  Do not ingest that derived file on a later analysis
+        # pass: its schema contains proposal_seconds rather than the raw
+        # proposal_elapsed_seconds field.
+        if "study_analysis" in path.parts:
+            continue
         objective = objective_name(path, root)
         scenario = next(
             (part.replace("approach_radius-", "approach_radius:")

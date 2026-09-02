@@ -129,7 +129,10 @@ def execute_job(job, weights, timeout, python_executable, render, measure_energy
         with open(result_path, "r", encoding="utf-8") as stream:
             cached = json.load(stream)
         energy_complete = "tendon_actuator_work_positive_j" in cached.get("metrics", {})
-        if cached.get("status") == "ok" and (not measure_energy or energy_complete):
+        video_complete = any(run_dir.rglob("*.mp4"))
+        if (cached.get("status") == "ok"
+                and (not measure_energy or energy_complete)
+                and (not render or video_complete)):
             cached["cached"] = True
             return cached
     run_dir.mkdir(parents=True, exist_ok=True)
