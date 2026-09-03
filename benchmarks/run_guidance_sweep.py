@@ -40,12 +40,13 @@ def method_name(scale):
     return f"conditional_dgdm_gs{scale_slug(scale)}"
 
 
-def run_benchmark(args, candidate_path, method, seed):
+def run_benchmark(args, candidate_path, method, seed, scenario_ids):
     output = args.output_dir / "runs" / f"{method}_s{seed}"
     command = [
         sys.executable, "-m", "benchmarks.run_sim_benchmark",
         "--candidates", str(candidate_path), "--output_dir", str(output),
         "--config", str(args.config), "--top_k", str(args.benchmark_top_k),
+        "--scenario_ids", ",".join(scenario_ids),
         "--num_workers", str(args.num_workers), "--timeout", str(args.timeout),
         "--python", sys.executable,
     ]
@@ -170,7 +171,7 @@ def main():
             })
             print(f"[GENERATED] {method} seed={seed} seconds={elapsed:.2f}")
             if args.run_benchmark:
-                run_benchmark(args, path, method, seed)
+                run_benchmark(args, path, method, seed, result.target_scenario_ids)
     manifest_path = args.output_dir / "guidance_sweep_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     with (args.output_dir / "proposal_times.csv").open(

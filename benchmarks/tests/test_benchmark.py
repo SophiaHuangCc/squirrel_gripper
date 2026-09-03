@@ -12,6 +12,7 @@ from benchmarks.baselines.surrogate_search import _candidate_scores, adam_search
 from benchmarks.candidates import load_candidates, save_candidates, validate_designs
 from benchmarks.protocol import aggregate_records, expand_core_scenarios, load_config
 from benchmarks.run_guidance_sweep import method_name, parse_float_list
+from benchmarks.diagnose_dgdm import directional_quality, parse_int_list
 from dynamics.trainer import Trainer
 from generator.dataloader import (
     DESIGN_MODEL_SCALES, DesignBounds, model_norm_to_physical,
@@ -20,6 +21,16 @@ from generator.dataloader import (
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_dgdm_diagnostic_helpers(self):
+        self.assertEqual(parse_int_list("0,10,99"), (0, 10, 99))
+        designs = np.asarray([[0.0], [1.0], [2.0]], dtype=np.float32)
+        gradients = np.ones_like(designs)
+        utility = np.asarray([0.0, 1.0, 2.0], dtype=np.float32)
+        environment = [(1.0,)] * 3
+        result = directional_quality(designs, gradients, utility, environment)
+        self.assertEqual(result["num_direction_pairs"], 3)
+        self.assertAlmostEqual(result["direction_sign_accuracy"], 1.0)
+
     def test_guidance_sweep_labels_are_distinct_and_parseable(self):
         scales = parse_float_list("0,0.1,1,2,10")
         self.assertEqual(scales, (0.0, 0.1, 1.0, 2.0, 10.0))
