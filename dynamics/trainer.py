@@ -72,7 +72,15 @@ class Trainer:
         self.ranking_min_target_delta = float(
             getattr(self.args, "ranking_min_target_delta", 0.05)
         )
-        if self.ranking_loss_weight < 0 or self.ranking_margin < 0 or self.ranking_min_target_delta < 0:
+        self.ranking_max_design_distance = float(
+            getattr(self.args, "ranking_max_design_distance", 0.0)
+        )
+        self.noise_timestep_sampling = getattr(
+            self.args, "noise_timestep_sampling", "uniform"
+        )
+        if (self.ranking_loss_weight < 0 or self.ranking_margin < 0
+                or self.ranking_min_target_delta < 0
+                or self.ranking_max_design_distance < 0):
             raise ValueError("Ranking-loss weight, margin, and target delta must be nonnegative")
         self.last_loss_parts = {}
 
@@ -105,7 +113,10 @@ class Trainer:
             raise ValueError(f"{name} must sum to one")
         return torch.tensor(values, dtype=torch.float32)
 
-    def loss_components(self, prediction, target):
+    def loss_components(
+        self, prediction, target, task_params=None, init_config=None,
+        design_params=None, timesteps=None,
+    ):
         per_metric_mse = (prediction - target).square().mean(dim=0)
         regression = (
             per_metric_mse * self.metric_loss_weights
@@ -115,9 +126,32 @@ class Trainer:
         if self.ranking_loss_weight > 0 and len(prediction) > 1:
             predicted_utility = prediction @ self.utility_weights
             target_utility = target @ self.utility_weights
-            predicted_delta = predicted_utility - torch.roll(predicted_utility, 1)
-            target_delta = target_utility - torch.roll(target_utility, 1)
-            valid = target_delta.abs() >= self.ranking_min_target_delta
+            # Compare all pairs, but only within the same task, initial condition,
+            # and (for noisy training) timestep. Ranking across different physical
+            # scenarios does not supervise the local design direction used by DGDM.
+            predicted_delta = predicted_utility[:, None] - predicted_utility[None, :]
+            target_delta = target_utility[:, None] - target_utility[None, :]
+            valid = torch.triu(
+                torch.ones_like(target_delta, dtype=torch.bool), diagonal=1
+            )
+            valid &= target_delta.abs() >= self.ranking_min_target_delta
+            if task_params is not None:
+                valid &= torch.isclose(
+                    task_params[:, None, :], task_params[None, :, :], atol=1e-6, rtol=0.0
+                ).all(dim=-1)
+            if init_config is not None:
+                valid &= torch.isclose(
+                    init_config[:, None, :], init_config[None, :, :], atol=1e-6, rtol=0.0
+                ).all(dim=-1)
+            if timesteps is not None:
+                valid &= torch.isclose(
+                    timesteps[:, None], timesteps[None, :], atol=1e-7, rtol=0.0
+                )
+            if design_params is not None and self.ranking_max_design_distance > 0:
+                distance = torch.linalg.vector_norm(
+                    design_params[:, None, :] - design_params[None, :, :], dim=-1
+                )
+                valid &= distance <= self.ranking_max_design_distance
             if valid.any():
                 signed_prediction = target_delta[valid].sign() * predicted_delta[valid]
                 ranking = torch.relu(self.ranking_margin - signed_prediction).mean()
@@ -164,12 +198,21 @@ class Trainer:
 
         noise = torch.randn_like(design_all, device=self.device)
 
-        timesteps = torch.randint(
-            low=0,
-            high=self.noise_scheduler.config.num_train_timesteps,
-            size=(design_all.shape[0],),
-            device=self.device,
-        ).long()
+        if self.noise_timestep_sampling == "inference":
+            available = self.noise_scheduler.timesteps.to(self.device)
+            selected = available[
+                torch.randint(0, len(available), (K,), device=self.device)
+            ]
+        else:
+            selected = torch.randint(
+                low=0,
+                high=self.noise_scheduler.config.num_train_timesteps,
+                size=(K,),
+                device=self.device,
+            )
+        # One shared timestep per repeated batch permits valid within-context
+        # ranking comparisons at an identical corruption level.
+        timesteps = selected.repeat_interleave(B).long()
 
         noisy_design_all = self.noise_scheduler.add_noise(
             original_samples=design_all,
@@ -206,7 +249,9 @@ class Trainer:
             timesteps=timestep_cond,
         )
 
-        loss, self.last_loss_parts = self.loss_components(pred, target_all)
+        loss, self.last_loss_parts = self.loss_components(
+            pred, target_all, task_all, init_all, noisy_design_all, timestep_cond
+        )
         loss.backward()
 
         # total_grad = 0.0

@@ -50,6 +50,13 @@ def parse():
         "--ranking_min_target_delta", type=float, default=0.05,
         help="Ignore pairs whose measured utility differs by less than this value.",
     )
+    parser.add_argument(
+        "--ranking_max_design_distance", type=float, default=0.0,
+        help=(
+            "Optional maximum L2 distance between normalized designs used by the "
+            "pairwise ranking loss. Zero disables the distance filter."
+        ),
+    )
     parser.add_argument("--use_design_noise", action="store_true")
     parser.add_argument(
         "--num_train_timesteps", type=int, default=100,
@@ -60,6 +67,13 @@ def parse():
         help="Independent noise levels sampled per clean design for DGDM dynamics training.",
     )
     parser.add_argument("--num_inference_steps", type=int, default=20)
+    parser.add_argument(
+        "--noise_timestep_sampling", choices=("uniform", "inference"), default="uniform",
+        help=(
+            "For noisy dynamics training, sample any training timestep or only the "
+            "DDIM timesteps that will actually be used during inference."
+        ),
+    )
     parser.add_argument("--use_es", action="store_true", help="Use evolutionary strategy for training")
     parser.add_argument(
         "--cma_sigma",
