@@ -1,0 +1,65 @@
+{
+  "schema_version": 3,
+  "description": "Held-out interpolation grid: approach angles and boundary radii are absent from the training grid; the nominal center is retained as an anchor.",
+  "units": {"angles": "degree", "lengths": "meter", "mass": "kilogram"},
+  "fixed_simulation": {
+    "E": 6740000.0,
+    "damping": 0.1,
+    "n_elements": 0,
+    "final_time": 2.0,
+    "k_contact": 500.0,
+    "nu_contact": 20.0,
+    "mu_contact": 0.8,
+    "vel_damp_contact": 30,
+    "poisson_nu": 0.49,
+    "v_mass": 0.04,
+    "cross_section": "rect",
+    "base_width": 0.03,
+    "landing_motion": true,
+    "landing_mode": "prescribed",
+    "landing_speed": 0.0,
+    "body_mass": 3.0,
+    "joint_stiffness_mode": "bending_only",
+    "v_mode": "from_links",
+    "distal_tendon_anchor": "tip",
+    "max_tension": 30.0,
+    "prescribed_stop_at_contact": true,
+    "prescribed_contact_margin": -0.005,
+    "continuous_disturbance_metric": true
+  },
+  "nominal": {
+    "approach_deg": 45.0,
+    "landing_approach_deg": 45.0,
+    "cyl_rad": 0.025,
+    "initial_x_gap": 0.12,
+    "landing_height": 0.04
+  },
+  "default_target_scenario_id": "approach_radius:04",
+  "families": [{
+    "id": "approach_radius",
+    "description": "Held-out in-range interpolation values plus the nominal anchor.",
+    "grid": {
+      "approach_deg": [13.0, 45.0, 77.0],
+      "cyl_rad": [0.018, 0.025, 0.032]
+    }
+  }],
+  "evaluation": {
+    "candidate_budget": 16,
+    "method_seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    "cvar_fraction": 0.2,
+    "utility_weights": {
+      "disturbance_resistance_score": 0.45,
+      "contact_coverage_norm": 0.20,
+      "angular_span_norm": 0.35
+    }
+  },
+  "manufacturing_scenario_ids": [
+    "approach_radius:00",
+    "approach_radius:02",
+    "approach_radius:03",
+    "approach_radius:04",
+    "approach_radius:05",
+    "approach_radius:06",
+    "approach_radius:08"
+  ]
+}

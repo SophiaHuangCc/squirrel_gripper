@@ -169,6 +169,13 @@ def main():
     parser.add_argument("--diffusion_batch_size", type=int, default=256)
     parser.add_argument("--diffusion_inference_steps", type=int, default=20)
     parser.add_argument("--dgdm_guidance_scale", type=float, default=0.1)
+    parser.add_argument(
+        "--dgdm_method_label", type=str, default="dgdm",
+        help=(
+            "Method label stored in candidate/results files for a DGDM run. "
+            "Use distinct labels such as dgdm_gs0p1 when comparing scales."
+        ),
+    )
     parser.add_argument("--target_contacts", type=float, default=0.8)
     parser.add_argument("--target_disturbance", type=float, default=0.8)
     parser.add_argument("--target_angular_span", type=float, default=0.8)
@@ -205,6 +212,10 @@ def main():
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--dry_run", action="store_true")
     args = parser.parse_args()
+    if not args.dgdm_method_label or not all(
+        char.isalnum() or char in "_.-" for char in args.dgdm_method_label
+    ):
+        raise ValueError("--dgdm_method_label may contain only letters, numbers, _, -, and .")
 
     source_config = args.config.resolve()
     config = load_config(source_config)
@@ -470,6 +481,7 @@ def main():
         for seed in seeds:
             for method in sorted(diffusion_methods):
                 started = time.perf_counter()
+                output_method = args.dgdm_method_label if method == "dgdm" else method
                 conditioning_mode = (
                     "unconditional" if method.startswith("unconditional_") else "conditional"
                 )
@@ -492,10 +504,11 @@ def main():
                     generalist=args.generalist, device=args.device,
                     guidance_dynamics_model=guidance_surrogate if guided else None,
                 )
-                path = candidate_dir / f"{method}_s{seed}.npz"
+                path = candidate_dir / f"{output_method}_s{seed}.npz"
                 save_candidates(
-                    path, result.designs, method, seed=seed, scores=result.scores,
+                    path, result.designs, output_method, seed=seed, scores=result.scores,
                     metadata={
+                        "base_method": method,
                         "diffusion_checkpoint": str(checkpoint_path.resolve()),
                         "conditioning_mode": conditioning_mode,
                         "dynamics_checkpoint": str(args.dynamics_checkpoint.resolve()),
@@ -521,7 +534,7 @@ def main():
                     },
                 )
                 candidate_files.append(path)
-                record_proposal_time(method, seed, started, path)
+                record_proposal_time(output_method, seed, started, path)
 
     for spec in args.adapt:
         started = time.perf_counter()

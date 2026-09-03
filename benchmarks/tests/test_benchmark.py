@@ -43,9 +43,9 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(
             config["evaluation"]["utility_weights"],
             {
-                "disturbance_resistance_score": 0.45,
-                "contact_coverage_norm": 0.20,
-                "angular_span_norm": 0.35,
+                "disturbance_resistance_score": 0.55,
+                "contact_coverage_norm": 0.35,
+                "angular_span_norm": 0.10,
             },
         )
 
@@ -54,6 +54,45 @@ class BenchmarkTests(unittest.TestCase):
         cells = expand_core_scenarios(compact)
         self.assertEqual(len(cells), 9)
         self.assertEqual(compact["default_target_scenario_id"], "approach_radius:04")
+
+    def test_unseen_interpolation_grid_and_manufacturing_subset(self):
+        config = load_config(
+            Path(__file__).parents[1] / "scenarios_v3_unseen_interpolation.json"
+        )
+        cells = expand_core_scenarios(config)
+        self.assertEqual(len(cells), 9)
+        self.assertEqual(
+            [(cell["params"]["approach_deg"], cell["params"]["cyl_rad"])
+             for cell in cells],
+            [
+                (13.0, 0.018), (13.0, 0.025), (13.0, 0.032),
+                (45.0, 0.018), (45.0, 0.025), (45.0, 0.032),
+                (77.0, 0.018), (77.0, 0.025), (77.0, 0.032),
+            ],
+        )
+        self.assertEqual(
+            config["manufacturing_scenario_ids"],
+            [
+                "approach_radius:00", "approach_radius:02",
+                "approach_radius:03", "approach_radius:04",
+                "approach_radius:05", "approach_radius:06",
+                "approach_radius:08",
+            ],
+        )
+
+    def test_four_scenario_grid_excludes_seen_center_levels(self):
+        config = load_config(Path(__file__).parents[1] / "scenarios_v4_unseen_four.json")
+        cells = expand_core_scenarios(config)
+        self.assertEqual(len(cells), 4)
+        self.assertEqual(
+            [(cell["params"]["approach_deg"], cell["params"]["cyl_rad"])
+             for cell in cells],
+            [
+                (13.0, 0.018), (13.0, 0.032),
+                (77.0, 0.018), (77.0, 0.032),
+            ],
+        )
+        self.assertEqual(config["evaluation"]["method_seeds"], [0, 1, 2, 3, 4])
 
     def test_reference_is_valid_from_links_design(self):
         design = validate_designs(reference_design())
