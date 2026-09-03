@@ -119,6 +119,11 @@ def main():
     parser.add_argument("--max_samples", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", choices=("cpu", "cuda", "mps"), default="cuda")
+    parser.add_argument("--wandb_project", default="")
+    parser.add_argument("--wandb_entity", default=None)
+    parser.add_argument("--wandb_run_name", default=None)
+    parser.add_argument("--wandb_mode", choices=("online", "offline", "disabled"),
+                        default="online")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -169,6 +174,7 @@ def main():
     records = []
     evaluate_model.timestep = torch.tensor(0.0, device=device)
     records.append({"model": "clean", "diffusion_timestep": 0,
+                    "noise_std": 0.0, "scheduler_scaled_gradient_norm": 0.0,
                     **evaluate_model(clean_model, clean_model_design, task, init,
                                      target, weights, environment)})
     for timestep in parse_int_list(args.timesteps):
@@ -177,9 +183,13 @@ def main():
         t = torch.full((len(clean_unit),), timestep, dtype=torch.long, device=device)
         noisy_design = scheduler.add_noise(clean_unit, shared_noise, t)
         evaluate_model.timestep = torch.tensor(timestep / prior_steps, device=device)
-        records.append({"model": "noise_conditioned", "diffusion_timestep": timestep,
+        noise_std = float((1.0 - scheduler.alphas_cumprod[timestep]).sqrt())
+        row = {"model": "noise_conditioned", "diffusion_timestep": timestep,
+               "noise_std": noise_std,
                         **evaluate_model(noisy_model, noisy_design, task, init,
-                                         target, weights, environment)})
+                                         target, weights, environment)}
+        row["scheduler_scaled_gradient_norm"] = noise_std * row["mean_gradient_norm"]
+        records.append(row)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = args.output_dir / "timestep_diagnostics.csv"
@@ -202,6 +212,28 @@ def main():
     (args.output_dir / "diagnostic_manifest.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
     )
+    if args.wandb_project:
+        import wandb
+        run = wandb.init(
+            project=args.wandb_project, entity=args.wandb_entity,
+            name=args.wandb_run_name, mode=args.wandb_mode,
+            config=manifest,
+        )
+        run.define_metric("diagnostic_timestep")
+        run.define_metric("noise_conditioned/*", step_metric="diagnostic_timestep")
+        run.log({"timestep_diagnostics": wandb.Table(
+            columns=list(records[0]),
+            data=[[row[key] for key in records[0]] for row in records],
+        )})
+        clean_row = records[0]
+        run.log({f"clean/{key}": value for key, value in clean_row.items()
+                 if isinstance(value, (int, float))})
+        for row in records[1:]:
+            payload = {f"noise_conditioned/{key}": value for key, value in row.items()
+                       if isinstance(value, (int, float))}
+            payload["diagnostic_timestep"] = int(row["diffusion_timestep"])
+            run.log(payload)
+        run.finish()
     print(f"[DIAGNOSTICS] {csv_path}")
     for row in records:
         print(row)

@@ -211,6 +211,25 @@ class BenchmarkTests(unittest.TestCase):
         trainer.create_model()
         self.assertIsNone(trainer.noise_scheduler)
 
+    def test_weighted_regression_and_ranking_loss(self):
+        args = SimpleNamespace(
+            device="cpu", task_dim=3, design_dim=16, init_dim=3,
+            output_dim=3, hidden_dim=16, lr=1e-3, use_design_noise=False,
+            metric_loss_weights="1,1,2", utility_weights="0.20,0.45,0.35",
+            ranking_loss_weight=0.2, ranking_margin=0.05,
+            ranking_min_target_delta=0.01,
+        )
+        trainer = Trainer(args)
+        trainer.create_model()
+        target = torch.tensor([[0.1, 0.1, 0.1], [0.9, 0.9, 0.9]])
+        correct = target.clone()
+        reversed_prediction = torch.flip(target, dims=(0,))
+        correct_loss, correct_parts = trainer.loss_components(correct, target)
+        reversed_loss, reversed_parts = trainer.loss_components(reversed_prediction, target)
+        self.assertAlmostEqual(float(correct_parts["regression"]), 0.0)
+        self.assertGreater(float(reversed_parts["ranking"]), float(correct_parts["ranking"]))
+        self.assertGreater(float(reversed_loss), float(correct_loss))
+
     def test_geometry_projection_preserves_each_link_bound(self):
         bounds = DesignBounds.defaults()
         raw = bounds.hi.repeat(3, 1)

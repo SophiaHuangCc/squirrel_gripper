@@ -59,7 +59,22 @@ class Trainer:
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.args.lr)
         self.lr_scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=30, gamma=0.5)
-        self.criterion = nn.MSELoss()
+        self.metric_loss_weights = self._parse_weights(
+            getattr(self.args, "metric_loss_weights", "1,1,1"),
+            "--metric_loss_weights", require_sum_one=False,
+        ).to(self.device)
+        self.utility_weights = self._parse_weights(
+            getattr(self.args, "utility_weights", "0.20,0.45,0.35"),
+            "--utility_weights", require_sum_one=True,
+        ).to(self.device)
+        self.ranking_loss_weight = float(getattr(self.args, "ranking_loss_weight", 0.0))
+        self.ranking_margin = float(getattr(self.args, "ranking_margin", 0.05))
+        self.ranking_min_target_delta = float(
+            getattr(self.args, "ranking_min_target_delta", 0.05)
+        )
+        if self.ranking_loss_weight < 0 or self.ranking_margin < 0 or self.ranking_min_target_delta < 0:
+            raise ValueError("Ranking-loss weight, margin, and target delta must be nonnegative")
+        self.last_loss_parts = {}
 
         # Diffusers is needed only for the optional design-noise augmentation.
         # Keep ordinary surrogate training independent of the Hugging Face stack.
@@ -80,6 +95,41 @@ class Trainer:
                 prediction_type="epsilon",
             )
             self.noise_scheduler.set_timesteps(self.num_inference_steps)
+
+    @staticmethod
+    def _parse_weights(text, name, require_sum_one):
+        values = [float(value.strip()) for value in str(text).split(",") if value.strip()]
+        if len(values) != 3 or any(value < 0 for value in values) or sum(values) <= 0:
+            raise ValueError(f"{name} must contain three nonnegative C,D,A values")
+        if require_sum_one and abs(sum(values) - 1.0) > 1e-6:
+            raise ValueError(f"{name} must sum to one")
+        return torch.tensor(values, dtype=torch.float32)
+
+    def loss_components(self, prediction, target):
+        per_metric_mse = (prediction - target).square().mean(dim=0)
+        regression = (
+            per_metric_mse * self.metric_loss_weights
+        ).sum() / self.metric_loss_weights.sum()
+        ranking = prediction.sum() * 0.0
+        pair_count = 0
+        if self.ranking_loss_weight > 0 and len(prediction) > 1:
+            predicted_utility = prediction @ self.utility_weights
+            target_utility = target @ self.utility_weights
+            predicted_delta = predicted_utility - torch.roll(predicted_utility, 1)
+            target_delta = target_utility - torch.roll(target_utility, 1)
+            valid = target_delta.abs() >= self.ranking_min_target_delta
+            if valid.any():
+                signed_prediction = target_delta[valid].sign() * predicted_delta[valid]
+                ranking = torch.relu(self.ranking_margin - signed_prediction).mean()
+                pair_count = int(valid.sum().item())
+        total = regression + self.ranking_loss_weight * ranking
+        return total, {
+            "total": total.detach(), "regression": regression.detach(),
+            "ranking": ranking.detach(), "ranking_pairs": pair_count,
+            "contact_mse": per_metric_mse[0].detach(),
+            "disturbance_mse": per_metric_mse[1].detach(),
+            "angular_span_mse": per_metric_mse[2].detach(),
+        }
 
     def _prepare_tensors(self, task_params, design_params, init_config):
         task_tensor = task_params.view(task_params.shape[0], -1)
@@ -156,7 +206,7 @@ class Trainer:
             timesteps=timestep_cond,
         )
 
-        loss = self.criterion(pred, target_all)
+        loss, self.last_loss_parts = self.loss_components(pred, target_all)
         loss.backward()
 
         # total_grad = 0.0
@@ -244,7 +294,7 @@ class Trainer:
                     self.num_timesteps_per_batch, design_tensor.shape[0], self.output_dim
                 ).mean(dim=0)
                 loss = (
-                    self.criterion(pred_all, target_all) if target is not None
+                    self.loss_components(pred_all, target_all)[0] if target is not None
                     else torch.tensor(0.0, device=self.device)
                 )
             else:
@@ -253,7 +303,7 @@ class Trainer:
                 )
                 pred = self.model(task_tensor, design_tensor, init_tensor, timesteps)
                 loss = (
-                    self.criterion(pred, target) if target is not None
+                    self.loss_components(pred, target)[0] if target is not None
                     else torch.tensor(0.0, device=self.device)
                 )
 

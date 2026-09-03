@@ -32,6 +32,24 @@ def parse():
     parser.add_argument("--val_step", type=int, default=5, help="Validate every N epochs")
     parser.add_argument("--save_ckpt_step", type=int, default=500, help="Save every N batches")
     parser.add_argument("--wandb_id", type=str, default="squirrel_dynamics_01")
+    parser.add_argument("--wandb_project", type=str, default="squirrel-gripper-dynamics")
+    parser.add_argument("--wandb_entity", type=str, default=None)
+    parser.add_argument("--wandb_run_name", type=str, default=None)
+    parser.add_argument("--wandb_mode", choices=("online", "offline", "disabled"), default="online")
+    parser.add_argument(
+        "--metric_loss_weights", default="1,1,1", metavar="C,D,A",
+        help="Nonnegative regression-loss weights for contact, disturbance, and angular span.",
+    )
+    parser.add_argument(
+        "--utility_weights", default="0.20,0.45,0.35", metavar="C,D,A",
+        help="Utility weights used only by the optional pairwise ranking loss.",
+    )
+    parser.add_argument("--ranking_loss_weight", type=float, default=0.0)
+    parser.add_argument("--ranking_margin", type=float, default=0.05)
+    parser.add_argument(
+        "--ranking_min_target_delta", type=float, default=0.05,
+        help="Ignore pairs whose measured utility differs by less than this value.",
+    )
     parser.add_argument("--use_design_noise", action="store_true")
     parser.add_argument(
         "--num_train_timesteps", type=int, default=100,

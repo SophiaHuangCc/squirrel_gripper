@@ -15,6 +15,8 @@ SCALES="${SCALES:-0,0.1,0.5,1,2}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 MAX_SAMPLES="${MAX_SAMPLES:-2048}"
 TIMEOUT="${TIMEOUT:-1800}"
+WANDB_PROJECT="${WANDB_PROJECT:-squirrel-gripper-dgdm-debugging}"
+WANDB_MODE="${WANDB_MODE:-online}"
 
 mkdir -p "$OUTPUT_ROOT/logs"
 STAMP="$(date +%Y%m%d_%H%M%S)"
@@ -41,7 +43,10 @@ echo "[1/3] TIMESTEP AND GRADIENT DIAGNOSTICS"
   --output_dir "$OUTPUT_ROOT/model_diagnostics" \
   --timesteps 0,10,25,50,75,90,99 \
   --max_samples "$MAX_SAMPLES" \
-  --seed "$SEED" --device cuda
+  --seed "$SEED" --device cuda \
+  --wandb_project "$WANDB_PROJECT" \
+  --wandb_run_name "timestep-gradient-seed-$SEED-$STAMP" \
+  --wandb_mode "$WANDB_MODE"
 
 echo "[2/3] PAIRED ONE-SEED SIMULATOR SWEEP"
 for scenario in approach_radius:00 approach_radius:01 approach_radius:02 approach_radius:03; do

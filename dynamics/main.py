@@ -106,8 +106,9 @@ def evaluate_prediction_quality(trainer, dataloader, args, epoch, split_name="va
     # Top-K ranking validation for combined objective
     # --------------------------------------------------
     # Same objective as optimization: disturbance + contact + angular span
-    pred_score = pred[:, 1] + 0.1 * pred[:, 0] + 0.5 * pred[:, 2]
-    true_score = true[:, 1] + 0.1 * true[:, 0] + 0.5 * true[:, 2]
+    utility_weights = trainer.utility_weights.detach().cpu().numpy()
+    pred_score = pred @ utility_weights
+    true_score = true @ utility_weights
 
     for k in [5, 10, 20]:
         k = min(k, len(pred_score))
@@ -134,24 +135,32 @@ def validate(args, val_loader, trainer):
     total_mae_per_dim = None
 
     trainer.model.eval()
-    with torch.no_grad():
-        for batch in val_loader:
-            target = batch['target_metrics'].to(trainer.device).float()
-            task_params = batch['task_params'].to(trainer.device).float()
-            design_params = batch['design_params'].to(trainer.device).float()
-            init_config = batch['init_config'].to(trainer.device).float()
+    fork_devices = (
+        [trainer.device.index if trainer.device.index is not None else torch.cuda.current_device()]
+        if trainer.device.type == "cuda" else []
+    )
+    # Noisy validation must use the same sampled corruption every epoch;
+    # otherwise checkpoint selection partly rewards a lucky random draw.
+    with torch.random.fork_rng(devices=fork_devices):
+        torch.manual_seed(12345)
+        with torch.no_grad():
+            for batch in val_loader:
+                target = batch['target_metrics'].to(trainer.device).float()
+                task_params = batch['task_params'].to(trainer.device).float()
+                design_params = batch['design_params'].to(trainer.device).float()
+                init_config = batch['init_config'].to(trainer.device).float()
 
-            pred, loss = trainer.inference(task_params, design_params, init_config, target)
+                pred, loss = trainer.inference(task_params, design_params, init_config, target)
 
-            batch_mae = torch.abs(pred - target)   # shape [B, 3]
+                batch_mae = torch.abs(pred - target)   # shape [B, 3]
 
-            total_val_loss += loss.item()
-            total_mae += batch_mae.mean().item()
+                total_val_loss += loss.item()
+                total_mae += batch_mae.mean().item()
 
-            if total_mae_per_dim is None:
-                total_mae_per_dim = batch_mae.mean(dim=0)
-            else:
-                total_mae_per_dim += batch_mae.mean(dim=0)
+                if total_mae_per_dim is None:
+                    total_mae_per_dim = batch_mae.mean(dim=0)
+                else:
+                    total_mae_per_dim += batch_mae.mean(dim=0)
 
     avg_loss = total_val_loss / len(val_loader)
     avg_mae = total_mae / len(val_loader)
@@ -173,10 +182,12 @@ def train(args):
     run_name = f"squirrel_dynamics_{timestamp}"
 
     wandb.init(
-        project="squirrel-gripper-dynamics",
-        config=args,
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_run_name or run_name,
+        mode=args.wandb_mode,
+        config=vars(args),
         dir=args.save_dir,
-        name=run_name,
     )
     from torch.utils.data import Subset
 
@@ -214,6 +225,11 @@ def train(args):
         
         for epoch in tqdm(range(args.num_epochs), desc="Epochs"):
             average_loss = 0
+            train_parts = {
+                "regression": 0.0, "ranking": 0.0, "ranking_pairs": 0.0,
+                "contact_mse": 0.0, "disturbance_mse": 0.0,
+                "angular_span_mse": 0.0,
+            }
 
             for idx_batch, batch in enumerate(tqdm(train_loader, desc="Batches", leave=False)):
                 target = batch['target_metrics'].to(trainer.device).float()
@@ -229,6 +245,9 @@ def train(args):
                 )
 
                 average_loss += loss
+                for key in train_parts:
+                    value = trainer.last_loss_parts[key]
+                    train_parts[key] += float(value.item() if torch.is_tensor(value) else value)
 
                 if idx_batch % args.save_ckpt_step == 0:
                     trainer.save_checkpoint(os.path.join(args.save_dir, 'latest.pt'))
@@ -242,6 +261,8 @@ def train(args):
 
                 wandb.log({
                     'train/loss': average_loss / len(train_loader),
+                    **{f'train/{key}': value / len(train_loader)
+                       for key, value in train_parts.items()},
                     'val/loss': val_loss,
                     'val/avg_mae_total': avg_mae,
                     'val/mae_contacts': avg_mae_per_dim[0].item(),
