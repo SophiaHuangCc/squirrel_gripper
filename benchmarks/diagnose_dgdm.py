@@ -148,8 +148,16 @@ def main():
         raise ValueError(f"Prior has {prior_steps} timesteps but noisy dynamics has "
                          f"{noisy_model.num_train_timesteps}")
     bounds_path = args.diffusion_checkpoint.parent / "design_bounds.npz"
-    bounds = DesignBounds.from_npz(str(bounds_path)) if bounds_path.exists() else DesignBounds.defaults()
-    bounds.lo, bounds.hi = bounds.lo.to(device), bounds.hi.to(device)
+    source_bounds = (
+        DesignBounds.from_npz(str(bounds_path))
+        if bounds_path.exists() else DesignBounds.defaults()
+    )
+    # DesignBounds is intentionally frozen.  Construct a device-local copy
+    # rather than mutating the checkpoint-loaded instance.
+    bounds = DesignBounds(
+        lo=source_bounds.lo.to(device),
+        hi=source_bounds.hi.to(device),
+    )
     clean_unit = physical_to_diffusion(
         model_norm_to_physical(clean_model_design), bounds
     ).clamp(-1, 1)
