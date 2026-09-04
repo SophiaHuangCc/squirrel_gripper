@@ -23,14 +23,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--candidate", type=Path, required=True)
+    parser.add_argument("--candidate_label", default="candidate")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     baseline, candidate = load(args.baseline), load(args.candidate)
     if baseline.keys() != candidate.keys():
         raise ValueError("Diagnostics do not contain identical model/timestep rows")
+    label = args.candidate_label.strip().replace(" ", "_")
+    if not label:
+        raise ValueError("--candidate_label cannot be empty")
     fields = ["model", "diffusion_timestep"]
     for metric in METRICS:
-        fields += [f"baseline_{metric}", f"fixed10_{metric}", f"fixed10_minus_baseline_{metric}"]
+        fields += [f"baseline_{metric}", f"{label}_{metric}", f"{label}_minus_baseline_{metric}"]
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -41,8 +45,8 @@ def main():
                 old = float(baseline[(model, timestep)][metric])
                 new = float(candidate[(model, timestep)][metric])
                 row[f"baseline_{metric}"] = old
-                row[f"fixed10_{metric}"] = new
-                row[f"fixed10_minus_baseline_{metric}"] = new - old
+                row[f"{label}_{metric}"] = new
+                row[f"{label}_minus_baseline_{metric}"] = new - old
             writer.writerow(row)
     print(f"[DONE] {args.output}")
 

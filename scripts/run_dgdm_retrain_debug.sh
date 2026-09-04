@@ -29,6 +29,7 @@ MODEL_ARCHITECTURE="${MODEL_ARCHITECTURE:-dgdm}"
 NUM_HIDDEN_LAYERS="${NUM_HIDDEN_LAYERS:-8}"
 UTILITY_WEIGHTS_CDA="${UTILITY_WEIGHTS_CDA:-0.20,0.45,0.35}"
 GUIDANCE_SCALES="${GUIDANCE_SCALES:-0.1,0.5,1,2}"
+BASE_METHODS="${BASE_METHODS:-adam,cma_es,conditional_diffusion}"
 LATE_GUIDANCE_TIMESTEPS="${LATE_GUIDANCE_TIMESTEPS:-0,3,6}"
 SEED="${SEED:-0}"
 
@@ -37,6 +38,8 @@ CLEAN_DIR="$OUTPUT_ROOT/dynamics_clean_${ARCH_TAG}_long_equal_zscore"
 NOISY_DIR="$OUTPUT_ROOT/dynamics_noisy_${ARCH_TAG}_long_equal_zscore_15"
 DIFFUSION_DIR="$OUTPUT_ROOT/diffusion_conditional_15"
 DIFFUSION_CHECKPOINT="${DIFFUSION_CHECKPOINT:-$PROJECT_DIR/outputs/from_links_v7_dgdm_retrain/diffusion_conditional_15/best.pt}"
+CLEAN_CHECKPOINT="${CLEAN_CHECKPOINT:-$CLEAN_DIR/best.pt}"
+NOISY_CHECKPOINT="${NOISY_CHECKPOINT:-$NOISY_DIR/best.pt}"
 STUDY_DIR="$OUTPUT_ROOT/one_seed_comparison"
 LOG_DIR="$OUTPUT_ROOT/logs"
 mkdir -p "$LOG_DIR"
@@ -72,7 +75,7 @@ if [[ "$RUN_TRAINING" == 1 ]]; then
     --ranking_loss_weight "$RANKING_LOSS_WEIGHT" \
     --ranking_margin 0.05 --ranking_min_target_delta 0.05 \
     --wandb_project "$WANDB_PROJECT" --wandb_mode "$WANDB_MODE" \
-    --wandb_run_name "clean-${ARCH_TAG}-long-equal-zscore-seed${SEED}-$STAMP"
+    --wandb_run_name "clean-${ARCH_TAG}-long-equal-angular-${ANGULAR_TARGET_NORMALIZATION}-seed${SEED}-$STAMP"
 
   if [[ "$TRAIN_DIFFUSION" == 1 ]]; then
     echo "[2/5] TRAIN CONDITIONAL DIFFUSION AT 15/5"
@@ -106,27 +109,27 @@ if [[ "$RUN_TRAINING" == 1 ]]; then
     --ranking_loss_weight "$RANKING_LOSS_WEIGHT" \
     --ranking_margin 0.05 --ranking_min_target_delta 0.05 \
     --wandb_project "$WANDB_PROJECT" --wandb_mode "$WANDB_MODE" \
-    --wandb_run_name "noisy-${ARCH_TAG}-long-equal-zscore-15x5-seed${SEED}-$STAMP"
+    --wandb_run_name "noisy-${ARCH_TAG}-long-equal-angular-${ANGULAR_TARGET_NORMALIZATION}-15x5-seed${SEED}-$STAMP"
 fi
 
-for checkpoint in "$CLEAN_DIR/best.pt" "$NOISY_DIR/best.pt" "$DIFFUSION_CHECKPOINT"; do
+for checkpoint in "$CLEAN_CHECKPOINT" "$NOISY_CHECKPOINT" "$DIFFUSION_CHECKPOINT"; do
   [[ -f "$checkpoint" ]] || { echo "ERROR: expected checkpoint missing: $checkpoint"; exit 2; }
 done
 
 echo "[4/5] TIMESTEP/GRADIENT DIAGNOSTICS"
 "$PYTHON_BIN" -m benchmarks.diagnose_dgdm \
-  --data_dir "$DATASET_DIR/test" --clean_checkpoint "$CLEAN_DIR/best.pt" \
-  --noisy_checkpoint "$NOISY_DIR/best.pt" --diffusion_checkpoint "$DIFFUSION_CHECKPOINT" \
+  --data_dir "$DATASET_DIR/test" --clean_checkpoint "$CLEAN_CHECKPOINT" \
+  --noisy_checkpoint "$NOISY_CHECKPOINT" --diffusion_checkpoint "$DIFFUSION_CHECKPOINT" \
   --config "$CONFIG" --output_dir "$OUTPUT_ROOT/model_diagnostics" \
   --timesteps "$LATE_GUIDANCE_TIMESTEPS" --max_samples 2048 --seed "$SEED" --device cuda \
   --wandb_project "$WANDB_PROJECT" --wandb_mode "$WANDB_MODE" \
-  --wandb_run_name "diagnostic-${ARCH_TAG}-long-late-guidance-15x5-seed${SEED}-$STAMP"
+  --wandb_run_name "diagnostic-${ARCH_TAG}-angular-${ANGULAR_TARGET_NORMALIZATION}-late-guidance-15x5-seed${SEED}-$STAMP"
 
 if [[ "$RUN_EVALUATION" == 1 ]]; then
   echo "[5/5] ONE-SEED ADAM/CMA/DIFFUSION/DGDM COMPARISON"
   common=(--config "$CONFIG" --candidate_budget 8 --seeds "$SEED"
-    --dynamics_checkpoint "$CLEAN_DIR/best.pt"
-    --dgdm_dynamics_checkpoint "$NOISY_DIR/best.pt"
+    --dynamics_checkpoint "$CLEAN_CHECKPOINT"
+    --dgdm_dynamics_checkpoint "$NOISY_CHECKPOINT"
     --diffusion_checkpoint "$DIFFUSION_CHECKPOINT" --device cuda
     --adam_steps 300 --adam_lr 0.03 --cma_generations 100 --cma_popsize 32 --cma_sigma 0.5
     --diffusion_num_samples 256 --diffusion_batch_size 256
@@ -135,7 +138,7 @@ if [[ "$RUN_EVALUATION" == 1 ]]; then
     --target_scenario_id all --evaluation_scope auto --run_benchmark
     --benchmark_top_k 8 --num_workers "$NUM_WORKERS" --timeout "$TIMEOUT")
   "$PYTHON_BIN" -m benchmarks.run_baselines --output_dir "$STUDY_DIR/base" \
-    --methods adam,cma_es,conditional_diffusion "${common[@]}"
+    --methods "$BASE_METHODS" "${common[@]}"
   IFS=',' read -r -a scales <<< "$GUIDANCE_SCALES"
   for scale in "${scales[@]}"; do
     label="dgdm_gs${scale//./p}"
@@ -147,7 +150,7 @@ if [[ "$RUN_EVALUATION" == 1 ]]; then
     --output_dir "$OUTPUT_ROOT/one_seed_analysis" --protocol specialist
   "$PYTHON_BIN" -m benchmarks.diagnose_robust_gradients \
     --benchmark_dir "$STUDY_DIR" --config "$CONFIG" \
-    --clean_checkpoint "$CLEAN_DIR/best.pt" --noisy_checkpoint "$NOISY_DIR/best.pt" \
+    --clean_checkpoint "$CLEAN_CHECKPOINT" --noisy_checkpoint "$NOISY_CHECKPOINT" \
     --output_dir "$OUTPUT_ROOT/robust_diagnostics" \
     --timesteps "$LATE_GUIDANCE_TIMESTEPS" --device cuda --seed "$SEED"
 fi
