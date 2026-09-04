@@ -136,6 +136,7 @@ if [[ "$RUN_EVALUATION" == 1 ]]; then
     --diffusion_inference_steps "$INFERENCE_STEPS" --utility_weights 0.45,0.20,0.35
     --dgdm_guidance_timesteps "$LATE_GUIDANCE_TIMESTEPS"
     --target_scenario_id all --evaluation_scope auto --run_benchmark
+    --resume
     --benchmark_top_k 8 --num_workers "$NUM_WORKERS" --timeout "$TIMEOUT")
   "$PYTHON_BIN" -m benchmarks.run_baselines --output_dir "$STUDY_DIR/base" \
     --methods "$BASE_METHODS" "${common[@]}"

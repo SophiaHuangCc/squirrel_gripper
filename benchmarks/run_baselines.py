@@ -224,6 +224,13 @@ def main():
     parser.add_argument("--timeout", type=float, default=1800.0)
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--dry_run", action="store_true")
+    parser.add_argument(
+        "--resume", action="store_true",
+        help=(
+            "Reuse existing candidate NPZ files and cached successful simulator "
+            "rollouts. This preserves the original proposals across restarts."
+        ),
+    )
     args = parser.parse_args()
     if not args.dgdm_method_label or not all(
         char.isalnum() or char in "_.-" for char in args.dgdm_method_label
@@ -304,6 +311,27 @@ def main():
     candidate_dir.mkdir(exist_ok=True)
     candidate_files = []
     proposal_times = []
+
+    def reuse_candidate(path, method, seed):
+        if not args.resume or not path.exists():
+            return False
+        loaded = load_candidates(path)
+        if loaded["method"] != method or int(loaded["seed"]) != int(seed):
+            raise ValueError(
+                f"Cannot resume {path}: expected {method} seed {seed}, found "
+                f"{loaded['method']} seed {loaded['seed']}"
+            )
+        candidate_files.append(path)
+        proposal_times.append({
+            "method": method,
+            "seed": int(seed),
+            "proposal_elapsed_seconds": loaded.get("metadata", {}).get(
+                "proposal_elapsed_seconds", 0.0
+            ),
+            "candidate_file": str(path.resolve()),
+        })
+        print(f"[RESUME CANDIDATES] {path}")
+        return True
 
     def record_proposal_time(method, seed, started, path):
         elapsed = time.perf_counter() - started
@@ -403,47 +431,59 @@ def main():
                 candidate_files.append(path)
                 record_proposal_time("random_search", seed, started, path)
             if "adam" in search_methods:
-                started = time.perf_counter()
-                result = adam_search(
-                    surrogate, config, budget, seed,
-                    num_steps=adam_steps, learning_rate=args.adam_lr,
-                    scenario_id=args.target_scenario_id, family=args.target_family,
-                    generalist=args.generalist, device=args.device,
-                )
                 path = candidate_dir / f"adam_s{seed}.npz"
-                save_candidates(
-                    path, result.designs, "adam", seed=seed, scores=result.scores,
-                    metadata={
-                        "dynamics_checkpoint": str(args.dynamics_checkpoint.resolve()),
-                        "model_evaluations": result.model_evaluations,
-                        "target_scenario_ids": result.target_scenario_ids,
-                        "selection_rule": "surrogate_mean_utility",
-                        "proposal_elapsed_seconds": time.perf_counter() - started,
-                    },
-                )
-                candidate_files.append(path)
-                record_proposal_time("adam", seed, started, path)
+                if not reuse_candidate(path, "adam", seed):
+                    started = time.perf_counter()
+                    result = adam_search(
+                        surrogate, config, budget, seed,
+                        num_steps=adam_steps, learning_rate=args.adam_lr,
+                        scenario_id=args.target_scenario_id, family=args.target_family,
+                        generalist=args.generalist, device=args.device,
+                    )
+                    elapsed = time.perf_counter() - started
+                    save_candidates(
+                        path, result.designs, "adam", seed=seed, scores=result.scores,
+                        metadata={
+                            "dynamics_checkpoint": str(args.dynamics_checkpoint.resolve()),
+                            "model_evaluations": result.model_evaluations,
+                            "target_scenario_ids": result.target_scenario_ids,
+                            "selection_rule": "surrogate_mean_utility",
+                            "proposal_elapsed_seconds": elapsed,
+                        },
+                    )
+                    candidate_files.append(path)
+                    proposal_times.append({
+                        "method": "adam", "seed": int(seed),
+                        "proposal_elapsed_seconds": elapsed,
+                        "candidate_file": str(path.resolve()),
+                    })
             if "cma_es" in search_methods:
-                started = time.perf_counter()
-                result = cma_es_search(
-                    surrogate, config, budget, seed,
-                    num_generations=cma_generations, popsize=args.cma_popsize,
-                    sigma=args.cma_sigma, scenario_id=args.target_scenario_id,
-                    family=args.target_family, generalist=args.generalist, device=args.device,
-                )
                 path = candidate_dir / f"cma_es_s{seed}.npz"
-                save_candidates(
-                    path, result.designs, "cma_es", seed=seed, scores=result.scores,
-                    metadata={
-                        "dynamics_checkpoint": str(args.dynamics_checkpoint.resolve()),
-                        "model_evaluations": result.model_evaluations,
-                        "target_scenario_ids": result.target_scenario_ids,
-                        "selection_rule": "surrogate_mean_utility",
-                        "proposal_elapsed_seconds": time.perf_counter() - started,
-                    },
-                )
-                candidate_files.append(path)
-                record_proposal_time("cma_es", seed, started, path)
+                if not reuse_candidate(path, "cma_es", seed):
+                    started = time.perf_counter()
+                    result = cma_es_search(
+                        surrogate, config, budget, seed,
+                        num_generations=cma_generations, popsize=args.cma_popsize,
+                        sigma=args.cma_sigma, scenario_id=args.target_scenario_id,
+                        family=args.target_family, generalist=args.generalist, device=args.device,
+                    )
+                    elapsed = time.perf_counter() - started
+                    save_candidates(
+                        path, result.designs, "cma_es", seed=seed, scores=result.scores,
+                        metadata={
+                            "dynamics_checkpoint": str(args.dynamics_checkpoint.resolve()),
+                            "model_evaluations": result.model_evaluations,
+                            "target_scenario_ids": result.target_scenario_ids,
+                            "selection_rule": "surrogate_mean_utility",
+                            "proposal_elapsed_seconds": elapsed,
+                        },
+                    )
+                    candidate_files.append(path)
+                    proposal_times.append({
+                        "method": "cma_es", "seed": int(seed),
+                        "proposal_elapsed_seconds": elapsed,
+                        "candidate_file": str(path.resolve()),
+                    })
 
     diffusion_methods = methods.intersection({
         "conditional_diffusion", "dgdm", "unconditional_diffusion", "unconditional_dgdm",
@@ -493,7 +533,6 @@ def main():
             )
         for seed in seeds:
             for method in sorted(diffusion_methods):
-                started = time.perf_counter()
                 output_method = args.dgdm_method_label if method == "dgdm" else method
                 conditioning_mode = (
                     "unconditional" if method.startswith("unconditional_") else "conditional"
@@ -510,6 +549,10 @@ def main():
                     if conditioning_mode == "unconditional"
                     else args.diffusion_checkpoint
                 )
+                path = candidate_dir / f"{output_method}_s{seed}.npz"
+                if reuse_candidate(path, output_method, seed):
+                    continue
+                started = time.perf_counter()
                 result = diffusion_search(
                     diffusion_models[conditioning_mode], surrogate, config, budget,
                     num_samples=args.diffusion_num_samples, seed=seed,
@@ -523,7 +566,6 @@ def main():
                     guidance_dynamics_model=guidance_surrogate if guided else None,
                     guidance_timesteps=guidance_timesteps,
                 )
-                path = candidate_dir / f"{output_method}_s{seed}.npz"
                 save_candidates(
                     path, result.designs, output_method, seed=seed, scores=result.scores,
                     metadata={
@@ -583,6 +625,8 @@ def main():
         return
 
     benchmark_jobs = []
+    worker_count = max(1, int(args.num_workers))
+    workers_per_group = max(1, worker_count // max(1, len(candidate_files)))
     for path in candidate_files:
         loaded = load_candidates(path)
         run_dir = args.output_dir / "runs" / f"{loaded['method']}_s{loaded['seed']}"
@@ -596,10 +640,9 @@ def main():
                 if args.benchmark_top_k is not None
                 else len(loaded["design_params"])
             ),
-            # Parallelism is managed here across candidate/method/seed files.
-            # A specialist child contains only one rollout, so assigning the
-            # complete worker pool inside that child leaves the other CPUs idle.
-            "--num_workers", "1",
+            # Divide the global worker budget across concurrently evaluated
+            # method/seed groups; each group then parallelizes its rollouts.
+            "--num_workers", str(workers_per_group),
             "--timeout", str(args.timeout),
         ]
         if args.families:
@@ -617,10 +660,10 @@ def main():
             command.append("--dry_run")
         benchmark_jobs.append((command, run_dir / "records.jsonl"))
 
-    worker_count = max(1, int(args.num_workers))
     print(
         f"[BENCHMARK PARALLELISM] {len(benchmark_jobs)} candidate groups, "
-        f"up to {min(worker_count, len(benchmark_jobs))} concurrent subprocesses"
+        f"up to {min(worker_count, len(benchmark_jobs))} concurrent groups, "
+        f"{workers_per_group} rollout workers per group"
     )
     with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
         future_to_record = {
