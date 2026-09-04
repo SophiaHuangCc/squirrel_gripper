@@ -202,6 +202,35 @@ def write_rollout_index(records, output_dir):
             stream.write(json.dumps(record, allow_nan=False) + "\n")
 
 
+def select_scenarios(config, families="", scenario_ids=""):
+    """Select base scenarios and/or exact physical-condition variants.
+
+    A base ID (``family:00``) selects all of its configured physical-condition
+    variants.  An expanded ID (``family:00@nominal``) selects only that exact
+    variant.  Expansion must happen between these two filtering stages.
+    """
+    scenarios = expand_core_scenarios(config)
+    requested_families = {x.strip() for x in families.split(",") if x.strip()}
+    requested_ids = {x.strip() for x in scenario_ids.split(",") if x.strip()}
+    if requested_families:
+        scenarios = [cell for cell in scenarios if cell["family"] in requested_families]
+    if requested_ids:
+        requested_base_ids = {value for value in requested_ids if "@" not in value}
+        expanded_base_ids = {value.split("@", 1)[0] for value in requested_ids if "@" in value}
+        eligible_base_ids = requested_base_ids | expanded_base_ids
+        scenarios = [cell for cell in scenarios if cell["scenario_id"] in eligible_base_ids]
+    scenarios = expand_physical_conditions(scenarios, config)
+    if requested_ids:
+        scenarios = [
+            cell for cell in scenarios
+            if cell["scenario_id"] in requested_ids
+            or cell.get("base_scenario_id", cell["scenario_id"]) in requested_base_ids
+        ]
+    if not scenarios:
+        raise ValueError("Scenario filters selected zero cells")
+    return scenarios
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate candidate designs over Squirrel Benchmark V1.")
     parser.add_argument("--candidates", type=Path, required=True)
@@ -229,16 +258,7 @@ def main():
 
     config = load_config(args.config)
     candidates = load_candidates(args.candidates, method=args.method, seed=args.seed, top_k=args.top_k)
-    scenarios = expand_core_scenarios(config)
-    requested_families = {x.strip() for x in args.families.split(",") if x.strip()}
-    requested_ids = {x.strip() for x in args.scenario_ids.split(",") if x.strip()}
-    if requested_families:
-        scenarios = [cell for cell in scenarios if cell["family"] in requested_families]
-    if requested_ids:
-        scenarios = [cell for cell in scenarios if cell["scenario_id"] in requested_ids]
-    if not scenarios:
-        raise ValueError("Scenario filters selected zero cells")
-    scenarios = expand_physical_conditions(scenarios, config)
+    scenarios = select_scenarios(config, args.families, args.scenario_ids)
 
     output_dir = args.output_dir.resolve()
     runs_dir = output_dir / "runs"
