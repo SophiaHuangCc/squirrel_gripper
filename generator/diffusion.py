@@ -2,16 +2,17 @@ from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 
 from generator.dataloader import (
     DesignBounds,
     build_condition,
     diffusion_to_physical,
+    enforce_fixed_design_unit,
     physical_to_diffusion,
     physical_to_model_norm,
     project_physical_design,
+    variable_design_mask,
 )
 
 
@@ -82,20 +83,29 @@ class SquirrelDesignDiffusion(nn.Module):
         self.ema = SimpleEMA(self.noise_pred_net, decay=ema_decay)
 
     def training_loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        clean = batch["design_unit"]
+        clean = enforce_fixed_design_unit(batch["design_unit"], self.bounds)
         cond = batch["cond"]
-        noise = torch.randn_like(clean)
+        variable_mask = variable_design_mask(self.bounds, clean.device)
+        while variable_mask.ndim < clean.ndim:
+            variable_mask = variable_mask.unsqueeze(-1)
+        noise = torch.randn_like(clean) * variable_mask
         timesteps = torch.randint(
             0,
             self.noise_scheduler.config.num_train_timesteps,
             (clean.shape[0],),
             device=clean.device,
         ).long()
-        noisy = self.noise_scheduler.add_noise(clean, noise, timesteps)
+        noisy = enforce_fixed_design_unit(
+            self.noise_scheduler.add_noise(clean, noise, timesteps), self.bounds
+        )
         noise_pred = self.noise_pred_net(
             noisy, timesteps, global_cond=self._network_condition(cond)
         )
-        return F.mse_loss(noise_pred, noise)
+        # Do not train the network to denoise coordinates that are constants.
+        squared_error = (noise_pred - noise).square() * variable_mask
+        return squared_error.sum() / (
+            clean.shape[0] * variable_mask.sum().clamp_min(1)
+        )
 
     def _network_condition(self, cond: torch.Tensor) -> torch.Tensor:
         """Mask task information for a task-agnostic diffusion prior."""
@@ -216,6 +226,10 @@ class SquirrelDesignDiffusion(nn.Module):
             device=device,
             generator=generator,
         )
+        sample = enforce_fixed_design_unit(sample, self.bounds)
+        variable_mask = variable_design_mask(self.bounds, device)
+        while variable_mask.ndim < sample.ndim:
+            variable_mask = variable_mask.unsqueeze(-1)
         self.noise_scheduler.set_timesteps(self.num_inference_steps, device=device)
 
         for t in self.noise_scheduler.timesteps:
@@ -223,6 +237,7 @@ class SquirrelDesignDiffusion(nn.Module):
             noise_pred = self.noise_pred_net(
                 sample, timesteps, global_cond=self._network_condition(cond)
             )
+            noise_pred = noise_pred * variable_mask
 
             guidance_enabled = (
                 guidance_timesteps is None or int(t.item()) in guidance_timesteps
@@ -241,11 +256,13 @@ class SquirrelDesignDiffusion(nn.Module):
                         diffusion_timestep=t,
                     ).sum()
                     grad = torch.autograd.grad(score, guided_sample)[0]
+                    grad = grad * variable_mask
                 alpha_term = (1.0 - self.noise_scheduler.alphas_cumprod[t]).sqrt()
                 noise_pred = noise_pred - alpha_term * guidance_scale * grad
 
             sample = self.noise_scheduler.step(noise_pred, t, sample).prev_sample
             sample = sample.clamp(-1.5, 1.5)
+            sample = enforce_fixed_design_unit(sample, self.bounds)
 
         design_physical = project_physical_design(
             diffusion_to_physical(sample.squeeze(-1).clamp(-1.0, 1.0), self.bounds),

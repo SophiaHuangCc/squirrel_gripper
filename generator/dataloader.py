@@ -89,6 +89,21 @@ class DesignBounds:
         )
 
 
+def variable_design_mask(bounds: DesignBounds, device=None) -> torch.Tensor:
+    """Boolean mask for design coordinates that are actually optimized."""
+    lo = bounds.lo.to(device=device) if device is not None else bounds.lo
+    hi = bounds.hi.to(device=device) if device is not None else bounds.hi
+    return (hi - lo).abs() > 1e-12
+
+
+def enforce_fixed_design_unit(design_unit: torch.Tensor, bounds: DesignBounds) -> torch.Tensor:
+    """Keep zero-range coordinates at their canonical diffusion value (-1)."""
+    mask = variable_design_mask(bounds, design_unit.device)
+    while mask.ndim < design_unit.ndim:
+        mask = mask.unsqueeze(-1)
+    return torch.where(mask, design_unit, torch.full_like(design_unit, -1.0))
+
+
 def model_norm_to_physical(design_norm: torch.Tensor) -> torch.Tensor:
     """Convert DynamicsDataset's model-normalized design vector to physical units."""
     scales = DESIGN_MODEL_SCALES.to(design_norm.device)

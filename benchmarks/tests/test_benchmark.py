@@ -21,12 +21,22 @@ from benchmarks.diagnose_dgdm import directional_quality, parse_int_list
 from dynamics.trainer import Trainer
 from dynamics.profile_forward_2d import ProfileForward2DModel
 from generator.dataloader import (
-    DESIGN_MODEL_SCALES, DesignBounds, model_norm_to_physical,
-    project_physical_design,
+    DESIGN_MODEL_SCALES, DesignBounds, enforce_fixed_design_unit,
+    model_norm_to_physical, project_physical_design, variable_design_mask,
 )
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_fixed_design_coordinates_are_identified_and_enforced(self):
+        bounds = DesignBounds.defaults()
+        mask = variable_design_mask(bounds)
+        self.assertEqual(mask.nonzero().flatten().tolist(), list(range(7)) + [11, 12, 13])
+        design = torch.randn(2, 16, 1)
+        fixed = enforce_fixed_design_unit(design, bounds)
+        fixed_ids = torch.tensor([7, 8, 9, 10, 14, 15])
+        torch.testing.assert_close(fixed[:, fixed_ids], torch.full((2, 6, 1), -1.0))
+        torch.testing.assert_close(fixed[:, mask], design[:, mask])
+
     def test_dgdm_diagnostic_helpers(self):
         self.assertEqual(parse_int_list("0,10,99"), (0, 10, 99))
         designs = np.asarray([[0.0], [1.0], [2.0]], dtype=np.float32)
@@ -253,6 +263,10 @@ class BenchmarkTests(unittest.TestCase):
         torch.testing.assert_close(initial_out, initial.repeat(4, 1))
         self.assertEqual(tuple(design_out.shape), (8, 16))
         self.assertFalse(torch.equal(design_out, design.repeat(4, 1)))
+        fixed = torch.tensor([7, 8, 9, 10, 14, 15])
+        torch.testing.assert_close(
+            design_out[:, fixed], torch.full((8, 6), -1.0)
+        )
         self.assertTrue(set((timestep_out * 15).round().int().tolist()) <= {0, 3, 6})
 
     def test_initial_conditions_are_model_inputs(self):

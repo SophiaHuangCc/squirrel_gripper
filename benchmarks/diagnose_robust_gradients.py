@@ -15,7 +15,8 @@ from benchmarks.baselines.surrogate_search import (
     _scenario_tensors, load_surrogate, select_target_cells,
 )
 from generator.dataloader import (
-    DESIGN_NAMES, DesignBounds, physical_to_diffusion, physical_to_model_norm,
+    DESIGN_NAMES, DesignBounds, enforce_fixed_design_unit,
+    physical_to_diffusion, physical_to_model_norm, variable_design_mask,
 )
 
 
@@ -129,6 +130,7 @@ def evaluate(model, model_design, physical_design, task, init, targets, weights,
     weight_tensor = torch.tensor(weights, dtype=design.dtype, device=design.device)
     predicted_utility = prediction @ weight_tensor
     gradient = torch.autograd.grad(predicted_utility.sum(), design)[0]
+    gradient = gradient * variable_design_mask(DesignBounds.defaults(), design.device)
     target_tensor = torch.as_tensor(targets, dtype=design.dtype, device=design.device)
     errors = prediction - target_tensor[:, 1:]
     (n_pairs, sign, correlation), pair_rows = directional_quality(
@@ -242,7 +244,9 @@ def main():
                                    device=device).expand_as(clean_unit)
         for timestep in parse_int_list(args.timesteps):
             t = torch.full((len(clean_unit),), timestep, dtype=torch.long, device=device)
-            noisy_design = scheduler.add_noise(clean_unit, shared_noise, t)
+            noisy_design = enforce_fixed_design_unit(
+                scheduler.add_noise(clean_unit, shared_noise, t), bounds
+            )
             noise_std = float((1.0 - scheduler.alphas_cumprod[timestep]).sqrt())
             for aggregation, eval_task, eval_init, targets in (
                 ("nominal", nominal_task, nominal_init, nominal_targets),

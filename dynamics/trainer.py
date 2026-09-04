@@ -3,7 +3,10 @@ import torch.nn as nn
 import torch.optim as optim
 
 from dynamics.profile_forward_2d import ProfileForward2DModel
-from generator.dataloader import DesignBounds, model_norm_to_physical, physical_to_diffusion
+from generator.dataloader import (
+    DesignBounds, enforce_fixed_design_unit, model_norm_to_physical,
+    physical_to_diffusion, variable_design_mask,
+)
 
 
 class Trainer:
@@ -239,7 +242,8 @@ class Trainer:
         init_all = init_tensor.repeat(K, 1)
         target_all = target.repeat(K, 1)
 
-        noise = torch.randn_like(design_all, device=self.device)
+        variable_mask = variable_design_mask(self.design_bounds, self.device)
+        noise = torch.randn_like(design_all, device=self.device) * variable_mask
 
         if self.noise_timesteps:
             available = torch.tensor(
@@ -274,6 +278,9 @@ class Trainer:
             noise=noise,
             timesteps=timesteps,
         )
+        # add_noise also scales original_samples, so zero noise alone would not
+        # preserve a fixed coordinate. Restore all six zero-range parameters.
+        noisy_design_all = enforce_fixed_design_unit(noisy_design_all, self.design_bounds)
 
         # normalize timestep to [0, 1], like the sample project
         timestep_cond = timesteps.float() / self.noise_scheduler.config.num_train_timesteps

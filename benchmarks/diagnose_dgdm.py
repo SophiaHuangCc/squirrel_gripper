@@ -21,8 +21,10 @@ from benchmarks.protocol import load_config
 from dynamics.dataloader import DynamicsDataset
 from generator.dataloader import (
     DesignBounds,
+    enforce_fixed_design_unit,
     model_norm_to_physical,
     physical_to_diffusion,
+    variable_design_mask,
 )
 
 
@@ -86,6 +88,7 @@ def evaluate_model(model, design, task, init, target, weights, environment):
     predicted_utility = (prediction * weight_tensor).sum(dim=1)
     true_utility = (target * weight_tensor).sum(dim=1)
     gradient = torch.autograd.grad(predicted_utility.sum(), design)[0]
+    gradient = gradient * variable_design_mask(DesignBounds.defaults(), design.device)
     error = prediction - target
     gradient_np = gradient.detach().cpu().numpy()
     design_np = design.detach().cpu().numpy()
@@ -181,7 +184,9 @@ def main():
         if timestep >= prior_steps:
             raise ValueError(f"Timestep {timestep} is outside [0, {prior_steps - 1}]")
         t = torch.full((len(clean_unit),), timestep, dtype=torch.long, device=device)
-        noisy_design = scheduler.add_noise(clean_unit, shared_noise, t)
+        noisy_design = enforce_fixed_design_unit(
+            scheduler.add_noise(clean_unit, shared_noise, t), bounds
+        )
         evaluate_model.timestep = torch.tensor(timestep / prior_steps, device=device)
         noise_std = float((1.0 - scheduler.alphas_cumprod[timestep]).sqrt())
         row = {"model": "noise_conditioned", "diffusion_timestep": timestep,
