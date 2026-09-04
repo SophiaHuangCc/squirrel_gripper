@@ -6,6 +6,7 @@ def parse():
     # Execution Mode
     parser.add_argument("--mode", type=str, default="train", choices=["train", "validate"])
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--seed", type=int, default=0)
     
     # Paths
     parser.add_argument("--data_dir", type=str, default="../runs/exp1", help="Path to simulation results")

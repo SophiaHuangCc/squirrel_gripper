@@ -177,6 +177,14 @@ def validate(args, val_loader, trainer):
     return avg_loss, avg_mae, avg_mae_per_dim
 
 def train(args):
+    # Make architecture comparisons repeatable. Validation corruption is separately
+    # fixed in validate(), so checkpoint selection is deterministic as well.
+    import random
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"squirrel_dynamics_{timestamp}"
@@ -209,7 +217,11 @@ def train(args):
     print("target shape:", sample["target_metrics"].shape)
     print("=" * 50)
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+    loader_generator = torch.Generator().manual_seed(args.seed)
+    train_loader = DataLoader(
+        train_dataset, batch_size=args.batch_size, shuffle=True,
+        num_workers=args.num_workers, generator=loader_generator,
+    )
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     trainer = Trainer(args)

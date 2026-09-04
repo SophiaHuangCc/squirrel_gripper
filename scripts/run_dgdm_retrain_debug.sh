@@ -32,8 +32,9 @@ GUIDANCE_SCALES="${GUIDANCE_SCALES:-0.1,0.5,1,2}"
 LATE_GUIDANCE_TIMESTEPS="${LATE_GUIDANCE_TIMESTEPS:-0,3,6}"
 SEED="${SEED:-0}"
 
-CLEAN_DIR="$OUTPUT_ROOT/dynamics_clean_dgdm8_long_equal_zscore"
-NOISY_DIR="$OUTPUT_ROOT/dynamics_noisy_dgdm8_long_equal_zscore_15"
+ARCH_TAG="${MODEL_ARCHITECTURE}${NUM_HIDDEN_LAYERS}"
+CLEAN_DIR="$OUTPUT_ROOT/dynamics_clean_${ARCH_TAG}_long_equal_zscore"
+NOISY_DIR="$OUTPUT_ROOT/dynamics_noisy_${ARCH_TAG}_long_equal_zscore_15"
 DIFFUSION_DIR="$OUTPUT_ROOT/diffusion_conditional_15"
 DIFFUSION_CHECKPOINT="${DIFFUSION_CHECKPOINT:-$PROJECT_DIR/outputs/from_links_v7_dgdm_retrain/diffusion_conditional_15/best.pt}"
 STUDY_DIR="$OUTPUT_ROOT/one_seed_comparison"
@@ -60,7 +61,7 @@ if [[ "$RUN_TRAINING" == 1 ]]; then
   "$PYTHON_BIN" dynamics/main.py --mode train --device cuda \
     --data_dir "$DATASET_DIR/train" --test_data_dir "$DATASET_DIR/test" \
     --save_dir "$CLEAN_DIR" --batch_size "$DYNAMICS_BATCH_SIZE" \
-    --num_workers 8 --lr "$DYNAMICS_LR" \
+    --num_workers 8 --lr "$DYNAMICS_LR" --seed "$SEED" \
     --num_epochs "$DYNAMICS_EPOCHS" --patience "$DYNAMICS_PATIENCE" \
     --val_step "$DYNAMICS_VAL_STEP" --save_ckpt_step 500 \
     --output_dim 3 --model_architecture "$MODEL_ARCHITECTURE" \
@@ -71,7 +72,7 @@ if [[ "$RUN_TRAINING" == 1 ]]; then
     --ranking_loss_weight "$RANKING_LOSS_WEIGHT" \
     --ranking_margin 0.05 --ranking_min_target_delta 0.05 \
     --wandb_project "$WANDB_PROJECT" --wandb_mode "$WANDB_MODE" \
-    --wandb_run_name "clean-dgdm8-long-equal-zscore-$STAMP"
+    --wandb_run_name "clean-${ARCH_TAG}-long-equal-zscore-seed${SEED}-$STAMP"
 
   if [[ "$TRAIN_DIFFUSION" == 1 ]]; then
     echo "[2/5] TRAIN CONDITIONAL DIFFUSION AT 15/5"
@@ -91,7 +92,7 @@ if [[ "$RUN_TRAINING" == 1 ]]; then
   "$PYTHON_BIN" dynamics/main.py --mode train --device cuda \
     --data_dir "$DATASET_DIR/train" --test_data_dir "$DATASET_DIR/test" \
     --save_dir "$NOISY_DIR" --batch_size "$DYNAMICS_BATCH_SIZE" \
-    --num_workers 8 --lr "$DYNAMICS_LR" \
+    --num_workers 8 --lr "$DYNAMICS_LR" --seed "$SEED" \
     --num_epochs "$DYNAMICS_EPOCHS" --patience "$DYNAMICS_PATIENCE" \
     --val_step "$DYNAMICS_VAL_STEP" --save_ckpt_step 500 \
     --output_dim 3 --use_design_noise \
@@ -105,7 +106,7 @@ if [[ "$RUN_TRAINING" == 1 ]]; then
     --ranking_loss_weight "$RANKING_LOSS_WEIGHT" \
     --ranking_margin 0.05 --ranking_min_target_delta 0.05 \
     --wandb_project "$WANDB_PROJECT" --wandb_mode "$WANDB_MODE" \
-    --wandb_run_name "noisy-dgdm8-long-equal-zscore-15x5-$STAMP"
+    --wandb_run_name "noisy-${ARCH_TAG}-long-equal-zscore-15x5-seed${SEED}-$STAMP"
 fi
 
 for checkpoint in "$CLEAN_DIR/best.pt" "$NOISY_DIR/best.pt" "$DIFFUSION_CHECKPOINT"; do
@@ -119,7 +120,7 @@ echo "[4/5] TIMESTEP/GRADIENT DIAGNOSTICS"
   --config "$CONFIG" --output_dir "$OUTPUT_ROOT/model_diagnostics" \
   --timesteps "$LATE_GUIDANCE_TIMESTEPS" --max_samples 2048 --seed "$SEED" --device cuda \
   --wandb_project "$WANDB_PROJECT" --wandb_mode "$WANDB_MODE" \
-  --wandb_run_name "diagnostic-dgdm8-long-late-guidance-15x5-$STAMP"
+  --wandb_run_name "diagnostic-${ARCH_TAG}-long-late-guidance-15x5-seed${SEED}-$STAMP"
 
 if [[ "$RUN_EVALUATION" == 1 ]]; then
   echo "[5/5] ONE-SEED ADAM/CMA/DIFFUSION/DGDM COMPARISON"
