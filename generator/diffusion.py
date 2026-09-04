@@ -7,12 +7,12 @@ from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 from generator.dataloader import (
     DesignBounds,
     build_condition,
+    design_mask_like,
     diffusion_to_physical,
     enforce_fixed_design_unit,
     physical_to_diffusion,
     physical_to_model_norm,
     project_physical_design,
-    variable_design_mask,
 )
 
 
@@ -85,9 +85,7 @@ class SquirrelDesignDiffusion(nn.Module):
     def training_loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         clean = enforce_fixed_design_unit(batch["design_unit"], self.bounds)
         cond = batch["cond"]
-        variable_mask = variable_design_mask(self.bounds, clean.device)
-        while variable_mask.ndim < clean.ndim:
-            variable_mask = variable_mask.unsqueeze(-1)
+        variable_mask = design_mask_like(clean, self.bounds)
         noise = torch.randn_like(clean) * variable_mask
         timesteps = torch.randint(
             0,
@@ -227,9 +225,7 @@ class SquirrelDesignDiffusion(nn.Module):
             generator=generator,
         )
         sample = enforce_fixed_design_unit(sample, self.bounds)
-        variable_mask = variable_design_mask(self.bounds, device)
-        while variable_mask.ndim < sample.ndim:
-            variable_mask = variable_mask.unsqueeze(-1)
+        variable_mask = design_mask_like(sample, self.bounds)
         self.noise_scheduler.set_timesteps(self.num_inference_steps, device=device)
 
         for t in self.noise_scheduler.timesteps:

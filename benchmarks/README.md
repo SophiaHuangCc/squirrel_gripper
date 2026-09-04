@@ -346,7 +346,7 @@ Primary continuous metrics:
 
 - disturbance resistance score (maximize);
 - normalized contact coverage `log1p(num_contacts) / log1p(n_elements)`;
-- normalized wrap `clip(angular_span_deg / 180, 0, 1)`;
+- normalized wrap `clip(angular_span_deg / 360, 0, 1)`;
 - tendon tension and total energy (minimize);
 - maximum penetration and simulation failure rate (minimize).
 

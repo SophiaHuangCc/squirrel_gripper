@@ -11,11 +11,7 @@ def normalize_contacts(num_contacts, n_elements=100):
 
 
 def normalize_angular_span(angular_span):
-    return np.where(
-        angular_span <= 180.0,
-        0.8 * angular_span / 180.0,
-        0.8 + 0.2 * np.clip((angular_span - 180.0) / 180.0, 0.0, 1.0),
-    )
+    return np.clip(angular_span / 360.0, 0.0, 1.0)
 
 
 def load_dataset_metrics(dataset_dir):

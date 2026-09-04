@@ -82,7 +82,7 @@ def normalized_metrics(metric):
             max(math.log1p(float(metric["num_contacts"])) / math.log1p(n_elements), 0.0),
             1.0,
         ),
-        "angular_span_norm": min(max(float(metric["angular_span"]) / 180.0, 0.0), 1.0),
+        "angular_span_norm": min(max(float(metric["angular_span"]) / 360.0, 0.0), 1.0),
     }
 
 

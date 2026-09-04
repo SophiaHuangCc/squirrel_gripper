@@ -93,7 +93,7 @@ def build_table(dataset_dir, val_fraction=0.1, test_fraction=0.1, split_seed=0,
                     objective = np.asarray([
                         float(np.asarray(z["disturbance_resistance_score"]).reshape(-1)[0]),
                         np.log1p(float(np.asarray(z["num_contacts"]).reshape(-1)[0])) / np.log1p(n_elements),
-                        np.clip(float(np.asarray(z["angular_span"]).reshape(-1)[0]) / 180.0, 0.0, 1.0),
+                        np.clip(float(np.asarray(z["angular_span"]).reshape(-1)[0]) / 360.0, 0.0, 1.0),
                     ], dtype=np.float64)
                     ok = np.all(np.isfinite(objective))
                 group = groups.setdefault(identifier, {"design": physical, "objectives": [], "failures": 0, "total": 0})

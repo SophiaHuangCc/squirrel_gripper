@@ -89,7 +89,7 @@ def normalize_contact(num_contacts: float, n_elements: float) -> float:
 
 
 def normalize_span(angular_span: float) -> float:
-    return float(np.clip(angular_span / 180.0, 0.0, 1.0))
+    return float(np.clip(angular_span / 360.0, 0.0, 1.0))
 
 
 def load_metrics(path: Path) -> GraspExample:

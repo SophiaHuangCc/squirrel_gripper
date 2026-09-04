@@ -6,7 +6,7 @@ objectives, always in this order:
 
 1. disturbance resistance in `[0, 1]`;
 2. contact coverage `log1p(num_contacts) / log1p(n_elements)`;
-3. angular span `clip(angular_span / 180, 0, 1)`.
+3. angular span `clip(angular_span / 360, 0, 1)`.
 
 Curl time and curl speed are not loaded, ranked, trained, or evaluated here.
 

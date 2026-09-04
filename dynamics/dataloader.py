@@ -258,12 +258,7 @@ class DynamicsDataset(Dataset):
             angular_span = self._get_scalar(data, "angular_span", 0.0)
 
             num_contacts_norm = np.log1p(num_contacts) / np.log1p(n_elements)
-            angular_span_norm = np.clip(angular_span / 180.0, 0.0, 1.0)
-            # angular_span_norm = np.where(
-            #     angular_span <= 180.0,
-            #     0.8 * angular_span / 180.0,
-            #     0.8 + 0.2 * np.clip((angular_span - 180.0) / 180.0, 0.0, 1.0)
-            # )
+            angular_span_norm = np.clip(angular_span / 360.0, 0.0, 1.0)
 
             target_metrics = torch.tensor(
                 [num_contacts_norm, disturbance_score, angular_span_norm],

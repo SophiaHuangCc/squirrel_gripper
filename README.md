@@ -567,7 +567,7 @@ checkpoint, and optimizer:
 | --- | --- | --- |
 | 0 | `contact_norm` | `log(1 + num_contacts) / log(1 + n_elements)` |
 | 1 | `disturbance_score` | Mean directional resistance score from the simulated disturbances |
-| 2 | `angular_span_norm` | `clip(angular_span_degrees / 180, 0, 1)` |
+| 2 | `angular_span_norm` | `clip(angular_span_degrees / 360, 0, 1)` |
 
 ## 3. Train the surrogate
 

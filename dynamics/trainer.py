@@ -4,8 +4,8 @@ import torch.optim as optim
 
 from dynamics.profile_forward_2d import ProfileForward2DModel
 from generator.dataloader import (
-    DesignBounds, enforce_fixed_design_unit, model_norm_to_physical,
-    physical_to_diffusion, variable_design_mask,
+    DesignBounds, design_mask_like, enforce_fixed_design_unit,
+    model_norm_to_physical, physical_to_diffusion,
 )
 
 
@@ -242,7 +242,7 @@ class Trainer:
         init_all = init_tensor.repeat(K, 1)
         target_all = target.repeat(K, 1)
 
-        variable_mask = variable_design_mask(self.design_bounds, self.device)
+        variable_mask = design_mask_like(design_all, self.design_bounds)
         noise = torch.randn_like(design_all, device=self.device) * variable_mask
 
         if self.noise_timesteps:

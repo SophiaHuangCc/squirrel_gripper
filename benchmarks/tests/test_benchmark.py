@@ -21,8 +21,9 @@ from benchmarks.diagnose_dgdm import directional_quality, parse_int_list
 from dynamics.trainer import Trainer
 from dynamics.profile_forward_2d import ProfileForward2DModel
 from generator.dataloader import (
-    DESIGN_MODEL_SCALES, DesignBounds, enforce_fixed_design_unit,
-    model_norm_to_physical, project_physical_design, variable_design_mask,
+    DESIGN_MODEL_SCALES, DesignBounds, design_mask_like,
+    enforce_fixed_design_unit, model_norm_to_physical,
+    project_physical_design, variable_design_mask,
 )
 
 
@@ -36,6 +37,8 @@ class BenchmarkTests(unittest.TestCase):
         fixed_ids = torch.tensor([7, 8, 9, 10, 14, 15])
         torch.testing.assert_close(fixed[:, fixed_ids], torch.full((2, 6, 1), -1.0))
         torch.testing.assert_close(fixed[:, mask], design[:, mask])
+        self.assertEqual(tuple(design_mask_like(torch.zeros(512, 16), bounds).shape), (1, 16))
+        self.assertEqual(tuple(design_mask_like(torch.zeros(512, 16, 1), bounds).shape), (1, 16, 1))
 
     def test_dgdm_diagnostic_helpers(self):
         self.assertEqual(parse_int_list("0,10,99"), (0, 10, 99))
@@ -178,7 +181,7 @@ class BenchmarkTests(unittest.TestCase):
         self.assertLess(summary["cvar20_utility"], summary["mean_utility"])
         self.assertEqual(summary["num_rollouts"], 5)
 
-    def test_raw_angular_span_is_reported_above_utility_cap(self):
+    def test_raw_angular_span_uses_full_360_degree_range(self):
         summary = aggregate_records(
             [{
                 "family": "approach_radius",
@@ -191,7 +194,7 @@ class BenchmarkTests(unittest.TestCase):
             }],
             load_config(),
         )
-        self.assertEqual(summary["component_mean"]["angular_span_norm"], 1.0)
+        self.assertAlmostEqual(summary["component_mean"]["angular_span_norm"], 2.0 / 3.0)
         self.assertEqual(summary["raw_metric_mean"]["angular_span_deg"], 240.0)
 
     def test_target_selection_distinguishes_specialist_and_generalist(self):

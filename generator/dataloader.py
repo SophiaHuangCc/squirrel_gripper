@@ -96,11 +96,19 @@ def variable_design_mask(bounds: DesignBounds, device=None) -> torch.Tensor:
     return (hi - lo).abs() > 1e-12
 
 
+def design_mask_like(design: torch.Tensor, bounds: DesignBounds) -> torch.Tensor:
+    """Broadcastable variable-coordinate mask for [B,16] or [B,16,...]."""
+    if design.ndim < 2 or design.shape[1] != len(DESIGN_NAMES):
+        raise ValueError(
+            f"Expected design shaped [batch,{len(DESIGN_NAMES)},...], got {tuple(design.shape)}"
+        )
+    mask = variable_design_mask(bounds, design.device)
+    return mask.view(1, len(DESIGN_NAMES), *([1] * (design.ndim - 2)))
+
+
 def enforce_fixed_design_unit(design_unit: torch.Tensor, bounds: DesignBounds) -> torch.Tensor:
     """Keep zero-range coordinates at their canonical diffusion value (-1)."""
-    mask = variable_design_mask(bounds, design_unit.device)
-    while mask.ndim < design_unit.ndim:
-        mask = mask.unsqueeze(-1)
+    mask = design_mask_like(design_unit, bounds)
     return torch.where(mask, design_unit, torch.full_like(design_unit, -1.0))
 
 

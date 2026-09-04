@@ -237,7 +237,7 @@ for i,(title,body,col) in enumerate([
     textbox(s,x+.3,1.98,4.95,.38,title,19,True,col,PP_ALIGN.CENTER)
     textbox(s,x+.45,2.65,4.65,1.55,body,17,False,INK,PP_ALIGN.CENTER,valign=MSO_ANCHOR.MIDDLE)
 textbox(s,1.05,5.32,11.2,.95,"Contact-related summaries can change sharply when a small geometry change creates or removes contact. This is not “wrong”; it is a hypothesis for weaker local gradients and must be tested.",15,False,INK,PP_ALIGN.CENTER)
-add_footer(s,3,"Dataset: 16,000 train + 4,000 test simulations; angular-span cap remains 180°")
+add_footer(s,3,"Dataset: 16,000 train + 4,000 test simulations; angular span normalized over 360°")
 add_notes(s,"The paper samples dense initial-pose grids and aggregates their gradients. Our 20,000 rollouts are substantial, but not equivalent to their dense per-pose interaction coverage. The experimental question is whether our summary metrics remain locally smooth enough for gradient guidance.")
 
 # 4 timestep
@@ -289,7 +289,7 @@ data=[
 native_table(s,.95,1.68,11.35,2.45,data,[3.0,1.65,1.8,2.0,2.9],12)
 textbox(s,1.0,4.55,11.2,.62,"DGDM does not improve angular span over unguided diffusion in Scenario 02, while Adam finds a feasible high-span basin.",17,True,RED,PP_ALIGN.CENTER)
 add_bullets(s,1.55,5.42,10.1,1.0,["Possible causes: diffusion support gap; inaccurate noisy gradient; summary metric locally non-smooth."],15)
-add_footer(s,7,"Utility weights: D=0.45, C=0.20, A=0.35; angular span normalized with 180° cap")
+add_footer(s,7,"Utility weights: D=0.45, C=0.20, A=0.35; angular span normalized over 360°")
 add_notes(s,"This is the most informative failure case. Disturbance is already high for diffusion designs, but angular span remains near 0.14. A targeted analysis should compare Adam’s winning design against the diffusion training distribution and visualize denoising trajectories.")
 
 # 8 next experiments
