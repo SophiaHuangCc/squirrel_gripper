@@ -199,6 +199,7 @@ class SquirrelDesignDiffusion(nn.Module):
         guidance_task_params: Optional[torch.Tensor] = None,
         guidance_init_config: Optional[torch.Tensor] = None,
         guidance_weights: Optional[Dict[str, float]] = None,
+        guidance_timesteps: Optional[tuple[int, ...]] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Generate designs.
@@ -223,7 +224,10 @@ class SquirrelDesignDiffusion(nn.Module):
                 sample, timesteps, global_cond=self._network_condition(cond)
             )
 
-            if dynamics_model is not None and guidance_scale > 0.0:
+            guidance_enabled = (
+                guidance_timesteps is None or int(t.item()) in guidance_timesteps
+            )
+            if dynamics_model is not None and guidance_scale > 0.0 and guidance_enabled:
                 with torch.enable_grad():
                     guided_sample = sample.detach().requires_grad_(True)
                     score = self._score_for_guidance(

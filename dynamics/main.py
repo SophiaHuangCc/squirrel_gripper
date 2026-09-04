@@ -214,6 +214,19 @@ def train(args):
 
     trainer = Trainer(args)
     trainer.create_model()
+    if args.angular_target_normalization == "zscore":
+        angular_values = torch.stack([
+            train_dataset[index]["target_metrics"][2]
+            for index in range(len(train_dataset))
+        ]).float()
+        trainer.set_angular_target_statistics(
+            angular_values.mean().item(), angular_values.std(unbiased=False).item()
+        )
+        print(
+            "[ANGULAR TARGET ZSCORE] "
+            f"mean={trainer.angular_target_mean:.8f} "
+            f"std={trainer.angular_target_std:.8f}"
+        )
 
     if args.mode == 'validate':
         validate(args, val_loader, trainer)

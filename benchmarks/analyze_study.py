@@ -156,8 +156,13 @@ def grouped_summary(rows, keys):
             ),
             "mean_contacts": mean(row["num_contacts"] for row in group),
             "mean_contact_coverage": mean(row["contact_coverage_norm"] for row in group),
+            "std_contact_coverage": std(row["contact_coverage_norm"] for row in group),
             "mean_disturbance": mean(row["disturbance_resistance"] for row in group),
+            "std_disturbance": std(row["disturbance_resistance"] for row in group),
             "mean_angular_span_deg": mean(row["angular_span_deg"] for row in group),
+            "std_angular_span_deg": std(row["angular_span_deg"] for row in group),
+            "mean_angular_span_norm": mean(row["angular_span_norm"] for row in group),
+            "std_angular_span_norm": std(row["angular_span_norm"] for row in group),
             "mean_simulation_seconds": mean(row["simulation_seconds"] for row in group),
         })
     return output
@@ -450,6 +455,24 @@ def main():
     method_overall = grouped_summary(rows, ("objective", "method"))
     best_per_method = select_best(rows, ("objective", "scenario_id", "method"))
     best_overall = select_best(rows, ("objective", "scenario_id"))
+    best_contact = select_best(
+        rows, ("objective", "scenario_id"), value_key="contact_only_utility"
+    )
+    best_disturbance = select_best(
+        rows, ("objective", "scenario_id"), value_key="disturbance_only_utility"
+    )
+    best_angular = select_best(
+        rows, ("objective", "scenario_id"), value_key="angular_span_norm"
+    )
+    best_contact_per_method = select_best(
+        rows, ("objective", "scenario_id", "method"), value_key="contact_only_utility"
+    )
+    best_disturbance_per_method = select_best(
+        rows, ("objective", "scenario_id", "method"), value_key="disturbance_only_utility"
+    )
+    best_angular_per_method = select_best(
+        rows, ("objective", "scenario_id", "method"), value_key="angular_span_norm"
+    )
     generalist_candidates = generalist_candidate_summary(rows)
     if args.protocol == "generalist" and not generalist_candidates:
         raise ValueError(
@@ -485,6 +508,15 @@ def main():
     write_csv(output / "method_overall.csv", method_overall)
     write_csv(output / "best_per_method_scenario.csv", best_per_method, exclude=("design_params",))
     write_csv(output / "best_overall_per_scenario.csv", best_overall, exclude=("design_params",))
+    write_csv(output / "best_contact_per_scenario.csv", best_contact, exclude=("design_params",))
+    write_csv(output / "best_disturbance_per_scenario.csv", best_disturbance, exclude=("design_params",))
+    write_csv(output / "best_angular_span_per_scenario.csv", best_angular, exclude=("design_params",))
+    write_csv(output / "best_contact_per_method_scenario.csv", best_contact_per_method,
+              exclude=("design_params",))
+    write_csv(output / "best_disturbance_per_method_scenario.csv", best_disturbance_per_method,
+              exclude=("design_params",))
+    write_csv(output / "best_angular_span_per_method_scenario.csv", best_angular_per_method,
+              exclude=("design_params",))
     write_csv(output / "proposal_times.csv", proposal_rows)
     write_csv(output / "timing_summary.csv", timings)
     write_csv(output / "surrogate_gap_summary.csv", calibration)

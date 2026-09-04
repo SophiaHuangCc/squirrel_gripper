@@ -53,6 +53,7 @@ def diffusion_search(
     target_contacts=0.8, target_disturbance=0.8, target_angular_span=0.8,
     scenario_id=None, family=None, generalist=False, device="cpu",
     guidance_dynamics_model=None,
+    guidance_timesteps=None,
 ):
     cells = select_target_cells(config, scenario_id, family, generalist)
     if num_samples < num_candidates:
@@ -70,6 +71,20 @@ def diffusion_search(
                 f"Diffusion prior uses {prior_steps} training timesteps but DGDM "
                 f"dynamics uses {dynamics_steps}; retrain or select matching checkpoints."
             )
+        if guidance_timesteps is not None:
+            diffusion_model.noise_scheduler.set_timesteps(
+                int(num_inference_steps), device=torch.device(device)
+            )
+            scheduled = {
+                int(value) for value in diffusion_model.noise_scheduler.timesteps.tolist()
+            }
+            requested = {int(value) for value in guidance_timesteps}
+            unavailable = requested - scheduled
+            if unavailable:
+                raise ValueError(
+                    f"Guidance timesteps {sorted(unavailable)} are not in the "
+                    f"{num_inference_steps}-step DDIM schedule {sorted(scheduled)}"
+                )
     # The diffusion network was trained with one condition vector.  For a
     # family/generalist task, use the centroid of the selected scenario set as
     # its proposal context, then rank every proposal over the complete set.
@@ -119,6 +134,7 @@ def diffusion_search(
             guidance_task_params=guidance_task if guidance_scale > 0 else None,
             guidance_init_config=guidance_init if guidance_scale > 0 else None,
             guidance_weights=config["evaluation"]["utility_weights"],
+            guidance_timesteps=guidance_timesteps,
         )
         generated.append(output["design_physical"].detach().cpu().numpy())
         remaining -= current
@@ -129,7 +145,9 @@ def diffusion_search(
     )
     denoising_evaluations = num_samples * num_inference_steps
     guidance_evaluations = (
-        num_samples * num_inference_steps * len(cells) if guidance_scale > 0 else 0
+        num_samples * (
+            num_inference_steps if guidance_timesteps is None else len(guidance_timesteps)
+        ) * len(cells) if guidance_scale > 0 else 0
     )
     return SearchResult(
         designs=ranked.designs[:num_candidates], scores=ranked.scores[:num_candidates],

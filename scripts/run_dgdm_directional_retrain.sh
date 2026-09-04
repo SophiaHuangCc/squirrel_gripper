@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Retrain only the noisy guidance model with matched ranking pairs, then compare methods.
+# Legacy focused noisy-model retraining entry point (equal regression, no ranking).
 set -Eeuo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-/home/real/Desktop/Squirrel_Gripper/ws/squirrel_gripper}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_DIR/.venv/bin/python}"
 DATASET_DIR="${DATASET_DIR:-$PROJECT_DIR/TendonForces/runs/exp1}"
-CONFIG="${CONFIG:-$PROJECT_DIR/benchmarks/scenarios_v4_unseen_four.json}"
+CONFIG="${CONFIG:-$PROJECT_DIR/benchmarks/scenarios_v5_robust_four.json}"
 V7_ROOT="${V7_ROOT:-$PROJECT_DIR/outputs/from_links_v7_dgdm_retrain}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_DIR/outputs/from_links_v8_directional}"
 CLEAN_CHECKPOINT="${CLEAN_CHECKPOINT:-$V7_ROOT/dynamics_clean_weighted_rank/best.pt}"
@@ -16,7 +16,7 @@ ANALYSIS_DIR="$OUTPUT_ROOT/analysis"
 LOG_DIR="$OUTPUT_ROOT/logs"
 
 TRAIN_TIMESTEPS="${TRAIN_TIMESTEPS:-15}"
-INFERENCE_STEPS="${INFERENCE_STEPS:-10}"
+INFERENCE_STEPS="${INFERENCE_STEPS:-5}"
 SEEDS="${SEEDS:-0}"
 GUIDANCE_SCALES="${GUIDANCE_SCALES:-0.5,1,2,4}"
 NUM_WORKERS="${NUM_WORKERS:-20}"
@@ -40,7 +40,7 @@ done
 echo "running time=$(date --iso-8601=seconds)" > "$STATUS_FILE"
 
 if [[ "$RUN_TRAINING" == 1 ]]; then
-  echo "[1/3] TRAIN NOISY DYNAMICS WITH CONTEXT/TIMESTEP-MATCHED RANKING"
+  echo "[1/3] TRAIN NOISY DYNAMICS WITH EQUAL REGRESSION AND NO RANKING"
   "$PYTHON_BIN" dynamics/main.py --mode train --device cuda \
     --data_dir "$DATASET_DIR/train" --test_data_dir "$DATASET_DIR/test" \
     --save_dir "$NOISY_DIR" --batch_size 32 --num_workers 8 --lr 1e-3 \
@@ -50,8 +50,9 @@ if [[ "$RUN_TRAINING" == 1 ]]; then
     --num_inference_steps "$INFERENCE_STEPS" \
     --num_timesteps_per_batch "$INFERENCE_STEPS" \
     --noise_timestep_sampling inference \
-    --metric_loss_weights 1,1,2 --utility_weights 0.20,0.45,0.35 \
-    --ranking_loss_weight 0.2 --ranking_margin 0.05 \
+    --metric_loss_weights 1,1,1 --utility_weights 0.20,0.45,0.35 \
+    --angular_target_normalization zscore \
+    --ranking_loss_weight 0 --ranking_margin 0.05 \
     --ranking_min_target_delta 0.05 \
     --wandb_project "$WANDB_PROJECT" --wandb_mode "$WANDB_MODE" \
     --wandb_run_name "noisy-context-rank-15x10-$STAMP"
@@ -70,8 +71,8 @@ echo "[2/3] DIAGNOSTICS"
   --wandb_project "$WANDB_PROJECT" --wandb_mode "$WANDB_MODE" \
   --wandb_run_name "diagnostic-context-rank-15x10-$STAMP"
 
-echo "[3/3] GENERATE AND SIMULATE ALL 16 CANDIDATES"
-common=(--config "$CONFIG" --candidate_budget 16 --seeds "$SEEDS"
+echo "[3/3] GENERATE AND SIMULATE ALL 8 CANDIDATES"
+common=(--config "$CONFIG" --candidate_budget 8 --seeds "$SEEDS"
   --dynamics_checkpoint "$CLEAN_CHECKPOINT"
   --dgdm_dynamics_checkpoint "$NOISY_DIR/best.pt"
   --diffusion_checkpoint "$DIFFUSION_CHECKPOINT" --device cuda
@@ -80,7 +81,7 @@ common=(--config "$CONFIG" --candidate_budget 16 --seeds "$SEEDS"
   --diffusion_num_samples 256 --diffusion_batch_size 256
   --diffusion_inference_steps "$INFERENCE_STEPS"
   --utility_weights 0.45,0.20,0.35 --target_scenario_id all
-  --evaluation_scope auto --run_benchmark --benchmark_top_k 16
+  --evaluation_scope auto --run_benchmark --benchmark_top_k 8
   --num_workers "$NUM_WORKERS" --timeout "$TIMEOUT")
 
 "$PYTHON_BIN" -m benchmarks.run_baselines \

@@ -45,6 +45,14 @@ def parse():
         help="Utility weights used only by the optional pairwise ranking loss.",
     )
     parser.add_argument("--ranking_loss_weight", type=float, default=0.0)
+    parser.add_argument(
+        "--angular_target_normalization", choices=("none", "zscore"), default="none",
+        help=(
+            "Optionally standardize the already 180-degree-capped angular target "
+            "using the training-set mean/std. Predictions are transformed back "
+            "before utility calculation."
+        ),
+    )
     parser.add_argument("--ranking_margin", type=float, default=0.05)
     parser.add_argument(
         "--ranking_min_target_delta", type=float, default=0.05,
@@ -72,6 +80,13 @@ def parse():
         help=(
             "For noisy dynamics training, sample any training timestep or only the "
             "DDIM timesteps that will actually be used during inference."
+        ),
+    )
+    parser.add_argument(
+        "--noise_timesteps", default="",
+        help=(
+            "Optional comma-separated diffusion timesteps used for noisy-dynamics "
+            "training (for example 0,3,6). Overrides --noise_timestep_sampling."
         ),
     )
     parser.add_argument("--use_es", action="store_true", help="Use evolutionary strategy for training")

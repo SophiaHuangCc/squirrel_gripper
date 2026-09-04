@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from benchmarks.candidates import load_candidates
+
 
 SCENARIO_RE = re.compile(r"^approach_radius-(\d+)$")
 
@@ -37,22 +39,38 @@ def main() -> None:
     parser.add_argument("--study_dir", type=Path, required=True)
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--top_k", type=int, default=16)
+    parser.add_argument(
+        "--config", type=Path, default=None,
+        help="Optional config override, e.g. one enabling physical-condition robustness.",
+    )
     parser.add_argument("--num_workers", type=int, default=20)
     parser.add_argument("--timeout", type=float, default=1800.0)
     parser.add_argument("--render", action="store_true")
+    parser.add_argument(
+        "--methods", default="",
+        help="Optional comma-separated saved method labels to evaluate.",
+    )
     parser.add_argument("--dry_run", action="store_true")
     args = parser.parse_args()
 
     root = args.study_dir.resolve()
     output = args.output_dir.resolve()
     candidate_files = sorted(root.rglob("candidates/*.npz"))
+    requested_methods = {value.strip() for value in args.methods.split(",") if value.strip()}
+    if requested_methods:
+        candidate_files = [
+            path for path in candidate_files
+            if load_candidates(path)["method"] in requested_methods
+        ]
     if not candidate_files:
         raise ValueError(f"No candidate NPZ files found under {root}")
 
     commands = []
     for candidate in candidate_files:
         scenario = scenario_id(candidate, root)
-        config = nearest(candidate, "effective_config.json", root)
+        config = args.config.resolve() if args.config else nearest(
+            candidate, "effective_config.json", root
+        )
         if scenario is None or config is None:
             print(f"[SKIP] cannot resolve scenario/config for {candidate}")
             continue

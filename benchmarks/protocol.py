@@ -37,6 +37,43 @@ def expand_core_scenarios(config):
     return cells
 
 
+def expand_physical_conditions(cells, config):
+    """Expand each scenario into configured physical initial-condition variants.
+
+    These variants are repeated evaluations of the same design/scenario target,
+    not additional design candidates. Offsets use simulator-native units.
+    """
+    robustness = config.get("evaluation", {}).get("physical_condition_ensemble", {})
+    if not robustness.get("enabled", False):
+        return cells
+    variants = robustness.get("variants", [])
+    if not variants:
+        raise ValueError("Enabled physical_condition_ensemble requires nonempty variants")
+    expanded = []
+    allowed = {"landing_height", "landing_speed", "initial_x_gap"}
+    for cell in cells:
+        for index, variant in enumerate(variants):
+            name = str(variant.get("id", f"ic{index:02d}"))
+            offsets = dict(variant.get("offsets", {}))
+            unknown = set(offsets) - allowed
+            if unknown:
+                raise ValueError(
+                    f"Unsupported physical-condition offsets {sorted(unknown)}; "
+                    f"allowed keys are {sorted(allowed)}"
+                )
+            params = dict(cell["params"])
+            for key, offset in offsets.items():
+                params[key] = float(params[key]) + float(offset)
+            expanded.append({
+                **cell,
+                "scenario_id": f"{cell['scenario_id']}@{name}",
+                "base_scenario_id": cell["scenario_id"],
+                "physical_condition_id": name,
+                "params": params,
+            })
+    return expanded
+
+
 def normalized_metrics(metric):
     n_elements = max(float(metric.get("n_elements", 100.0)), 1.0)
     return {

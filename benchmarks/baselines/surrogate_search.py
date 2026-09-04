@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from benchmarks.protocol import expand_core_scenarios
+from benchmarks.protocol import expand_core_scenarios, expand_physical_conditions
 from dynamics.profile_forward_2d import ProfileForward2DModel
 from generator.dataloader import DesignBounds, physical_to_model_norm, project_physical_design
 
@@ -17,6 +17,29 @@ class SearchResult:
     scores: np.ndarray
     model_evaluations: int
     target_scenario_ids: list[str]
+
+
+class MetricScaleWrapper(torch.nn.Module):
+    """Expose checkpoint predictions in benchmark C/D/A coordinates."""
+
+    def __init__(self, model, angular_mode="none", angular_mean=0.0, angular_std=1.0):
+        super().__init__()
+        self.model = model
+        self.angular_mode = angular_mode
+        self.angular_mean = float(angular_mean)
+        self.angular_std = float(angular_std)
+
+    def forward(self, task_params, design_params, init_config, timesteps):
+        prediction = self.model(task_params, design_params, init_config, timesteps)
+        if self.angular_mode != "zscore":
+            return prediction
+        return torch.cat(
+            (
+                prediction[..., :2],
+                prediction[..., 2:3] * self.angular_std + self.angular_mean,
+            ),
+            dim=-1,
+        )
 
 
 def select_target_cells(config, scenario_id=None, family=None, generalist=False):
@@ -36,7 +59,7 @@ def select_target_cells(config, scenario_id=None, family=None, generalist=False)
             cells = [cell for cell in cells if cell["family"] == "nominal"]
     if not cells:
         raise ValueError("The surrogate-search target selected zero scenarios")
-    return cells
+    return expand_physical_conditions(cells, config)
 
 
 def load_surrogate(checkpoint_path, device="cpu", hidden_dim=256, expected_noise_conditioned=False):
@@ -59,6 +82,14 @@ def load_surrogate(checkpoint_path, device="cpu", hidden_dim=256, expected_noise
             "The dynamics checkpoint is not compatible with the current "
             "three-output model. Retrain dynamics with --output_dim 3."
         ) from exc
+    angular_mode = metadata.get("angular_target_normalization", "none")
+    if angular_mode == "zscore":
+        model = MetricScaleWrapper(
+            model,
+            angular_mode=angular_mode,
+            angular_mean=metadata.get("angular_target_mean", 0.0),
+            angular_std=metadata.get("angular_target_std", 1.0),
+        ).to(device)
     model.eval()
     for parameter in model.parameters():
         parameter.requires_grad_(False)

@@ -170,6 +170,13 @@ def main():
     parser.add_argument("--diffusion_inference_steps", type=int, default=20)
     parser.add_argument("--dgdm_guidance_scale", type=float, default=0.1)
     parser.add_argument(
+        "--dgdm_guidance_timesteps", type=str, default="",
+        help=(
+            "Optional comma-separated DDIM training-timestep indices at which "
+            "guidance is injected, e.g. 0,3,6 for late-step-only guidance."
+        ),
+    )
+    parser.add_argument(
         "--dgdm_method_label", type=str, default="dgdm",
         help=(
             "Method label stored in candidate/results files for a DGDM run. "
@@ -192,7 +199,13 @@ def main():
         help="Adapt an existing generator/optimizer candidate NPZ to the common schema",
     )
     parser.add_argument("--run_benchmark", action="store_true")
-    parser.add_argument("--benchmark_top_k", type=int, default=1)
+    parser.add_argument(
+        "--benchmark_top_k", type=int, default=None,
+        help=(
+            "Number of generated candidates to verify in the simulator. "
+            "The default verifies the complete saved candidate pool."
+        ),
+    )
     parser.add_argument(
         "--evaluation_scope", choices=("auto", "target", "all"), default="auto",
         help=(
@@ -487,6 +500,11 @@ def main():
                 )
                 guided = method in {"dgdm", "unconditional_dgdm"}
                 guidance_scale = args.dgdm_guidance_scale if guided else 0.0
+                guidance_timesteps = (
+                    tuple(int(value.strip()) for value in args.dgdm_guidance_timesteps.split(",")
+                          if value.strip())
+                    if guided and args.dgdm_guidance_timesteps else None
+                )
                 checkpoint_path = (
                     args.unconditional_diffusion_checkpoint
                     if conditioning_mode == "unconditional"
@@ -503,6 +521,7 @@ def main():
                     scenario_id=args.target_scenario_id, family=args.target_family,
                     generalist=args.generalist, device=args.device,
                     guidance_dynamics_model=guidance_surrogate if guided else None,
+                    guidance_timesteps=guidance_timesteps,
                 )
                 path = candidate_dir / f"{output_method}_s{seed}.npz"
                 save_candidates(
@@ -516,6 +535,7 @@ def main():
                             str(args.dgdm_dynamics_checkpoint.resolve()) if guided else None
                         ),
                         "guidance_scale": guidance_scale,
+                        "guidance_timesteps": guidance_timesteps,
                         "num_samples": args.diffusion_num_samples,
                         "num_inference_steps": args.diffusion_inference_steps,
                         "model_evaluations": result.model_evaluations,
@@ -571,7 +591,11 @@ def main():
             "--candidates", str(path),
             "--output_dir", str(run_dir),
             "--config", str(args.config),
-            "--top_k", str(args.benchmark_top_k),
+            "--top_k", str(
+                args.benchmark_top_k
+                if args.benchmark_top_k is not None
+                else len(loaded["design_params"])
+            ),
             # Parallelism is managed here across candidate/method/seed files.
             # A specialist child contains only one rollout, so assigning the
             # complete worker pool inside that child leaves the other CPUs idle.

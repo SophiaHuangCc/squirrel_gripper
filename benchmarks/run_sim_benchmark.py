@@ -15,7 +15,10 @@ from pathlib import Path
 import numpy as np
 
 from benchmarks.candidates import load_candidates
-from benchmarks.protocol import DEFAULT_CONFIG, expand_core_scenarios, load_config, normalized_metrics, utility
+from benchmarks.protocol import (
+    DEFAULT_CONFIG, expand_core_scenarios, expand_physical_conditions,
+    load_config, normalized_metrics, utility,
+)
 from dynamics.utils import design_to_dict
 
 
@@ -235,6 +238,7 @@ def main():
         scenarios = [cell for cell in scenarios if cell["scenario_id"] in requested_ids]
     if not scenarios:
         raise ValueError("Scenario filters selected zero cells")
+    scenarios = expand_physical_conditions(scenarios, config)
 
     output_dir = args.output_dir.resolve()
     runs_dir = output_dir / "runs"

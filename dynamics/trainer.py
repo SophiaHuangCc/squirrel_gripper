@@ -78,11 +78,26 @@ class Trainer:
         self.noise_timestep_sampling = getattr(
             self.args, "noise_timestep_sampling", "uniform"
         )
+        noise_timestep_text = getattr(self.args, "noise_timesteps", "")
+        self.noise_timesteps = tuple(
+            int(value.strip()) for value in str(noise_timestep_text).split(",")
+            if value.strip()
+        )
+        if any(value < 0 or value >= self.num_train_timesteps
+               for value in self.noise_timesteps):
+            raise ValueError(
+                f"--noise_timesteps must be in [0, {self.num_train_timesteps - 1}]"
+            )
         if (self.ranking_loss_weight < 0 or self.ranking_margin < 0
                 or self.ranking_min_target_delta < 0
                 or self.ranking_max_design_distance < 0):
             raise ValueError("Ranking-loss weight, margin, and target delta must be nonnegative")
         self.last_loss_parts = {}
+        self.angular_target_normalization = getattr(
+            self.args, "angular_target_normalization", "none"
+        )
+        self.angular_target_mean = 0.0
+        self.angular_target_std = 1.0
 
         # Diffusers is needed only for the optional design-noise augmentation.
         # Keep ordinary surrogate training independent of the Hugging Face stack.
@@ -113,6 +128,30 @@ class Trainer:
             raise ValueError(f"{name} must sum to one")
         return torch.tensor(values, dtype=torch.float32)
 
+    def set_angular_target_statistics(self, mean, std):
+        self.angular_target_mean = float(mean)
+        self.angular_target_std = max(float(std), 1e-6)
+
+    def transform_targets(self, values):
+        if self.angular_target_normalization != "zscore":
+            return values
+        output = values.clone()
+        output[..., 2] = (
+            output[..., 2] - self.angular_target_mean
+        ) / self.angular_target_std
+        return output
+
+    def inverse_predictions(self, values):
+        if self.angular_target_normalization != "zscore":
+            return values
+        return torch.cat(
+            (
+                values[..., :2],
+                values[..., 2:3] * self.angular_target_std + self.angular_target_mean,
+            ),
+            dim=-1,
+        )
+
     def loss_components(
         self, prediction, target, task_params=None, init_config=None,
         design_params=None, timesteps=None,
@@ -124,8 +163,8 @@ class Trainer:
         ranking = prediction.sum() * 0.0
         pair_count = 0
         if self.ranking_loss_weight > 0 and len(prediction) > 1:
-            predicted_utility = prediction @ self.utility_weights
-            target_utility = target @ self.utility_weights
+            predicted_utility = self.inverse_predictions(prediction) @ self.utility_weights
+            target_utility = self.inverse_predictions(target) @ self.utility_weights
             # Compare all pairs, but only within the same task, initial condition,
             # and (for noisy training) timestep. Ranking across different physical
             # scenarios does not supervise the local design direction used by DGDM.
@@ -198,7 +237,19 @@ class Trainer:
 
         noise = torch.randn_like(design_all, device=self.device)
 
-        if self.noise_timestep_sampling == "inference":
+        if self.noise_timesteps:
+            available = torch.tensor(
+                self.noise_timesteps, dtype=torch.long, device=self.device
+            )
+            if K == len(available):
+                # With K=3 and 0,3,6, every clean mini-batch is supervised at
+                # every late guidance timestep rather than sampling duplicates.
+                selected = available
+            else:
+                selected = available[
+                    torch.randint(0, len(available), (K,), device=self.device)
+                ]
+        elif self.noise_timestep_sampling == "inference":
             available = self.noise_scheduler.timesteps.to(self.device)
             selected = available[
                 torch.randint(0, len(available), (K,), device=self.device)
@@ -238,8 +289,9 @@ class Trainer:
         init_tensor = init_tensor.to(self.device)
         target = target.to(self.device)
 
+        target_model = self.transform_targets(target)
         task_all, noisy_design_all, init_all, timestep_cond, target_all = self._make_noisy_design_batch(
-            task_tensor, design_tensor, init_tensor, target
+            task_tensor, design_tensor, init_tensor, target_model
         )
 
         pred = self.model(
@@ -324,9 +376,10 @@ class Trainer:
 
             if target is not None:
                 target = target.to(self.device).float()
+                target_model = self.transform_targets(target)
 
             if self.use_design_noise:
-                dummy_target = target if target is not None else torch.zeros(
+                dummy_target = target_model if target is not None else torch.zeros(
                     design_tensor.shape[0], self.output_dim, device=self.device
                 )
                 task_all, noisy_all, init_all, timestep_all, target_all = (
@@ -335,9 +388,10 @@ class Trainer:
                     )
                 )
                 pred_all = self.model(task_all, noisy_all, init_all, timestep_all)
-                pred = pred_all.reshape(
+                pred_model = pred_all.reshape(
                     self.num_timesteps_per_batch, design_tensor.shape[0], self.output_dim
                 ).mean(dim=0)
+                pred = self.inverse_predictions(pred_model)
                 loss = (
                     self.loss_components(pred_all, target_all)[0] if target is not None
                     else torch.tensor(0.0, device=self.device)
@@ -346,9 +400,10 @@ class Trainer:
                 timesteps = torch.zeros(
                     design_tensor.shape[0], dtype=torch.float32, device=self.device
                 )
-                pred = self.model(task_tensor, design_tensor, init_tensor, timesteps)
+                pred_model = self.model(task_tensor, design_tensor, init_tensor, timesteps)
+                pred = self.inverse_predictions(pred_model)
                 loss = (
-                    self.loss_components(pred, target)[0] if target is not None
+                    self.loss_components(pred_model, target_model)[0] if target is not None
                     else torch.tensor(0.0, device=self.device)
                 )
 
@@ -361,6 +416,9 @@ class Trainer:
             "noise_conditioned": bool(self.use_design_noise),
             "design_coordinates": "diffusion_unit" if self.use_design_noise else "model_norm",
             "num_train_timesteps": int(self.num_train_timesteps),
+            "angular_target_normalization": self.angular_target_normalization,
+            "angular_target_mean": float(self.angular_target_mean),
+            "angular_target_std": float(self.angular_target_std),
             "noise_beta_schedule": "squaredcos_cap_v2" if self.use_design_noise else None,
             "args": vars(self.args),
         }, path)

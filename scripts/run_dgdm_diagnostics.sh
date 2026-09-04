@@ -59,7 +59,7 @@ for scenario in approach_radius:00 approach_radius:01 approach_radius:02 approac
     --config "$CONFIG" --scales "$SCALES" --seeds "$SEED" \
     --candidate_budget 16 --num_samples 256 --batch_size 256 \
     --inference_steps 20 --target_scenario_id "$scenario" \
-    --device cuda --run_benchmark --benchmark_top_k 1 \
+    --device cuda --run_benchmark --benchmark_top_k 16 \
     --num_workers "$NUM_WORKERS" --timeout "$TIMEOUT"
 done
 

@@ -123,7 +123,7 @@ run_candidates_and_benchmarks() {
     "${target_args[@]}" \
     --evaluation_scope auto \
     --run_benchmark \
-    --benchmark_top_k 1 \
+    --benchmark_top_k 16 \
     --num_workers "$NUM_WORKERS" \
     --timeout "$TIMEOUT"
   echo "[BENCHMARK DONE] protocol=$protocol time=$(date --iso-8601=seconds)"

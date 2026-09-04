@@ -72,7 +72,7 @@ common_args=(
   --utility_weights 0.45,0.20,0.35
   --evaluation_scope auto
   --run_benchmark
-  --benchmark_top_k 1
+  --benchmark_top_k 16
   --num_workers "$NUM_WORKERS"
   --timeout "$TIMEOUT"
 )

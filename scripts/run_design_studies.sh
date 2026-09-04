@@ -181,7 +181,7 @@ run_benchmark_profile() {
     "${target_args[@]}" \
     --evaluation_scope auto \
     --run_benchmark \
-    --benchmark_top_k 1 \
+    --benchmark_top_k 16 \
     --num_workers "$NUM_WORKERS" \
     --timeout "$TIMEOUT"
   echo "[BENCHMARK DONE] protocol=$protocol profile=$profile time=$(date --iso-8601=seconds)"
@@ -261,7 +261,7 @@ run_guidance_sweep() {
     --generalist \
     --device "$DEVICE" \
     --run_benchmark \
-    --benchmark_top_k 1 \
+    --benchmark_top_k 16 \
     --num_workers 9 \
     --timeout "$TIMEOUT"
 

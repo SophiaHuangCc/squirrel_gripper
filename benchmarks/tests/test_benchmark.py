@@ -8,9 +8,13 @@ import torch
 
 from benchmarks.baselines.random_search import sample_feasible_designs
 from benchmarks.baselines.reference import reference_design
-from benchmarks.baselines.surrogate_search import _candidate_scores, adam_search, select_target_cells
+from benchmarks.baselines.surrogate_search import (
+    MetricScaleWrapper, _candidate_scores, adam_search, select_target_cells,
+)
 from benchmarks.candidates import load_candidates, save_candidates, validate_designs
-from benchmarks.protocol import aggregate_records, expand_core_scenarios, load_config
+from benchmarks.protocol import (
+    aggregate_records, expand_core_scenarios, expand_physical_conditions, load_config,
+)
 from benchmarks.run_guidance_sweep import method_name, parse_float_list
 from benchmarks.diagnose_dgdm import directional_quality, parse_int_list
 from dynamics.trainer import Trainer
@@ -65,6 +69,22 @@ class BenchmarkTests(unittest.TestCase):
         cells = expand_core_scenarios(compact)
         self.assertEqual(len(cells), 9)
         self.assertEqual(compact["default_target_scenario_id"], "approach_radius:04")
+
+    def test_physical_condition_ensemble_keeps_design_scenario_identity(self):
+        config = load_config(
+            Path(__file__).parents[1] / "scenarios_v5_robust_four.json"
+        )
+        base = expand_core_scenarios(config)
+        expanded = expand_physical_conditions(base[:1], config)
+        self.assertEqual(len(expanded), 5)
+        self.assertTrue(all(
+            cell["base_scenario_id"] == "approach_radius:00" for cell in expanded
+        ))
+        self.assertEqual(
+            [round(cell["params"]["initial_x_gap"], 3) for cell in expanded],
+            [0.120, 0.115, 0.125, 0.120, 0.120],
+        )
+        self.assertEqual(len(select_target_cells(config, scenario_id="approach_radius:00")), 5)
 
     def test_unseen_interpolation_grid_and_manufacturing_subset(self):
         config = load_config(
@@ -210,6 +230,52 @@ class BenchmarkTests(unittest.TestCase):
         trainer = Trainer(args)
         trainer.create_model()
         self.assertIsNone(trainer.noise_scheduler)
+
+    def test_noisy_dynamics_corrupts_only_design_parameters(self):
+        args = SimpleNamespace(
+            device="cpu", task_dim=3, design_dim=16, init_dim=3,
+            output_dim=3, hidden_dim=16, lr=1e-3, use_design_noise=True,
+            num_train_timesteps=15, num_inference_steps=5,
+            num_timesteps_per_batch=4, noise_timesteps="0,3,6",
+        )
+        trainer = Trainer(args)
+        trainer.create_model()
+        task = torch.tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
+        design = torch.ones(2, 16)
+        initial = torch.tensor([[0.4, 0.0, 1.2], [0.3, 0.1, 1.1]])
+        target = torch.zeros(2, 3)
+        task_out, design_out, initial_out, timestep_out, _ = trainer._make_noisy_design_batch(
+            task, design, initial, target
+        )
+        torch.testing.assert_close(task_out, task.repeat(4, 1))
+        torch.testing.assert_close(initial_out, initial.repeat(4, 1))
+        self.assertEqual(tuple(design_out.shape), (8, 16))
+        self.assertFalse(torch.equal(design_out, design.repeat(4, 1)))
+        self.assertTrue(set((timestep_out * 15).round().int().tolist()) <= {0, 3, 6})
+
+    def test_initial_conditions_are_model_inputs(self):
+        args = SimpleNamespace(
+            device="cpu", task_dim=3, design_dim=16, init_dim=3,
+            output_dim=3, hidden_dim=16, lr=1e-3, use_design_noise=False,
+        )
+        trainer = Trainer(args)
+        trainer.create_model()
+        first_layer = trainer.model.linears[0]
+        # 19 task features + 16 design + 3 initialization + 16 time features.
+        self.assertEqual(first_layer.in_features, 54)
+        self.assertEqual(trainer.model.init_ch if hasattr(trainer.model, "init_ch") else 3, 3)
+
+    def test_angular_zscore_is_inverted_without_blocking_gradients(self):
+        class Fixed(torch.nn.Module):
+            def forward(self, task, design, initial, timestep):
+                return torch.stack((design[:, 0], design[:, 1], design[:, 2]), dim=1)
+
+        wrapped = MetricScaleWrapper(Fixed(), "zscore", angular_mean=0.4, angular_std=0.2)
+        design = torch.ones(1, 16, requires_grad=True)
+        prediction = wrapped(torch.zeros(1, 3), design, torch.zeros(1, 3), torch.zeros(1))
+        torch.testing.assert_close(prediction, torch.tensor([[1.0, 1.0, 0.6]]))
+        prediction.sum().backward()
+        self.assertGreater(float(design.grad.abs().sum()), 0.0)
 
     def test_weighted_regression_and_ranking_loss(self):
         args = SimpleNamespace(
