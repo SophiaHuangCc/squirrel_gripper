@@ -63,11 +63,22 @@ def select_target_cells(config, scenario_id=None, family=None, generalist=False)
 
 
 def load_surrogate(checkpoint_path, device="cpu", hidden_dim=256, expected_noise_conditioned=False):
-    model = ProfileForward2DModel(
-        W=hidden_dim, task_ch=3, design_ch=16, init_ch=3, output_ch=3
-    ).to(device)
     state = torch.load(checkpoint_path, map_location=device)
     metadata = state if isinstance(state, dict) and "model" in state else {}
+    checkpoint_args = metadata.get("args", {}) if metadata else {}
+    architecture = metadata.get(
+        "model_architecture", checkpoint_args.get("model_architecture", "legacy")
+    )
+    model_width = int(metadata.get(
+        "hidden_dim", checkpoint_args.get("hidden_dim", hidden_dim)
+    ))
+    num_hidden_layers = int(metadata.get(
+        "num_hidden_layers", checkpoint_args.get("num_hidden_layers", 3)
+    ))
+    model = ProfileForward2DModel(
+        W=model_width, task_ch=3, design_ch=16, init_ch=3, output_ch=3,
+        architecture=architecture, num_hidden_layers=num_hidden_layers,
+    ).to(device)
     noise_conditioned = bool(metadata.get("noise_conditioned", False))
     if noise_conditioned != bool(expected_noise_conditioned):
         wanted = "noise-conditioned DGDM" if expected_noise_conditioned else "clean-design"

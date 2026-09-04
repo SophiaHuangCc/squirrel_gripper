@@ -41,6 +41,8 @@ class Trainer:
         self.init_dim = getattr(self.args, "init_dim", 3)
         self.output_dim = getattr(self.args, "output_dim", 3)
         self.hidden_dim = getattr(self.args, "hidden_dim", 256)
+        self.model_architecture = getattr(self.args, "model_architecture", "legacy")
+        self.num_hidden_layers = int(getattr(self.args, "num_hidden_layers", 3))
 
         # diffusion-style settings
         self.num_timesteps_per_batch = getattr(self.args, "num_timesteps_per_batch", 4)
@@ -55,6 +57,8 @@ class Trainer:
             design_ch=self.design_dim,
             init_ch=self.init_dim,
             output_ch=self.output_dim,
+            architecture=self.model_architecture,
+            num_hidden_layers=self.num_hidden_layers,
         ).to(self.device)
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.args.lr)
@@ -416,6 +420,9 @@ class Trainer:
             "noise_conditioned": bool(self.use_design_noise),
             "design_coordinates": "diffusion_unit" if self.use_design_noise else "model_norm",
             "num_train_timesteps": int(self.num_train_timesteps),
+            "model_architecture": self.model_architecture,
+            "hidden_dim": int(self.hidden_dim),
+            "num_hidden_layers": int(self.num_hidden_layers),
             "angular_target_normalization": self.angular_target_normalization,
             "angular_target_mean": float(self.angular_target_mean),
             "angular_target_std": float(self.angular_target_std),

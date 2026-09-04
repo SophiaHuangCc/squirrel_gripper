@@ -47,10 +47,22 @@ class ProfileForward2DModel(nn.Module):
         design_ch=16,
         init_ch=3,
         output_ch=3,
+        architecture="legacy",
+        num_hidden_layers=3,
     ):
         super().__init__()
 
         self.W = W
+        self.architecture = architecture
+        self.num_hidden_layers = int(num_hidden_layers)
+        self.task_ch = task_ch
+        self.design_ch = design_ch
+        self.init_ch = init_ch
+        self.output_ch = output_ch
+        if architecture not in {"legacy", "dgdm"}:
+            raise ValueError("architecture must be 'legacy' or 'dgdm'")
+        if self.num_hidden_layers < 1:
+            raise ValueError("num_hidden_layers must be positive")
 
         self.angle_embedder = ApproachAngleEmbedder(multires=4)
         angle_embed_dim = 1 + 2 * 4  # 9
@@ -64,20 +76,34 @@ class ProfileForward2DModel(nn.Module):
             nn.Linear(W, W),
         )
 
-        input_dim = task_input_dim + design_ch + init_ch + self.time_embed_dim
-
-        self.linears = nn.Sequential(
-            nn.Linear(input_dim, W),
-            nn.ReLU(),
-
-            nn.Linear(W, W),
-            nn.ReLU(),
-
-            nn.Linear(W, W),
-            nn.ReLU(),
-
-            nn.Linear(W, output_ch),
-        )
+        if architecture == "dgdm":
+            self.design_encoder = nn.Sequential(
+                nn.Linear(design_ch, W), nn.ReLU(), nn.Linear(W, W),
+            )
+            self.context_encoder = nn.Sequential(
+                nn.Linear(task_input_dim + init_ch, W), nn.ReLU(), nn.Linear(W, W),
+            )
+            trunk = []
+            for index in range(self.num_hidden_layers):
+                trunk.extend((
+                    nn.Linear(3 * W if index == 0 else W, W),
+                    nn.BatchNorm1d(W),
+                    nn.ReLU(),
+                ))
+            self.linears = nn.Sequential(*trunk)
+            self.output = nn.Linear(W, output_ch)
+        else:
+            self.design_encoder = None
+            self.context_encoder = None
+            input_dim = task_input_dim + design_ch + init_ch + self.time_embed_dim
+            trunk = []
+            for index in range(self.num_hidden_layers):
+                trunk.extend((
+                    nn.Linear(input_dim if index == 0 else W, W), nn.ReLU(),
+                ))
+            trunk.append(nn.Linear(W, output_ch))
+            self.linears = nn.Sequential(*trunk)
+            self.output = None
 
     def forward(self, task_params, design_params, init_config, timesteps):
         approach_angle = task_params[:, 0:1]
@@ -92,9 +118,15 @@ class ProfileForward2DModel(nn.Module):
             timestep_embedding(timesteps, self.W // 2)
         )
 
-        x = torch.cat(
-            [x_task, design_params, init_config, time_emb],
-            dim=-1,
-        )
+        if self.architecture == "dgdm":
+            design_features = self.design_encoder(design_params)
+            context_features = self.context_encoder(
+                torch.cat([x_task, init_config], dim=-1)
+            )
+            hidden = self.linears(
+                torch.cat([design_features, context_features, time_emb], dim=-1)
+            )
+            return self.output(hidden)
 
+        x = torch.cat([x_task, design_params, init_config, time_emb], dim=-1)
         return self.linears(x)

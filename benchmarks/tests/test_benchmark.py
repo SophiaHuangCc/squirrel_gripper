@@ -9,7 +9,8 @@ import torch
 from benchmarks.baselines.random_search import sample_feasible_designs
 from benchmarks.baselines.reference import reference_design
 from benchmarks.baselines.surrogate_search import (
-    MetricScaleWrapper, _candidate_scores, adam_search, select_target_cells,
+    MetricScaleWrapper, _candidate_scores, adam_search, load_surrogate,
+    select_target_cells,
 )
 from benchmarks.candidates import load_candidates, save_candidates, validate_designs
 from benchmarks.protocol import (
@@ -18,6 +19,7 @@ from benchmarks.protocol import (
 from benchmarks.run_guidance_sweep import method_name, parse_float_list
 from benchmarks.diagnose_dgdm import directional_quality, parse_int_list
 from dynamics.trainer import Trainer
+from dynamics.profile_forward_2d import ProfileForward2DModel
 from generator.dataloader import (
     DESIGN_MODEL_SCALES, DesignBounds, model_norm_to_physical,
     project_physical_design,
@@ -264,6 +266,45 @@ class BenchmarkTests(unittest.TestCase):
         # 19 task features + 16 design + 3 initialization + 16 time features.
         self.assertEqual(first_layer.in_features, 54)
         self.assertEqual(trainer.model.init_ch if hasattr(trainer.model, "init_ch") else 3, 3)
+
+    def test_dgdm_architecture_has_eight_normalized_hidden_blocks(self):
+        model = ProfileForward2DModel(
+            W=32, task_ch=3, design_ch=16, init_ch=3, output_ch=3,
+            architecture="dgdm", num_hidden_layers=8,
+        )
+        self.assertEqual(
+            sum(isinstance(layer, torch.nn.Linear) for layer in model.linears), 8
+        )
+        self.assertEqual(
+            sum(isinstance(layer, torch.nn.BatchNorm1d) for layer in model.linears), 8
+        )
+        self.assertEqual(
+            sum(isinstance(layer, torch.nn.Linear) for layer in model.design_encoder), 2
+        )
+        self.assertEqual(
+            sum(isinstance(layer, torch.nn.Linear) for layer in model.context_encoder), 2
+        )
+        model.eval()
+        prediction = model(
+            torch.zeros(4, 3), torch.zeros(4, 16),
+            torch.zeros(4, 3), torch.zeros(4),
+        )
+        self.assertEqual(tuple(prediction.shape), (4, 3))
+
+    def test_surrogate_loader_reconstructs_checkpoint_architecture(self):
+        model = ProfileForward2DModel(
+            W=16, architecture="dgdm", num_hidden_layers=8,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "best.pt"
+            torch.save({
+                "model": model.state_dict(), "noise_conditioned": False,
+                "model_architecture": "dgdm", "hidden_dim": 16,
+                "num_hidden_layers": 8,
+            }, path)
+            loaded = load_surrogate(path, device="cpu")
+        self.assertEqual(loaded.architecture, "dgdm")
+        self.assertEqual(loaded.num_hidden_layers, 8)
 
     def test_angular_zscore_is_inverted_without_blocking_gradients(self):
         class Fixed(torch.nn.Module):

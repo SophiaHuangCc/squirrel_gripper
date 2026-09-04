@@ -21,6 +21,14 @@ def parse():
     parser.add_argument("--num_epochs", type=int, default=100)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--hidden_dim", type=int, default=256)
+    parser.add_argument(
+        "--model_architecture", choices=("legacy", "dgdm"), default="legacy",
+        help="Use the legacy shallow MLP or the adapted original-DGDM structure.",
+    )
+    parser.add_argument(
+        "--num_hidden_layers", type=int, default=3,
+        help="Prediction-trunk hidden layers; the released DGDM model uses 8.",
+    )
     parser.add_argument("--task_dim", type=int, default=3)
     parser.add_argument("--design_dim", type=int, default=16)
     parser.add_argument("--init_dim", type=int, default=3)
