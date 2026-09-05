@@ -19,6 +19,7 @@ from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 from benchmarks.baselines.surrogate_search import load_surrogate
 from benchmarks.protocol import load_config
 from dynamics.dataloader import DynamicsDataset
+from dynamics.pose_targets import pose_joint_angles_deg, surrogate_metrics
 from generator.dataloader import (
     DesignBounds,
     enforce_fixed_design_unit,
@@ -79,11 +80,11 @@ def collect(dataset, max_samples):
     return {key: torch.stack([row[key] for row in rows]) for key in rows[0]}
 
 
-def evaluate_model(model, design, task, init, target, weights, environment):
+def evaluate_model(model, design, task, init, target, weights, environment, target_pose=None):
     design = design.detach().clone().requires_grad_(True)
     timestep = evaluate_model.timestep.expand(len(design))
     prediction_raw = model(task, design, init, timestep)
-    prediction = prediction_raw.clamp(0.0, 1.0)
+    prediction = surrogate_metrics(model, prediction_raw, task).clamp(0.0, 1.0)
     weight_tensor = torch.tensor(weights, dtype=design.dtype, device=design.device)
     predicted_utility = (prediction * weight_tensor).sum(dim=1)
     true_utility = (target * weight_tensor).sum(dim=1)
@@ -96,13 +97,28 @@ def evaluate_model(model, design, task, init, target, weights, environment):
         "num_samples": len(design),
         "utility_mae": float((predicted_utility - true_utility).abs().mean()),
         "utility_bias": float((predicted_utility - true_utility).mean()),
-        "prediction_out_of_range_fraction": float(((prediction_raw < 0) | (prediction_raw > 1)).float().mean()),
+        "prediction_out_of_range_fraction": (float(((prediction_raw < 0) | (prediction_raw > 1)).float().mean())
+                                             if getattr(model, "target_representation", "metrics") == "metrics"
+                                             else 0.0),
         "mean_gradient_norm": float(torch.linalg.vector_norm(gradient, dim=1).mean()),
         "near_zero_gradient_fraction": float((torch.linalg.vector_norm(gradient, dim=1) < 1e-8).float().mean()),
     }
     for column, name in enumerate(METRICS):
         output[f"{name}_mae"] = float(error[:, column].abs().mean())
         output[f"{name}_bias"] = float(error[:, column].mean())
+    if getattr(model, "target_representation", "metrics") == "pose_keypoints" and target_pose is not None:
+        pose_error = prediction_raw - target_pose
+        output["pose_keypoint_mae_mm"] = float(pose_error.abs().mean() * model.pose_scale_m * 1000.0)
+        output["pose_tip_mae_mm"] = float(torch.linalg.vector_norm(
+            pose_error.reshape(-1, 5, 2)[:, -1], dim=-1
+        ).mean() * model.pose_scale_m * 1000.0)
+        _, pred_bends = pose_joint_angles_deg(prediction_raw)
+        _, true_bends = pose_joint_angles_deg(target_pose)
+        angle_delta = torch.atan2(
+            torch.sin((pred_bends - true_bends) * torch.pi / 180.0),
+            torch.cos((pred_bends - true_bends) * torch.pi / 180.0),
+        )
+        output["pose_joint_angle_mae_deg"] = float(angle_delta.abs().mean() * 180.0 / torch.pi)
     output.update(directional_quality(
         design_np, gradient_np, true_utility.detach().cpu().numpy(), environment
     ))
@@ -136,7 +152,7 @@ def main():
     weights = (weight_map["contact_coverage_norm"],
                weight_map["disturbance_resistance_score"],
                weight_map["angular_span_norm"])
-    dataset = DynamicsDataset(args.data_dir)
+    dataset = DynamicsDataset(args.data_dir, target_representation="pose_keypoints")
     if not len(dataset):
         raise ValueError(f"No validation NPZ files found under {args.data_dir}")
     batch = collect(dataset, args.max_samples)
@@ -145,6 +161,7 @@ def main():
     clean_model_design = batch["design_params"].to(device)
     init = batch["init_config"].to(device)
     target = batch["target_metrics"].to(device)
+    target_pose = batch["target_pose"].to(device)
     environment = [tuple(np.round(row, 7)) for row in torch.cat((task, init), dim=1).cpu().numpy()]
 
     clean_model = load_surrogate(args.clean_checkpoint, device=args.device)
@@ -179,7 +196,7 @@ def main():
     records.append({"model": "clean", "diffusion_timestep": 0,
                     "noise_std": 0.0, "scheduler_scaled_gradient_norm": 0.0,
                     **evaluate_model(clean_model, clean_model_design, task, init,
-                                     target, weights, environment)})
+                                     target, weights, environment, target_pose)})
     for timestep in parse_int_list(args.timesteps):
         if timestep >= prior_steps:
             raise ValueError(f"Timestep {timestep} is outside [0, {prior_steps - 1}]")
@@ -192,7 +209,7 @@ def main():
         row = {"model": "noise_conditioned", "diffusion_timestep": timestep,
                "noise_std": noise_std,
                         **evaluate_model(noisy_model, noisy_design, task, init,
-                                         target, weights, environment)}
+                                         target, weights, environment, target_pose)}
         row["scheduler_scaled_gradient_norm"] = noise_std * row["mean_gradient_norm"]
         records.append(row)
 

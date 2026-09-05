@@ -141,5 +141,8 @@ def parse():
         help="Comma-separated objectives to run in profile optimization.",
     )
     parser.add_argument("--output_dim", type=int, default=3)
+    parser.add_argument("--target_representation", choices=("metrics", "pose_keypoints"), default="metrics")
+    parser.add_argument("--pose_scale_m", type=float, default=0.10)
+    parser.add_argument("--pose_contact_sigma_m", type=float, default=0.005)
 
     return parser.parse_args()

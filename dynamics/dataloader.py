@@ -4,15 +4,20 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from pathlib import Path
+from dynamics.pose_targets import DEFAULT_POSE_SCALE_M, pose_target_from_npz
 
 
 class DynamicsDataset(Dataset):
     def __init__(
         self,
         dataset_dir,
+        target_representation="metrics",
+        pose_scale_m=DEFAULT_POSE_SCALE_M,
         **kwargs,
     ):
         self.dataset_dir = os.path.abspath(dataset_dir)
+        self.target_representation = target_representation
+        self.pose_scale_m = float(pose_scale_m)
         # self.files = glob.glob(os.path.join(self.dataset_dir, "*.npz"), recursive=True)
         self.files = sorted(
             glob.glob(os.path.join(self.dataset_dir, "**", "*.npz"), recursive=True)
@@ -264,10 +269,14 @@ class DynamicsDataset(Dataset):
                 [num_contacts_norm, disturbance_score, angular_span_norm],
                 dtype=torch.float32
             )
+            target_pose = (torch.from_numpy(pose_target_from_npz(data, self.pose_scale_m))
+                           if self.target_representation == "pose_keypoints" else torch.empty(0))
 
         return {
             "task_params": task_params,
             "design_params": design_params,
             "init_config": init_config,
             "target_metrics": target_metrics,
+            "target_pose": target_pose,
+            "target": target_pose if self.target_representation == "pose_keypoints" else target_metrics,
         }

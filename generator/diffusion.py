@@ -14,6 +14,7 @@ from generator.dataloader import (
     physical_to_model_norm,
     project_physical_design,
 )
+from dynamics.pose_targets import surrogate_metrics
 
 
 class SimpleEMA:
@@ -163,12 +164,12 @@ class SquirrelDesignDiffusion(nn.Module):
             timesteps = timestep_value.reshape(1).expand(design_batch.shape[0])
         else:
             timesteps = torch.zeros(design_batch.shape[0], dtype=torch.float32, device=design_unit.device)
-        pred = dynamics_model(task_params, design_batch, init_config, timesteps)
+        pred_raw = dynamics_model(task_params, design_batch, init_config, timesteps)
         # The three surrogate outputs represent normalized C, D, and A.  Keep
         # dynamics guidance on the same physical [0, 1] scale as candidate
         # ranking and simulator utility, so denoising cannot exploit surrogate
         # extrapolation above the attainable metric range.
-        pred = pred.clamp(0.0, 1.0)
+        pred = surrogate_metrics(dynamics_model, pred_raw, task_params).clamp(0.0, 1.0)
 
         contacts = pred[:, 0]
         disturbance = pred[:, 1]

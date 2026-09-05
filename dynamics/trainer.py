@@ -7,6 +7,7 @@ from generator.dataloader import (
     DesignBounds, design_mask_like, enforce_fixed_design_unit,
     model_norm_to_physical, physical_to_diffusion,
 )
+from dynamics.pose_targets import POSE_OUTPUT_DIM
 
 
 class Trainer:
@@ -42,7 +43,11 @@ class Trainer:
         self.task_dim = getattr(self.args, "task_dim", 3)
         self.design_dim = getattr(self.args, "design_dim", 16)
         self.init_dim = getattr(self.args, "init_dim", 3)
-        self.output_dim = getattr(self.args, "output_dim", 3)
+        self.target_representation = getattr(self.args, "target_representation", "metrics")
+        self.output_dim = (POSE_OUTPUT_DIM if self.target_representation == "pose_keypoints"
+                           else getattr(self.args, "output_dim", 3))
+        if self.target_representation == "metrics" and self.output_dim != 3:
+            raise ValueError("Metric dynamics requires --output_dim 3")
         self.hidden_dim = getattr(self.args, "hidden_dim", 256)
         self.model_architecture = getattr(self.args, "model_architecture", "legacy")
         self.num_hidden_layers = int(getattr(self.args, "num_hidden_layers", 3))
@@ -164,11 +169,14 @@ class Trainer:
         design_params=None, timesteps=None,
     ):
         per_metric_mse = (prediction - target).square().mean(dim=0)
-        regression = (
-            per_metric_mse * self.metric_loss_weights
-        ).sum() / self.metric_loss_weights.sum()
+        regression = (per_metric_mse.mean()
+                      if self.target_representation == "pose_keypoints" else
+                      (per_metric_mse * self.metric_loss_weights).sum()
+                      / self.metric_loss_weights.sum())
         ranking = prediction.sum() * 0.0
         pair_count = 0
+        if self.ranking_loss_weight > 0 and self.target_representation != "metrics":
+            raise ValueError("Ranking loss is not defined for pose targets")
         if self.ranking_loss_weight > 0 and len(prediction) > 1:
             predicted_utility = self.inverse_predictions(prediction) @ self.utility_weights
             target_utility = self.inverse_predictions(target) @ self.utility_weights
@@ -203,13 +211,19 @@ class Trainer:
                 ranking = torch.relu(self.ranking_margin - signed_prediction).mean()
                 pair_count = int(valid.sum().item())
         total = regression + self.ranking_loss_weight * ranking
-        return total, {
+        parts = {
             "total": total.detach(), "regression": regression.detach(),
             "ranking": ranking.detach(), "ranking_pairs": pair_count,
-            "contact_mse": per_metric_mse[0].detach(),
-            "disturbance_mse": per_metric_mse[1].detach(),
-            "angular_span_mse": per_metric_mse[2].detach(),
         }
+        zero = prediction.sum().detach() * 0
+        if self.target_representation == "metrics":
+            parts.update(contact_mse=per_metric_mse[0].detach(),
+                         disturbance_mse=per_metric_mse[1].detach(),
+                         angular_span_mse=per_metric_mse[2].detach())
+        else:
+            parts.update(contact_mse=zero, disturbance_mse=zero,
+                         angular_span_mse=zero, pose_mse=per_metric_mse.mean().detach())
+        return total, parts
 
     def _prepare_tensors(self, task_params, design_params, init_config):
         task_tensor = task_params.view(task_params.shape[0], -1)
@@ -423,7 +437,12 @@ class Trainer:
     def save_checkpoint(self, path):
         torch.save({
             "model": self.model.state_dict(),
-            "model_type": "aggregate_metric_dynamics",
+            "model_type": ("finger_pose_dynamics" if self.target_representation == "pose_keypoints"
+                           else "aggregate_metric_dynamics"),
+            "target_representation": self.target_representation,
+            "output_dim": int(self.output_dim),
+            "pose_scale_m": float(getattr(self.args, "pose_scale_m", 0.10)),
+            "pose_contact_sigma_m": float(getattr(self.args, "pose_contact_sigma_m", 0.005)),
             "noise_conditioned": bool(self.use_design_noise),
             "design_coordinates": "diffusion_unit" if self.use_design_noise else "model_norm",
             "num_train_timesteps": int(self.num_train_timesteps),

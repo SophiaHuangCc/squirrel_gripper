@@ -9,6 +9,7 @@ import torch
 from benchmarks.protocol import expand_core_scenarios, expand_physical_conditions
 from dynamics.profile_forward_2d import ProfileForward2DModel
 from generator.dataloader import DesignBounds, physical_to_model_norm, project_physical_design
+from dynamics.pose_targets import surrogate_metrics
 
 
 @dataclass
@@ -75,8 +76,12 @@ def load_surrogate(checkpoint_path, device="cpu", hidden_dim=256, expected_noise
     num_hidden_layers = int(metadata.get(
         "num_hidden_layers", checkpoint_args.get("num_hidden_layers", 3)
     ))
+    target_representation = metadata.get(
+        "target_representation", checkpoint_args.get("target_representation", "metrics")
+    )
+    output_dim = int(metadata.get("output_dim", 10 if target_representation == "pose_keypoints" else 3))
     model = ProfileForward2DModel(
-        W=model_width, task_ch=3, design_ch=16, init_ch=3, output_ch=3,
+        W=model_width, task_ch=3, design_ch=16, init_ch=3, output_ch=output_dim,
         architecture=architecture, num_hidden_layers=num_hidden_layers,
     ).to(device)
     noise_conditioned = bool(metadata.get("noise_conditioned", False))
@@ -90,8 +95,7 @@ def load_surrogate(checkpoint_path, device="cpu", hidden_dim=256, expected_noise
         model.load_state_dict(state)
     except RuntimeError as exc:
         raise ValueError(
-            "The dynamics checkpoint is not compatible with the current "
-            "three-output model. Retrain dynamics with --output_dim 3."
+            "The dynamics checkpoint is not compatible with its saved architecture/output metadata."
         ) from exc
     angular_mode = metadata.get("angular_target_normalization", "none")
     if angular_mode == "zscore":
@@ -109,6 +113,11 @@ def load_surrogate(checkpoint_path, device="cpu", hidden_dim=256, expected_noise
     model.design_coordinates = metadata.get(
         "design_coordinates", "diffusion_unit" if noise_conditioned else "model_norm"
     )
+    model.target_representation = target_representation
+    model.pose_scale_m = float(metadata.get("pose_scale_m", checkpoint_args.get("pose_scale_m", 0.10)))
+    model.pose_contact_sigma_m = float(metadata.get(
+        "pose_contact_sigma_m", checkpoint_args.get("pose_contact_sigma_m", 0.005)
+    ))
     return model
 
 
@@ -145,7 +154,8 @@ def _candidate_scores(model, designs, task, init, weights):
     task_batch = task.repeat(candidate_count, 1)
     init_batch = init.repeat(candidate_count, 1)
     timesteps = torch.zeros(candidate_count * scenario_count, device=designs.device)
-    pred = model(task_batch, design_batch, init_batch, timesteps).reshape(candidate_count, scenario_count, 3)
+    pred_raw = model(task_batch, design_batch, init_batch, timesteps)
+    pred = surrogate_metrics(model, pred_raw, task_batch).reshape(candidate_count, scenario_count, 3)
     # C, D, and A are normalized benchmark quantities.  The regression model
     # has a linear output head, so modest extrapolation outside [0, 1] is
     # possible, especially after gradient-based design search.  Score the

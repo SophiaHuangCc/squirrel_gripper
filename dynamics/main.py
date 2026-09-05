@@ -30,11 +30,11 @@ def evaluate_prediction_quality(trainer, dataloader, args, epoch, split_name="va
                 task_params=batch["task_params"].to(trainer.device).float(),
                 design_params=batch["design_params"].to(trainer.device).float(),
                 init_config=batch["init_config"].to(trainer.device).float(),
-                target=batch["target_metrics"].to(trainer.device).float(),
+                target=batch["target"].to(trainer.device).float(),
             )
 
             all_pred.append(pred.detach().cpu().numpy())
-            all_true.append(batch["target_metrics"].detach().cpu().numpy())
+            all_true.append(batch["target"].detach().cpu().numpy())
 
     pred = np.concatenate(all_pred, axis=0)
     true = np.concatenate(all_true, axis=0)
@@ -43,6 +43,9 @@ def evaluate_prediction_quality(trainer, dataloader, args, epoch, split_name="va
         "contact_norm",
         "disturbance_score",
         "angular_span_norm",
+    ] if args.target_representation == "metrics" else [
+        "base_x", "base_z", "joint1_x", "joint1_z", "joint2_x", "joint2_z",
+        "joint3_x", "joint3_z", "tip_x", "tip_z",
     ]
 
     log_dict = {}
@@ -106,6 +109,9 @@ def evaluate_prediction_quality(trainer, dataloader, args, epoch, split_name="va
     # Top-K ranking validation for combined objective
     # --------------------------------------------------
     # Same objective as optimization: disturbance + contact + angular span
+    if args.target_representation != "metrics":
+        wandb.log(log_dict, step=epoch)
+        return log_dict
     utility_weights = trainer.utility_weights.detach().cpu().numpy()
     pred_score = pred @ utility_weights
     true_score = true @ utility_weights
@@ -145,7 +151,7 @@ def validate(args, val_loader, trainer):
         torch.manual_seed(12345)
         with torch.no_grad():
             for batch in val_loader:
-                target = batch['target_metrics'].to(trainer.device).float()
+                target = batch['target'].to(trainer.device).float()
                 task_params = batch['task_params'].to(trainer.device).float()
                 design_params = batch['design_params'].to(trainer.device).float()
                 init_config = batch['init_config'].to(trainer.device).float()
@@ -166,13 +172,13 @@ def validate(args, val_loader, trainer):
     avg_mae = total_mae / len(val_loader)
     avg_mae_per_dim = total_mae_per_dim / len(val_loader)
 
-    print(
-        f'Val Loss: {avg_loss:.4f} | '
-        f'MAE total: {avg_mae:.4f} | '
-        f'contacts: {avg_mae_per_dim[0].item():.4f}, '
-        f'disturbance_score: {avg_mae_per_dim[1].item():.4f}, '
-        f'angular_span: {avg_mae_per_dim[2].item():.4f}'
-    )
+    if args.target_representation == "metrics":
+        detail = (f'contacts: {avg_mae_per_dim[0].item():.4f}, '
+                  f'disturbance_score: {avg_mae_per_dim[1].item():.4f}, '
+                  f'angular_span: {avg_mae_per_dim[2].item():.4f}')
+    else:
+        detail = f'keypoint position MAE: {avg_mae * args.pose_scale_m * 1000.0:.2f} mm'
+    print(f'Val Loss: {avg_loss:.4f} | MAE total: {avg_mae:.4f} | {detail}')
 
     return avg_loss, avg_mae, avg_mae_per_dim
 
@@ -199,8 +205,12 @@ def train(args):
     )
     from torch.utils.data import Subset
 
-    train_dataset = DynamicsDataset(dataset_dir=args.data_dir)
-    val_dataset = DynamicsDataset(dataset_dir=args.test_data_dir)
+    train_dataset = DynamicsDataset(dataset_dir=args.data_dir,
+                                    target_representation=args.target_representation,
+                                    pose_scale_m=args.pose_scale_m)
+    val_dataset = DynamicsDataset(dataset_dir=args.test_data_dir,
+                                  target_representation=args.target_representation,
+                                  pose_scale_m=args.pose_scale_m)
 
     # full_dataset = DynamicsDataset(dataset_dir=args.data_dir)
     # np.random.seed(0)
@@ -213,8 +223,8 @@ def train(args):
     print("task_params:", sample["task_params"])
     print("design_params:", sample["design_params"])
     print("init_config:", sample["init_config"])
-    print("target_metrics:", sample["target_metrics"])
-    print("target shape:", sample["target_metrics"].shape)
+    print("target:", sample["target"])
+    print("target shape:", sample["target"].shape)
     print("=" * 50)
     
     loader_generator = torch.Generator().manual_seed(args.seed)
@@ -226,7 +236,7 @@ def train(args):
 
     trainer = Trainer(args)
     trainer.create_model()
-    if args.angular_target_normalization == "zscore":
+    if args.angular_target_normalization == "zscore" and args.target_representation == "metrics":
         angular_values = torch.stack([
             train_dataset[index]["target_metrics"][2]
             for index in range(len(train_dataset))
@@ -257,7 +267,7 @@ def train(args):
             }
 
             for idx_batch, batch in enumerate(tqdm(train_loader, desc="Batches", leave=False)):
-                target = batch['target_metrics'].to(trainer.device).float()
+                target = batch['target'].to(trainer.device).float()
                 task_params = batch['task_params'].to(trainer.device).float()
                 design_params = batch['design_params'].to(trainer.device).float()
                 init_config = batch['init_config'].to(trainer.device).float()
@@ -284,16 +294,22 @@ def train(args):
 
                 val_loss, avg_mae, avg_mae_per_dim = validate(args, val_loader, trainer)
 
-                wandb.log({
+                validation_log = {
                     'train/loss': average_loss / len(train_loader),
                     **{f'train/{key}': value / len(train_loader)
                        for key, value in train_parts.items()},
                     'val/loss': val_loss,
                     'val/avg_mae_total': avg_mae,
-                    'val/mae_contacts': avg_mae_per_dim[0].item(),
-                    'val/mae_disturbance_score': avg_mae_per_dim[1].item(),
-                    'val/mae_angular_span': avg_mae_per_dim[2].item(),
-                })
+                }
+                if args.target_representation == "metrics":
+                    validation_log.update({
+                        'val/mae_contacts': avg_mae_per_dim[0].item(),
+                        'val/mae_disturbance_score': avg_mae_per_dim[1].item(),
+                        'val/mae_angular_span': avg_mae_per_dim[2].item(),
+                    })
+                else:
+                    validation_log['val/pose_keypoint_mae_mm'] = avg_mae * args.pose_scale_m * 1000.0
+                wandb.log(validation_log)
 
                 evaluate_prediction_quality(
                     trainer=trainer,
