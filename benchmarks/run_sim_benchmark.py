@@ -65,9 +65,23 @@ def read_metric_from_npz(path):
         for key in (
             "max_overlap_overall", "total_energy", "tendon_displacement_m",
             "tendon_actuator_work_positive_j", "tendon_actuator_work_net_j",
+            "disturbance_num_settled_contact_normals",
+            "disturbance_drag_left_direction_score",
+            "disturbance_drag_right_direction_score",
+            "disturbance_drag_down_direction_score",
+            "disturbance_drag_left_directional_support_score",
+            "disturbance_drag_right_directional_support_score",
+            "disturbance_drag_down_directional_support_score",
+            "disturbance_drag_left_legacy_alignment_score",
+            "disturbance_drag_right_legacy_alignment_score",
+            "disturbance_drag_down_legacy_alignment_score",
         ):
             if key in data:
                 metric[key] = scalar(data, key, 0.0)
+        if "disturbance_score_mode" in data:
+            metric["disturbance_score_mode"] = str(
+                np.asarray(data["disturbance_score_mode"]).reshape(-1)[0]
+            )
     return metric
 
 

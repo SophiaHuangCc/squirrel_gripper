@@ -90,7 +90,7 @@ if [[ "$RUN_EVALUATION" == 1 ]]; then
       "${common[@]}"
   done
   "$PYTHON_BIN" -m benchmarks.analyze_study --study_dir "$STUDY_DIR" \
-    --output_dir "$OUTPUT_ROOT/study_analysis" --config "$CONFIG"
+    --output_dir "$OUTPUT_ROOT/study_analysis"
 fi
 
 echo "[POSE DGDM ABLATION DONE] $OUTPUT_ROOT"

@@ -83,6 +83,14 @@ from TendonForces import TendonForces
 
 # Custom metrics functions
 from metrics import analyze_grasp_from_log, plot_contacts_2d_from_log
+try:
+    from .disturbance_metrics import (
+        contact_normals_from_geometry, directional_contact_support_score,
+    )
+except ImportError:
+    from disturbance_metrics import (
+        contact_normals_from_geometry, directional_contact_support_score,
+    )
 
 
 ###################################################
@@ -1114,6 +1122,15 @@ def main():
         "--continuous_disturbance_metric",
         action="store_true",
         help="Use continuous disturbance score based on cosine similarity instead of binary resisted/not resisted.",
+    )
+    parser.add_argument(
+        "--disturbance_score_mode",
+        choices=["directional_support", "net_force_alignment"],
+        default="directional_support",
+        help=(
+            "Use direction-only support from the contact-normal/friction cone, "
+            "or reproduce the legacy cosine of one realized net contact force."
+        ),
     )
 
     parser.add_argument(
@@ -2413,6 +2430,9 @@ def main():
         continuous_scores = []
         total_cases = len(disturbance_cases)
         direction_scores = []
+        settled_contact_normals = contact_normals_from_geometry(
+            final_pos, cylinder.position_collection[:, 0], cyl_radius, contact_radius
+        )
 
         for name, dvec in disturbance_cases.items():
             applied_force = disturbance_force_mag * dvec
@@ -2440,8 +2460,17 @@ def main():
 
             # fmag = np.linalg.norm(resp["applied_force"])
             
-            direction_score = 0.5 * (1.0 - resp["force_alignment"])  # [0,1]
-            direction_score = float(np.clip(direction_score, 0.0, 1.0))
+            legacy_direction_score = float(np.clip(
+                0.5 * (1.0 - resp["force_alignment"]), 0.0, 1.0
+            ))
+            support_score = directional_contact_support_score(
+                settled_contact_normals, dvec, friction_mu=mu_contact
+            )
+            direction_score = (
+                support_score
+                if args.disturbance_score_mode == "directional_support"
+                else legacy_direction_score
+            )
             direction_scores.append(direction_score)
             # if fmag > 1e-8:
             #     magnitude_score = resp["resist_force"] / fmag
@@ -2454,6 +2483,8 @@ def main():
 
             # data_to_save[f"disturbance_{name}_continuous_score"] = np.array([continuous_score])
             data_to_save[f"disturbance_{name}_direction_score"] = np.array([direction_score])
+            data_to_save[f"disturbance_{name}_directional_support_score"] = np.array([support_score])
+            data_to_save[f"disturbance_{name}_legacy_alignment_score"] = np.array([legacy_direction_score])
             # data_to_save[f"disturbance_{name}_magnitude_score"] = np.array([magnitude_score])
 
             # data_to_save[f"disturbance_{name}_applied_force"] = resp["applied_force"]
@@ -2480,11 +2511,19 @@ def main():
         # data_to_save["disturbance_binary_resistance_score"] = np.array([binary_resistance_score])
         # data_to_save["disturbance_continuous_resistance_score"] = np.array([continuous_resistance_score])
         data_to_save["disturbance_resistance_score"] = np.array([disturbance_resistance_score])
+        data_to_save["disturbance_score_mode"] = np.array([args.disturbance_score_mode])
+        data_to_save["disturbance_num_settled_contact_normals"] = np.array(
+            [len(settled_contact_normals)]
+        )
         # data_to_save["arg_continuous_disturbance_metric"] = np.array([continuous_disturbance_metric])
 
         print("\n[DISTURBANCE STABILITY CHECK]")
         # print(f"  Binary resistance score: {binary_resistance_score:.3f}")
-        print(f"  Disturbance resistance score (directional): {disturbance_resistance_score:.3f}")
+        print(
+            f"  Disturbance resistance score ({args.disturbance_score_mode}): "
+            f"{disturbance_resistance_score:.3f} from "
+            f"{len(settled_contact_normals)} settled contact normals"
+        )
 
         # for name, resp in disturbance_results.items():
         #     case_score = data_to_save[f"disturbance_{name}_continuous_score"][0]
