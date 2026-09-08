@@ -17,7 +17,7 @@ CANDIDATE_BUDGET="${CANDIDATE_BUDGET:-8}"
 NUM_WORKERS="${NUM_WORKERS:-30}"
 TIMEOUT="${TIMEOUT:-1800}"
 METHODS="${METHODS:-adam,cma_es,conditional_diffusion}"
-DGDM_SCALE="${DGDM_SCALE:-1}"
+DGDM_SCALES="${DGDM_SCALES:-1}"
 GUIDANCE_TIMESTEPS="${GUIDANCE_TIMESTEPS:-0,3,6}"
 
 SPECIALIST_DIR="$OUTPUT_ROOT/specialists"
@@ -58,11 +58,16 @@ run_protocol() {
   echo "[$protocol BASE] $METHODS"
   "$PYTHON_BIN" -m benchmarks.run_baselines \
     --output_dir "$root/base" --methods "$METHODS" "${common[@]}" "${target[@]}"
-  echo "[$protocol DGDM] guidance scale $DGDM_SCALE"
-  "$PYTHON_BIN" -m benchmarks.run_baselines \
-    --output_dir "$root/pose_dgdm_gs1" --methods dgdm \
-    --dgdm_guidance_scale "$DGDM_SCALE" --dgdm_method_label pose_dgdm_gs1 \
-    "${common[@]}" "${target[@]}"
+  IFS=',' read -r -a scales <<< "$DGDM_SCALES"
+  for scale in "${scales[@]}"; do
+    local safe_scale="${scale//./p}"
+    local label="pose_dgdm_gs${safe_scale}"
+    echo "[$protocol DGDM] guidance scale $scale ($label)"
+    "$PYTHON_BIN" -m benchmarks.run_baselines \
+      --output_dir "$root/$label" --methods dgdm \
+      --dgdm_guidance_scale "$scale" --dgdm_method_label "$label" \
+      "${common[@]}" "${target[@]}"
+  done
 }
 
 echo "[1/4] SPECIALISTS"
