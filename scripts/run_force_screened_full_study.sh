@@ -18,6 +18,8 @@ NUM_WORKERS="${NUM_WORKERS:-30}"
 TIMEOUT="${TIMEOUT:-1800}"
 METHODS="${METHODS:-adam,cma_es,conditional_diffusion}"
 DGDM_SCALES="${DGDM_SCALES:-1}"
+SPECIALIST_DGDM_SCALES="${SPECIALIST_DGDM_SCALES:-$DGDM_SCALES}"
+GENERALIST_DGDM_SCALES="${GENERALIST_DGDM_SCALES:-$DGDM_SCALES}"
 GUIDANCE_TIMESTEPS="${GUIDANCE_TIMESTEPS:-0,3,6}"
 
 SPECIALIST_DIR="$OUTPUT_ROOT/specialists"
@@ -58,7 +60,9 @@ run_protocol() {
   echo "[$protocol BASE] $METHODS"
   "$PYTHON_BIN" -m benchmarks.run_baselines \
     --output_dir "$root/base" --methods "$METHODS" "${common[@]}" "${target[@]}"
-  IFS=',' read -r -a scales <<< "$DGDM_SCALES"
+  local protocol_scales="$GENERALIST_DGDM_SCALES"
+  [[ "$protocol" == specialist ]] && protocol_scales="$SPECIALIST_DGDM_SCALES"
+  IFS=',' read -r -a scales <<< "$protocol_scales"
   for scale in "${scales[@]}"; do
     local safe_scale="${scale//./p}"
     local label="pose_dgdm_gs${safe_scale}"
