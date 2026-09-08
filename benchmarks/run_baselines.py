@@ -126,6 +126,11 @@ def main():
     parser = argparse.ArgumentParser(description="Prepare and run Squirrel Benchmark V1 baselines.")
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument(
+        "--benchmark_config", type=Path, default=None,
+        help=("Optional simulator/Oracle scoring config. Candidate generation keeps "
+              "using --config, allowing post-generation force-aware screening."),
+    )
     parser.add_argument("--methods", type=str, default="reference,random,retrieval")
     parser.add_argument("--candidate_budget", type=int, default=None)
     parser.add_argument("--seeds", type=str, default="", help="Comma-separated random seeds")
@@ -238,12 +243,22 @@ def main():
         raise ValueError("--dgdm_method_label may contain only letters, numbers, _, -, and .")
 
     source_config = args.config.resolve()
+    source_benchmark_config = (
+        args.benchmark_config.resolve() if args.benchmark_config is not None else None
+    )
     config = load_config(source_config)
     weights = apply_utility_override(config, args.utility_profile, args.utility_weights)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     effective_config = args.output_dir / "effective_config.json"
     effective_config.write_text(json.dumps(config, indent=2), encoding="utf-8")
     args.config = effective_config.resolve()
+    if source_benchmark_config is not None:
+        benchmark_config = load_config(source_benchmark_config)
+        benchmark_effective_config = args.output_dir / "benchmark_effective_config.json"
+        benchmark_effective_config.write_text(
+            json.dumps(benchmark_config, indent=2), encoding="utf-8"
+        )
+        args.benchmark_config = benchmark_effective_config.resolve()
     print(f"[UTILITY] D={weights['disturbance_resistance_score']:.3f} "
           f"C={weights['contact_coverage_norm']:.3f} A={weights['angular_span_norm']:.3f}")
     print(f"[CONFIG] source={source_config} effective={args.config}")
@@ -634,7 +649,7 @@ def main():
             sys.executable, "-m", "benchmarks.run_sim_benchmark",
             "--candidates", str(path),
             "--output_dir", str(run_dir),
-            "--config", str(args.config),
+            "--config", str(args.benchmark_config or args.config),
             "--top_k", str(
                 args.benchmark_top_k
                 if args.benchmark_top_k is not None

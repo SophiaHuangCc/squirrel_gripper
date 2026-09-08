@@ -36,9 +36,10 @@ def objective_name(path, root):
 
 def nearest_config(path, stop):
     for parent in (path.parent, *path.parents):
-        candidate = parent / "effective_config.json"
-        if candidate.exists():
-            return candidate
+        for name in ("benchmark_effective_config.json", "effective_config.json"):
+            candidate = parent / name
+            if candidate.exists():
+                return candidate
         if parent == stop.parent:
             break
     return None
