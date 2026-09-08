@@ -83,6 +83,9 @@ def normalized_metrics(metric):
             1.0,
         ),
         "angular_span_norm": min(max(float(metric["angular_span"]) / 360.0, 0.0), 1.0),
+        "disturbance_force_score": min(
+            max(float(metric.get("disturbance_force_score", 0.0)), 0.0), 1.0
+        ),
     }
 
 
@@ -119,6 +122,9 @@ def aggregate_records(records, config):
             float(record["metrics"]["disturbance_resistance_score"]) for record in scored
         ) / len(scored),
         "angular_span_deg": sum(float(record["metrics"]["angular_span"]) for record in scored) / len(scored),
+        "disturbance_force_score": sum(
+            float(record["metrics"].get("disturbance_force_score", 0.0)) for record in scored
+        ) / len(scored),
     }
     return {
         "num_rollouts": len(values),

@@ -80,10 +80,17 @@ def read_rows(root):
         contact = normalized.get("contact_coverage_norm")
         disturbance = normalized.get("disturbance_resistance_score")
         angular = normalized.get("angular_span_norm")
+        force_capacity = normalized.get("disturbance_force_score")
         positive_work = metrics.get("tendon_actuator_work_positive_j")
+        # New four-factor benchmark results already contain the exact utility
+        # calculated from their effective config.  Preserve the historical
+        # three-factor counterfactual only for legacy records.
         combined = (
-            None if None in (contact, disturbance, angular)
-            else 0.20 * float(contact) + 0.45 * float(disturbance) + 0.35 * float(angular)
+            actual if force_capacity is not None
+            else (
+                None if None in (contact, disturbance, angular)
+                else 0.20 * float(contact) + 0.45 * float(disturbance) + 0.35 * float(angular)
+            )
         )
         row = {
             "objective": objective_name(result_path, root),
@@ -98,6 +105,7 @@ def read_rows(root):
             "combined_utility": combined,
             "contact_only_utility": contact,
             "disturbance_only_utility": disturbance,
+            "disturbance_force_only_utility": force_capacity,
             "selection_minus_simulator": (
                 None if selection is None or actual is None else float(selection) - float(actual)
             ),
@@ -107,6 +115,11 @@ def read_rows(root):
             "num_contacts": metrics.get("num_contacts"),
             "contact_coverage_norm": contact,
             "disturbance_resistance": metrics.get("disturbance_resistance_score"),
+            "disturbance_force_score": metrics.get("disturbance_force_score"),
+            "disturbance_force_reference": metrics.get("disturbance_force_reference"),
+            "drag_left_opposing_force": metrics.get("disturbance_drag_left_opposing_force"),
+            "drag_right_opposing_force": metrics.get("disturbance_drag_right_opposing_force"),
+            "drag_down_opposing_force": metrics.get("disturbance_drag_down_opposing_force"),
             "angular_span_deg": metrics.get("angular_span"),
             "angular_span_norm": angular,
             "total_energy_j": metrics.get("total_energy"),
@@ -159,6 +172,11 @@ def grouped_summary(rows, keys):
             "std_contact_coverage": std(row["contact_coverage_norm"] for row in group),
             "mean_disturbance": mean(row["disturbance_resistance"] for row in group),
             "std_disturbance": std(row["disturbance_resistance"] for row in group),
+            "mean_disturbance_force_score": mean(row["disturbance_force_score"] for row in group),
+            "std_disturbance_force_score": std(row["disturbance_force_score"] for row in group),
+            "mean_drag_left_opposing_force": mean(row["drag_left_opposing_force"] for row in group),
+            "mean_drag_right_opposing_force": mean(row["drag_right_opposing_force"] for row in group),
+            "mean_drag_down_opposing_force": mean(row["drag_down_opposing_force"] for row in group),
             "mean_angular_span_deg": mean(row["angular_span_deg"] for row in group),
             "std_angular_span_deg": std(row["angular_span_deg"] for row in group),
             "mean_angular_span_norm": mean(row["angular_span_norm"] for row in group),

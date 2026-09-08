@@ -1,6 +1,8 @@
 import unittest
 import numpy as np
-from TendonForces.disturbance_metrics import directional_contact_support_score
+from TendonForces.disturbance_metrics import (
+    directional_contact_support_score, directional_projected_force_stats,
+)
 
 
 class DirectionalContactSupportTest(unittest.TestCase):
@@ -22,6 +24,13 @@ class DirectionalContactSupportTest(unittest.TestCase):
         self.assertAlmostEqual(
             directional_contact_support_score([[1, 0, 0]], [1, 0, 0]), 0.0
         )
+
+    def test_projected_force_preserves_useful_components(self):
+        forces = np.array([[2.0, 0.0, 1.0], [2.0, 0.0, -1.0]])
+        stats = directional_projected_force_stats(forces, [-1.0, 0.0, 0.0], 4.0)
+        self.assertAlmostEqual(stats["opposing_force"], 4.0)
+        self.assertAlmostEqual(stats["mean_opposing_force"], 2.0)
+        self.assertAlmostEqual(stats["force_score"], 0.5)
 
 
 if __name__ == "__main__":

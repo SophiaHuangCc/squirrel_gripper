@@ -51,3 +51,30 @@ def directional_contact_support_score(contact_normals, disturbance_direction, fr
         if best_residual == 0.0:
             break
     return float(np.clip(1.0 - best_residual, 0.0, 1.0))
+
+
+def directional_projected_force_stats(contact_forces, disturbance_direction, reference_force):
+    """Return usable force opposing one disturbance and a smooth normalized score."""
+    forces = np.asarray(contact_forces, dtype=float)
+    if forces.size == 0:
+        return {
+            "opposing_force": 0.0, "mean_opposing_force": 0.0,
+            "total_force": 0.0, "force_score": 0.0, "num_contacts": 0,
+        }
+    forces = forces.reshape(-1, 3)
+    disturbance = np.asarray(disturbance_direction, dtype=float).reshape(3)
+    magnitude = float(np.linalg.norm(disturbance))
+    if magnitude <= 1e-12:
+        raise ValueError("disturbance_direction must be nonzero")
+    target = -disturbance / magnitude
+    # Sum useful per-contact projections before transverse components cancel.
+    opposing = np.maximum(forces @ target, 0.0)
+    opposing_force = float(np.sum(opposing))
+    reference = max(float(reference_force), 1e-12)
+    return {
+        "opposing_force": opposing_force,
+        "mean_opposing_force": float(np.mean(opposing)),
+        "total_force": float(np.linalg.norm(forces, axis=1).sum()),
+        "force_score": opposing_force / (opposing_force + reference),
+        "num_contacts": int(len(forces)),
+    }

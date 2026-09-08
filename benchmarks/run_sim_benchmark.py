@@ -59,6 +59,7 @@ def read_metric_from_npz(path):
         metric = {
             "num_contacts": scalar(data, "num_contacts", 0.0),
             "disturbance_resistance_score": scalar(data, "disturbance_resistance_score", 0.0),
+            "disturbance_force_score": scalar(data, "disturbance_force_score", 0.0),
             "angular_span": scalar(data, "angular_span", 0.0),
             "n_elements": scalar(data, "n_elements", 100.0),
         }
@@ -66,6 +67,7 @@ def read_metric_from_npz(path):
             "max_overlap_overall", "total_energy", "tendon_displacement_m",
             "tendon_actuator_work_positive_j", "tendon_actuator_work_net_j",
             "disturbance_num_settled_contact_normals",
+            "disturbance_force_reference", "total_normal_force", "total_friction_force",
             "disturbance_drag_left_direction_score",
             "disturbance_drag_right_direction_score",
             "disturbance_drag_down_direction_score",
@@ -75,6 +77,18 @@ def read_metric_from_npz(path):
             "disturbance_drag_left_legacy_alignment_score",
             "disturbance_drag_right_legacy_alignment_score",
             "disturbance_drag_down_legacy_alignment_score",
+            "disturbance_drag_left_opposing_force",
+            "disturbance_drag_right_opposing_force",
+            "disturbance_drag_down_opposing_force",
+            "disturbance_drag_left_mean_opposing_force",
+            "disturbance_drag_right_mean_opposing_force",
+            "disturbance_drag_down_mean_opposing_force",
+            "disturbance_drag_left_total_contact_force",
+            "disturbance_drag_right_total_contact_force",
+            "disturbance_drag_down_total_contact_force",
+            "disturbance_drag_left_force_score",
+            "disturbance_drag_right_force_score",
+            "disturbance_drag_down_force_score",
         ):
             if key in data:
                 metric[key] = scalar(data, key, 0.0)

@@ -86,10 +86,12 @@ from metrics import analyze_grasp_from_log, plot_contacts_2d_from_log
 try:
     from .disturbance_metrics import (
         contact_normals_from_geometry, directional_contact_support_score,
+        directional_projected_force_stats,
     )
 except ImportError:
     from disturbance_metrics import (
         contact_normals_from_geometry, directional_contact_support_score,
+        directional_projected_force_stats,
     )
 
 
@@ -1131,6 +1133,10 @@ def main():
             "Use direction-only support from the contact-normal/friction cone, "
             "or reproduce the legacy cosine of one realized net contact force."
         ),
+    )
+    parser.add_argument(
+        "--disturbance_force_reference", type=float, default=10.0,
+        help="Reference simulated force for the smooth F/(F+reference) score.",
     )
 
     parser.add_argument(
@@ -2430,6 +2436,7 @@ def main():
         continuous_scores = []
         total_cases = len(disturbance_cases)
         direction_scores = []
+        directional_force_scores = []
         settled_contact_normals = contact_normals_from_geometry(
             final_pos, cylinder.position_collection[:, 0], cyl_radius, contact_radius
         )
@@ -2472,6 +2479,10 @@ def main():
                 else legacy_direction_score
             )
             direction_scores.append(direction_score)
+            force_stats = directional_projected_force_stats(
+                resp["contact_forces"], dvec, args.disturbance_force_reference
+            )
+            directional_force_scores.append(force_stats["force_score"])
             # if fmag > 1e-8:
             #     magnitude_score = resp["resist_force"] / fmag
             # else:
@@ -2485,6 +2496,10 @@ def main():
             data_to_save[f"disturbance_{name}_direction_score"] = np.array([direction_score])
             data_to_save[f"disturbance_{name}_directional_support_score"] = np.array([support_score])
             data_to_save[f"disturbance_{name}_legacy_alignment_score"] = np.array([legacy_direction_score])
+            data_to_save[f"disturbance_{name}_opposing_force"] = np.array([force_stats["opposing_force"]])
+            data_to_save[f"disturbance_{name}_mean_opposing_force"] = np.array([force_stats["mean_opposing_force"]])
+            data_to_save[f"disturbance_{name}_total_contact_force"] = np.array([force_stats["total_force"]])
+            data_to_save[f"disturbance_{name}_force_score"] = np.array([force_stats["force_score"]])
             # data_to_save[f"disturbance_{name}_magnitude_score"] = np.array([magnitude_score])
 
             # data_to_save[f"disturbance_{name}_applied_force"] = resp["applied_force"]
@@ -2505,12 +2520,17 @@ def main():
 
         direction_resistance_score = float(np.mean(direction_scores)) if direction_scores else 0.0
         disturbance_resistance_score = direction_resistance_score
+        disturbance_force_score = (
+            float(np.min(directional_force_scores)) if directional_force_scores else 0.0
+        )
 
         data_to_save["disturbance_base_point"] = base_point
         data_to_save["disturbance_force_application_point"] = base_point
         # data_to_save["disturbance_binary_resistance_score"] = np.array([binary_resistance_score])
         # data_to_save["disturbance_continuous_resistance_score"] = np.array([continuous_resistance_score])
         data_to_save["disturbance_resistance_score"] = np.array([disturbance_resistance_score])
+        data_to_save["disturbance_force_score"] = np.array([disturbance_force_score])
+        data_to_save["disturbance_force_reference"] = np.array([args.disturbance_force_reference])
         data_to_save["disturbance_score_mode"] = np.array([args.disturbance_score_mode])
         data_to_save["disturbance_num_settled_contact_normals"] = np.array(
             [len(settled_contact_normals)]
@@ -2523,6 +2543,11 @@ def main():
             f"  Disturbance resistance score ({args.disturbance_score_mode}): "
             f"{disturbance_resistance_score:.3f} from "
             f"{len(settled_contact_normals)} settled contact normals"
+        )
+        print(
+            f"  Directional force-capacity score (worst direction): "
+            f"{disturbance_force_score:.3f}; "
+            f"reference={args.disturbance_force_reference:.3f} simulated N"
         )
 
         # for name, resp in disturbance_results.items():
