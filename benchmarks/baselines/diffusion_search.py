@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 
-from benchmarks.baselines.surrogate_search import SearchResult, rank_designs, select_target_cells
+from benchmarks.baselines.surrogate_search import SearchResult, select_target_cells
 from generator.dataloader import DesignBounds
 from generator.diffusion import SquirrelDesignDiffusion, make_condition_batch
 from generator.diffusion_utils import ConditionalUnet1D
@@ -48,7 +48,7 @@ def load_diffusion(
 
 
 def diffusion_search(
-    diffusion_model, dynamics_model, config, num_candidates, num_samples, seed,
+    diffusion_model, config, num_candidates, seed,
     batch_size=256, guidance_scale=0.0, num_inference_steps=20,
     target_contacts=0.8, target_disturbance=0.8, target_angular_span=0.8,
     scenario_id=None, family=None, generalist=False, device="cpu",
@@ -56,8 +56,8 @@ def diffusion_search(
     guidance_timesteps=None,
 ):
     cells = select_target_cells(config, scenario_id, family, generalist)
-    if num_samples < num_candidates:
-        raise ValueError("diffusion num_samples must be >= candidate_budget")
+    if num_candidates < 1 or batch_size < 1 or num_inference_steps < 1:
+        raise ValueError("candidate count, batch size and inference steps must be positive")
     if guidance_scale > 0 and guidance_dynamics_model is None:
         raise ValueError(
             "Guided diffusion requires a separately trained noise-conditioned "
@@ -87,7 +87,7 @@ def diffusion_search(
                 )
     # The diffusion network was trained with one condition vector.  For a
     # family/generalist task, use the centroid of the selected scenario set as
-    # its proposal context, then rank every proposal over the complete set.
+    # its proposal context. Every generated design goes to simulation, in order.
     # DGDM additionally differentiates the mean utility over every selected
     # scenario during every denoising step.
     keys = (
@@ -113,7 +113,7 @@ def diffusion_search(
     diffusion_model.num_inference_steps = int(num_inference_steps)
     generator = torch.Generator(device=device).manual_seed(seed)
     generated = []
-    remaining = int(num_samples)
+    remaining = int(num_candidates)
     while remaining:
         current = min(int(batch_size), remaining)
         condition = make_condition_batch(
@@ -139,18 +139,14 @@ def diffusion_search(
         generated.append(output["design_physical"].detach().cpu().numpy())
         remaining -= current
     pool = np.concatenate(generated, axis=0)
-    ranked = rank_designs(
-        dynamics_model, pool, config, scenario_id=scenario_id, family=family,
-        generalist=generalist, device=device,
-    )
-    denoising_evaluations = num_samples * num_inference_steps
+    denoising_evaluations = num_candidates * num_inference_steps
     guidance_evaluations = (
-        num_samples * (
+        num_candidates * (
             num_inference_steps if guidance_timesteps is None else len(guidance_timesteps)
         ) * len(cells) if guidance_scale > 0 else 0
     )
     return SearchResult(
-        designs=ranked.designs[:num_candidates], scores=ranked.scores[:num_candidates],
-        model_evaluations=ranked.model_evaluations + denoising_evaluations + guidance_evaluations,
-        target_scenario_ids=ranked.target_scenario_ids,
+        designs=pool, scores=None,
+        model_evaluations=denoising_evaluations + guidance_evaluations,
+        target_scenario_ids=[cell["scenario_id"] for cell in cells],
     )

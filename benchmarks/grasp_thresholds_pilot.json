@@ -1,0 +1,10 @@
+{
+  "status": "provisional engineering examples; not calibrated to retention or chosen to favor a method",
+  "profiles": {
+    "geometry_loose": {"min_contacts": 5, "min_span_deg": 120},
+    "geometry_primary": {"min_contacts": 10, "min_span_deg": 180},
+    "geometry_strict": {"min_contacts": 15, "min_span_deg": 210},
+    "support_primary": {"min_contacts": 10, "min_span_deg": 180, "min_direction_support": 0.9},
+    "load_proxy_primary": {"min_contacts": 10, "min_span_deg": 180, "min_direction_support": 0.9, "min_opposing_force_n": 5}
+  }
+}

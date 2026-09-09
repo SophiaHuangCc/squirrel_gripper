@@ -166,11 +166,14 @@ def main():
     parser.add_argument("--cma_popsize", type=int, default=32)
     parser.add_argument("--cma_sigma", type=float, default=0.5)
     parser.add_argument("--diffusion_checkpoint", type=Path, default=None)
+    parser.add_argument("--diffusion_conditioning", choices=("conditional", "context_only"),
+                        default="conditional", help="Must match the checkpoint's training mode; not an inference override.")
     parser.add_argument(
         "--unconditional_diffusion_checkpoint", type=Path, default=None,
         help="Checkpoint trained with generator/train.py --conditioning unconditional.",
     )
-    parser.add_argument("--diffusion_num_samples", type=int, default=256)
+    parser.add_argument("--diffusion_num_samples", type=int, default=None,
+                        help="Deprecated: diffusion generates exactly candidate_budget designs; no oversampling/ranking.")
     parser.add_argument("--diffusion_batch_size", type=int, default=256)
     parser.add_argument("--diffusion_inference_steps", type=int, default=20)
     parser.add_argument("--dgdm_guidance_scale", type=float, default=0.1)
@@ -322,15 +325,34 @@ def main():
     unknown_methods = methods - allowed_methods
     if unknown_methods:
         raise ValueError(f"Unknown --methods values: {sorted(unknown_methods)}")
+    diffusion_method_names = {"conditional_diffusion", "dgdm", "unconditional_diffusion", "unconditional_dgdm"}
+    if methods.intersection(diffusion_method_names):
+        if budget < 1 or args.diffusion_batch_size < 1:
+            raise ValueError("candidate_budget and diffusion_batch_size must be positive")
+        if args.benchmark_top_k is not None and args.benchmark_top_k != budget:
+            raise ValueError("Direct diffusion evaluation requires benchmark_top_k == candidate_budget (or omit it)")
+        if args.diffusion_num_samples is not None and args.diffusion_num_samples != budget:
+            print(f"[BUDGET] Ignoring deprecated diffusion_num_samples={args.diffusion_num_samples}; generating exactly {budget} per diffusion method/seed.")
     candidate_dir = args.output_dir / "candidates"
     candidate_dir.mkdir(exist_ok=True)
     candidate_files = []
     proposal_times = []
 
-    def reuse_candidate(path, method, seed):
+    def reuse_candidate(path, method, seed, direct_diffusion=False):
         if not args.resume or not path.exists():
             return False
         loaded = load_candidates(path)
+        if direct_diffusion and (
+            loaded["metadata"].get("selection_rule") != "all_generated_no_surrogate_ranking"
+            or len(loaded["design_params"]) != budget
+            or loaded["selection_scores"] is not None
+            or loaded["metadata"].get("batch_size") != min(args.diffusion_batch_size, budget)
+            or loaded["metadata"].get("conditioning_mode") != (
+                "unconditional" if loaded["metadata"].get("base_method", "").startswith("unconditional_")
+                else args.diffusion_conditioning
+            )
+        ):
+            raise ValueError(f"Cannot resume {path}: incompatible direct-generation protocol/budget/batch. Use a new output directory.")
         if loaded["method"] != method or int(loaded["seed"]) != int(seed):
             raise ValueError(
                 f"Cannot resume {path}: expected {method} seed {seed}, found "
@@ -514,18 +536,13 @@ def main():
             raise ValueError(
                 "--unconditional_diffusion_checkpoint is required for unconditional diffusion methods"
             )
-        if args.dynamics_checkpoint is None:
-            raise ValueError("--dynamics_checkpoint is required to rank diffusion candidates")
         guided_methods = diffusion_methods.intersection({"dgdm", "unconditional_dgdm"})
         if guided_methods and args.dgdm_dynamics_checkpoint is None:
             raise ValueError(
-                "--dgdm_dynamics_checkpoint is required for DGDM methods. Keep "
-                "--dynamics_checkpoint as the clean model used for final ranking."
+                "--dgdm_dynamics_checkpoint is required for DGDM guidance."
             )
         from benchmarks.baselines.diffusion_search import diffusion_search, load_diffusion
 
-        if not search_methods:
-            surrogate = load_surrogate(args.dynamics_checkpoint, device=args.device)
         guidance_surrogate = (
             load_surrogate(
                 args.dgdm_dynamics_checkpoint, device=args.device,
@@ -538,7 +555,7 @@ def main():
             diffusion_models["conditional"] = load_diffusion(
                 args.diffusion_checkpoint, device=args.device,
                 num_inference_steps=args.diffusion_inference_steps,
-                expected_conditioning="conditional",
+                expected_conditioning=args.diffusion_conditioning,
             )
         if unconditional_methods:
             diffusion_models["unconditional"] = load_diffusion(
@@ -565,12 +582,11 @@ def main():
                     else args.diffusion_checkpoint
                 )
                 path = candidate_dir / f"{output_method}_s{seed}.npz"
-                if reuse_candidate(path, output_method, seed):
+                if reuse_candidate(path, output_method, seed, direct_diffusion=True):
                     continue
                 started = time.perf_counter()
                 result = diffusion_search(
-                    diffusion_models[conditioning_mode], surrogate, config, budget,
-                    num_samples=args.diffusion_num_samples, seed=seed,
+                    diffusion_models[conditioning_mode], config, budget, seed=seed,
                     batch_size=args.diffusion_batch_size, guidance_scale=guidance_scale,
                     num_inference_steps=args.diffusion_inference_steps,
                     target_contacts=args.target_contacts,
@@ -586,18 +602,24 @@ def main():
                     metadata={
                         "base_method": method,
                         "diffusion_checkpoint": str(checkpoint_path.resolve()),
-                        "conditioning_mode": conditioning_mode,
-                        "dynamics_checkpoint": str(args.dynamics_checkpoint.resolve()),
+                        "conditioning_mode": diffusion_models[conditioning_mode].conditioning_mode,
+                        "dynamics_checkpoint": None,
                         "dgdm_dynamics_checkpoint": (
                             str(args.dgdm_dynamics_checkpoint.resolve()) if guided else None
                         ),
                         "guidance_scale": guidance_scale,
                         "guidance_timesteps": guidance_timesteps,
-                        "num_samples": args.diffusion_num_samples,
+                        "num_samples": budget,
+                        "requested_metrics": [args.target_contacts, args.target_disturbance, args.target_angular_span],
+                        "batch_size": min(args.diffusion_batch_size, budget),
+                        "sampling_batches": (budget + args.diffusion_batch_size - 1) // args.diffusion_batch_size,
                         "num_inference_steps": args.diffusion_inference_steps,
                         "model_evaluations": result.model_evaluations,
                         "target_scenario_ids": result.target_scenario_ids,
-                        "selection_rule": "surrogate_benchmark_utility",
+                        "selection_rule": "all_generated_no_surrogate_ranking",
+                        "ranking_surrogate_evaluations": 0,
+                        "denoising_evaluations": budget * args.diffusion_inference_steps,
+                        "guidance_evaluations": result.model_evaluations - budget * args.diffusion_inference_steps,
                         "proposal_conditioning": (
                             "none" if conditioning_mode == "unconditional" else
                             ("scenario_set_centroid" if len(result.target_scenario_ids) > 1
@@ -701,9 +723,14 @@ def main():
                 sys.executable, "-m", "benchmarks.summarize",
                 *[str(path) for path in record_files],
                 "--output_dir", str(args.output_dir / "summary"),
-                "--config", str(args.config),
+                "--config", str(args.benchmark_config or args.config),
             ]
         )
+        run_checked([
+            sys.executable, "-m", "benchmarks.design_spread",
+            "--study-dir", str(args.output_dir / "runs"),
+            "--output-dir", str(args.output_dir / "summary"),
+        ])
 
 
 if __name__ == "__main__":

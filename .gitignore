@@ -53,3 +53,6 @@ docs/**
 
 TendonForces/manufactured_runs/
 TendonForces/manufactured_runs/**
+
+outputs/
+outputs/**

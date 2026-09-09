@@ -30,9 +30,10 @@ def parse_args():
     parser.add_argument("--num_inference_steps", type=int, default=20)
     parser.add_argument("--ema_power", type=float, default=0.75)
     parser.add_argument(
-        "--conditioning", choices=("conditional", "unconditional"), default="conditional",
+        "--conditioning", choices=("conditional", "context_only", "unconditional"), default="conditional",
         help=(
-            "conditional learns p(design|task,init,metrics); unconditional masks the "
+            "conditional learns p(design|task,init,metrics); context_only keeps the six "
+            "environment inputs and masks requested metrics during training and sampling; unconditional masks the "
             "condition and learns a task-agnostic design prior p(design)"
         ),
     )

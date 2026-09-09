@@ -71,7 +71,8 @@ def main():
     )
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--diffusion_checkpoint", type=Path, required=True)
-    parser.add_argument("--dynamics_checkpoint", type=Path, required=True)
+    parser.add_argument("--dynamics_checkpoint", type=Path,
+                        help="Deprecated and unused: direct generation has no ranking surrogate.")
     parser.add_argument(
         "--dgdm_dynamics_checkpoint", type=Path, required=True,
         help="Noise-and-timestep-conditioned dynamics checkpoint used at every denoising step.",
@@ -80,7 +81,8 @@ def main():
     parser.add_argument("--scales", default=",".join(str(x) for x in DEFAULT_SCALES))
     parser.add_argument("--seeds", default="", help="Defaults to method_seeds in the benchmark config")
     parser.add_argument("--candidate_budget", type=int, default=None)
-    parser.add_argument("--num_samples", type=int, default=256)
+    parser.add_argument("--num_samples", type=int, default=None,
+                        help="Deprecated: exactly candidate_budget designs are generated.")
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--inference_steps", type=int, default=20)
     parser.add_argument("--target_contacts", type=float, default=0.8)
@@ -92,7 +94,7 @@ def main():
     target.add_argument("--generalist", action="store_true")
     parser.add_argument("--device", choices=("cpu", "mps", "cuda"), default="cuda")
     parser.add_argument("--run_benchmark", action="store_true")
-    parser.add_argument("--benchmark_top_k", type=int, default=1)
+    parser.add_argument("--benchmark_top_k", type=int, default=None)
     parser.add_argument("--families", default="")
     parser.add_argument("--num_workers", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=1800.0)
@@ -104,13 +106,17 @@ def main():
     scales = parse_float_list(args.scales)
     seeds = parse_int_list(args.seeds, config["evaluation"]["method_seeds"])
     budget = args.candidate_budget or int(config["evaluation"]["candidate_budget"])
-    if budget < 1 or args.num_samples < budget:
-        parser.error("num_samples must be at least candidate_budget, and both must be positive")
+    if budget < 1 or args.batch_size < 1:
+        parser.error("candidate_budget and batch_size must be positive")
+    if args.benchmark_top_k is not None and args.benchmark_top_k != budget:
+        parser.error("Direct generation evaluates every candidate; benchmark_top_k must equal candidate_budget")
+    args.benchmark_top_k = budget
+    if args.num_samples is not None and args.num_samples != budget:
+        print(f"[BUDGET] Ignoring deprecated num_samples={args.num_samples}; generating {budget} per scale/seed.")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     candidate_dir = args.output_dir / "candidates"
     candidate_dir.mkdir(exist_ok=True)
-    surrogate = load_surrogate(args.dynamics_checkpoint, device=args.device)
     guidance_surrogate = load_surrogate(
         args.dgdm_dynamics_checkpoint, device=args.device,
         expected_noise_conditioned=True,
@@ -123,9 +129,9 @@ def main():
         "variant": "task_and_target_conditioned_diffusion_with_dynamics_guidance",
         "paired_initial_noise": True,
         "scales": scales, "seeds": seeds, "candidate_budget": budget,
-        "num_samples": args.num_samples, "inference_steps": args.inference_steps,
+        "num_samples": budget, "inference_steps": args.inference_steps,
         "diffusion_checkpoint": str(args.diffusion_checkpoint.resolve()),
-        "dynamics_checkpoint": str(args.dynamics_checkpoint.resolve()),
+        "dynamics_checkpoint": None,
         "dgdm_dynamics_checkpoint": str(args.dgdm_dynamics_checkpoint.resolve()),
         "runs": [],
     }
@@ -135,7 +141,7 @@ def main():
             method = method_name(scale)
             started = time.perf_counter()
             result = diffusion_search(
-                diffusion, surrogate, config, budget, args.num_samples, seed,
+                diffusion, config, budget, seed,
                 batch_size=args.batch_size, guidance_scale=scale,
                 num_inference_steps=args.inference_steps,
                 target_contacts=args.target_contacts,
@@ -149,14 +155,19 @@ def main():
             path = candidate_dir / f"{method}_s{seed}.npz"
             metadata = {
                 "variant": "conditional_dgdm", "guidance_scale": scale,
-                "paired_noise_seed": seed, "num_samples": args.num_samples,
+                "paired_noise_seed": seed, "num_samples": budget,
+                "batch_size": min(args.batch_size, budget),
+                "sampling_batches": (budget + args.batch_size - 1) // args.batch_size,
                 "candidate_budget": budget, "num_inference_steps": args.inference_steps,
                 "model_evaluations": result.model_evaluations,
                 "target_scenario_ids": result.target_scenario_ids,
                 "proposal_elapsed_seconds": elapsed,
-                "selection_rule": "surrogate_benchmark_utility",
+                "selection_rule": "all_generated_no_surrogate_ranking",
+                "ranking_surrogate_evaluations": 0,
+                "denoising_evaluations": budget * args.inference_steps,
+                "guidance_evaluations": result.model_evaluations - budget * args.inference_steps,
                 "diffusion_checkpoint": str(args.diffusion_checkpoint.resolve()),
-                "dynamics_checkpoint": str(args.dynamics_checkpoint.resolve()),
+                "dynamics_checkpoint": None,
                 "dgdm_dynamics_checkpoint": str(args.dgdm_dynamics_checkpoint.resolve()),
             }
             save_candidates(path, result.designs, method, seed, scores=result.scores, metadata=metadata)

@@ -15,7 +15,7 @@ from dynamics.pose_targets import surrogate_metrics
 @dataclass
 class SearchResult:
     designs: np.ndarray
-    scores: np.ndarray
+    scores: np.ndarray | None
     model_evaluations: int
     target_scenario_ids: list[str]
 

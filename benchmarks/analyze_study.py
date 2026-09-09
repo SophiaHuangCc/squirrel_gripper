@@ -45,7 +45,7 @@ def nearest_config(path, stop):
     return None
 
 
-def read_rows(root):
+def read_rows(root, include_failures=False):
     rows = []
     # records.jsonl is rewritten by each current benchmark group and therefore
     # excludes obsolete run directories left by a rerun with new candidates.
@@ -70,7 +70,7 @@ def read_rows(root):
     ]
     for result_path in result_paths:
         result = json.loads(result_path.read_text(encoding="utf-8"))
-        if result.get("status") != "ok":
+        if result.get("status") != "ok" and not include_failures:
             continue
         job_path = result_path.with_name("benchmark_job.json")
         job = json.loads(job_path.read_text(encoding="utf-8")) if job_path.exists() else {}
@@ -94,6 +94,7 @@ def read_rows(root):
             )
         )
         row = {
+            "status": result.get("status", "unknown"),
             "objective": objective_name(result_path, root),
             "scenario_id": result.get("scenario_id", ""),
             "method": result.get("method", ""),
@@ -169,6 +170,7 @@ def grouped_summary(rows, keys):
                 row["disturbance_only_utility"] for row in group
             ),
             "mean_contacts": mean(row["num_contacts"] for row in group),
+            "std_contacts": std(row["num_contacts"] for row in group),
             "mean_contact_coverage": mean(row["contact_coverage_norm"] for row in group),
             "std_contact_coverage": std(row["contact_coverage_norm"] for row in group),
             "mean_disturbance": mean(row["disturbance_resistance"] for row in group),
@@ -460,13 +462,17 @@ def main():
     root = args.study_dir.resolve()
     output = (args.output_dir or root / "study_analysis").resolve()
     output.mkdir(parents=True, exist_ok=True)
-    rows = read_rows(root)
+    all_rows = read_rows(root, include_failures=True)
+    rows = [row for row in all_rows if row["status"] == "ok"]
     requested_objectives = {value.strip() for value in args.objectives.split(",") if value.strip()}
     requested_scenarios = {value.strip() for value in args.scenario_ids.split(",") if value.strip()}
     if requested_objectives:
         rows = [row for row in rows if row["objective"] in requested_objectives]
     if requested_scenarios:
         rows = [row for row in rows if row["scenario_id"] in requested_scenarios]
+    spread_rows = [row for row in all_rows
+                   if (not requested_objectives or row["objective"] in requested_objectives)
+                   and (not requested_scenarios or row["scenario_id"] in requested_scenarios)]
     if not rows:
         raise ValueError(f"No successful benchmark_result.json files found under {root}")
 
@@ -525,6 +531,8 @@ def main():
     write_csv(output / "all_rollouts.csv", rows, exclude=("design_params",))
     write_csv(output / "method_by_scenario.csv", method_scenario)
     write_csv(output / "method_overall.csv", method_overall)
+    from benchmarks.design_spread import write_spread_report
+    write_spread_report(spread_rows, output)
     write_csv(output / "best_per_method_scenario.csv", best_per_method, exclude=("design_params",))
     write_csv(output / "best_overall_per_scenario.csv", best_overall, exclude=("design_params",))
     write_csv(output / "best_contact_per_scenario.csv", best_contact, exclude=("design_params",))

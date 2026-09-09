@@ -55,6 +55,7 @@ class SquirrelDesignDiffusion(nn.Module):
     Squirrel-finger adaptation of DGDM's diffusion generator.
 
     Conditional training learns p(design | task, init, desired_metrics).
+    Context-only training keeps task/init but masks requested performance.
     Unconditional training masks that vector and learns the marginal p(design).
     Sampling starts from Gaussian noise and denoises into a 16D From Links design.
     """
@@ -75,8 +76,8 @@ class SquirrelDesignDiffusion(nn.Module):
         self.learning_rate = learning_rate
         self.bounds = bounds or DesignBounds.defaults()
         self.num_inference_steps = num_inference_steps
-        if conditioning_mode not in {"conditional", "unconditional"}:
-            raise ValueError("conditioning_mode must be 'conditional' or 'unconditional'")
+        if conditioning_mode not in {"conditional", "context_only", "unconditional"}:
+            raise ValueError("conditioning_mode must be conditional, context_only, or unconditional")
         self.conditioning_mode = conditioning_mode
         # DGDM uses EMA weights for sampling. Use an internal helper so this
         # code does not depend on the exact diffusers EMA API version.
@@ -110,6 +111,8 @@ class SquirrelDesignDiffusion(nn.Module):
         """Mask task information for a task-agnostic diffusion prior."""
         if self.conditioning_mode == "unconditional":
             return torch.zeros_like(cond)
+        if self.conditioning_mode == "context_only":
+            return torch.cat((cond[..., :6], torch.zeros_like(cond[..., 6:])), dim=-1)
         return cond
 
     def optimizer(self) -> torch.optim.Optimizer:
